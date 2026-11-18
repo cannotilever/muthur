@@ -227,6 +227,8 @@ mod tests {
         ChatRequest {
             system: "sys".into(),
             messages: vec![Message { role: Role::User, content: MessageContent::Text("hi".into()) }],
+            tools: vec![],
+            tool_choice_none: false,
         }
     }
 

@@ -272,7 +272,7 @@ impl MuthurTab {
                 return;
             }
         };
-        let req = ChatRequest { system: self.system.clone(), messages };
+        let req = ChatRequest { system: self.system.clone(), messages, tools: vec![], tool_choice_none: false };
         self.abort = Some((self.deps.spawn)(self.req_id, req));
         self.state = State::Waiting;
         self.started = Some((self.deps.now)());

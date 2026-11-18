@@ -180,6 +180,8 @@ impl ChatLog {
             .map(|m| match &m.content {
                 MessageContent::Text(t) => t.chars().count(),
                 MessageContent::Blocks(b) => b.iter().map(|v| v.to_string().chars().count()).sum(),
+                MessageContent::ToolResults(rs) => rs.iter().map(|r| r.content.chars().count()).sum(),
+                MessageContent::ToolCalls { text, calls } => text.chars().count() + calls.iter().map(|v| v.to_string().chars().count()).sum::<usize>(),
             })
             .sum();
         (system.chars().count() + n) / 4

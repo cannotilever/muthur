@@ -18,7 +18,7 @@ async fn turn(client: &LlmClient, cfg: &MuthurSection, log: &mut ChatLog, user: 
     let mut text = String::new();
     let mut done = None;
     client
-        .stream(muthur::llm::ChatRequest { system: SYSTEM.into(), messages }, |ev| match ev {
+        .stream(muthur::llm::ChatRequest { system: SYSTEM.into(), messages, tools: vec![], tool_choice_none: false }, |ev| match ev {
             StreamEvent::Text(t) => text.push_str(&t),
             StreamEvent::Done { stop, model, raw } => done = Some((stop, model, raw)),
             StreamEvent::Error(e) => panic!("stream error: {e:?}"),

@@ -14,6 +14,27 @@ pub enum Role {
 pub enum MessageContent {
     Text(String),
     Blocks(Vec<serde_json::Value>),
+    ToolResults(Vec<ToolResult>),
+    /// OpenAI assistant turn that called tools: `calls` in OpenAI wire format.
+    ToolCalls { text: String, calls: Vec<serde_json::Value> },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ToolSpec {
+    pub name: String,
+    pub description: String,
+    pub schema: serde_json::Value,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ToolResult {
+    pub id: String,
+    pub name: String,
+    pub content: String,
+    pub is_error: bool,
+    /// Transcript label, e.g. "SERVICE STATUS NGINX.SERVICE". Logged; never sent to a model.
+    #[serde(default)]
+    pub label: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -26,6 +47,8 @@ pub struct Message {
 pub struct ChatRequest {
     pub system: String,
     pub messages: Vec<Message>,
+    pub tools: Vec<ToolSpec>,
+    pub tool_choice_none: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

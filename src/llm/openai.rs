@@ -25,6 +25,8 @@ pub fn request_body(cfg: &MuthurSection, req: &ChatRequest) -> Value {
         let content = match &m.content {
             MessageContent::Text(s) => s.clone(),
             MessageContent::Blocks(v) => v.iter().filter_map(|b| b.get("text").and_then(Value::as_str)).collect(),
+            MessageContent::ToolResults(rs) => rs.iter().map(|r| r.content.as_str()).collect::<Vec<_>>().join("\n"),
+            MessageContent::ToolCalls { text, .. } => text.clone(),
         };
         messages.push(json!({"role": role, "content": content}));
     }
@@ -151,7 +153,7 @@ mod tests {
     #[test] fn text_stream() { let ev = run("openai_text.sse"); assert_eq!(texts(&ev), "ALL SYSTEMS NOMINAL."); assert!(matches!(ev.last(), Some(StreamEvent::Done{stop: Stop::End, raw: None, ..}))); }
     #[test] fn tool_calls_accumulate_by_index() { let ev = run("openai_tool.sse"); assert!(ev.iter().any(|e| matches!(e, StreamEvent::ToolCall{name, input, ..} if name == "metrics" && input == &json!({"host":"local"})))); assert!(matches!(ev.last(), Some(StreamEvent::Done{stop: Stop::ToolUse, ..}))); }
     #[test] fn length_is_max_tokens() { assert!(matches!(run("openai_length.sse").last(), Some(StreamEvent::Done{stop: Stop::MaxTokens, ..}))); }
-    #[test] fn system_goes_first() { let b = request_body(&cfg(), &ChatRequest{ system: "SYS".into(), messages: vec![user("HI")] }); assert_eq!(b["messages"][0], json!({"role":"system","content":"SYS"})); assert_eq!(b["messages"][1], json!({"role":"user","content":"HI"})); assert_eq!(b["model"], "qwen"); assert_eq!(b["stream"], true); }
+    #[test] fn system_goes_first() { let b = request_body(&cfg(), &ChatRequest{ system: "SYS".into(), messages: vec![user("HI")], tools: vec![], tool_choice_none: false }); assert_eq!(b["messages"][0], json!({"role":"system","content":"SYS"})); assert_eq!(b["messages"][1], json!({"role":"user","content":"HI"})); assert_eq!(b["model"], "qwen"); assert_eq!(b["stream"], true); }
     #[test] fn bearer_only_with_key() { assert!(!headers(&cfg()).iter().any(|(k,_)| *k == "authorization")); assert!(headers(&MuthurSection{ api_key: Some("k".into()), ..cfg() }).contains(&("authorization", "Bearer k".into()))); }
     #[test] fn api_key_is_trimmed() { assert!(headers(&MuthurSection{ api_key: Some(" k\n".into()), ..cfg() }).contains(&("authorization", "Bearer k".into()))); assert!(!headers(&MuthurSection{ api_key: Some("  ".into()), ..cfg() }).iter().any(|(k,_)| *k == "authorization")); }
     #[test] fn missing_done_is_transmission_error() {
