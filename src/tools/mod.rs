@@ -2,6 +2,9 @@
 
 use crate::config::{Elevate, ToolsSection};
 use crate::llm::ToolSpec;
+pub mod exec;
+pub mod runner;
+
 use serde_json::{Value, json};
 
 pub const CAP: usize = 4096;
