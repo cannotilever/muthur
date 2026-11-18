@@ -1,0 +1,219 @@
+# MUTHUR — Architecture
+
+A bespoke serial front-end for a Wyse WY-60 terminal, styled after the
+computers of the Alien franchise (Alien: Isolation's personal terminals and
+the original film's MU/TH/UR 6000 interface).
+
+It exists for two reasons:
+
+- **Functional** — the WY-60 renders escape sequences it does not understand
+  instead of ignoring them. MUTHUR sits between modern software and the
+  terminal and guarantees that only sequences the terminal understands ever
+  reach the wire.
+- **Aesthetic** — it should look and feel like a Weyland-Yutani console.
+
+## Hardware & link
+
+| Item | Value |
+|---|---|
+| Terminal | Wyse WY-60, **VT100 personality, enhanced mode** |
+| Geometry | **80×43**, WY-60 status line disabled |
+| Cable | USB FTDI → DB9, DB9 → DB25 null modem |
+| Speed | **38400 baud** |
+| Flow control | **XON/XOFF** (hardware RTS/CTS deferred; test procedure in README) |
+| Host | Dedicated server, Arch or Alpine, x86_64 |
+
+Consequences:
+
+- At 38400 baud the budget is ~3.8 KB/s. A full 80×43 repaint with
+  attributes is ~4–5 KB (≈1.2 s). The renderer must diff, use scroll regions,
+  and pace output. Full repaints (tab switch, fullscreen toggle) are painted
+  top-to-bottom so they read as a deliberate wipe.
+- With XON/XOFF, Ctrl-S / Ctrl-Q never reach applications. MUTHUR's raw mode
+  must leave `IXON`/`IXOFF` enabled on the serial tty.
+
+## Deployment & process model
+
+```
+udev rule ─► /dev/wy60 (stable symlink to the FTDI adapter)
+serial-getty@wy60 (38400, XON/XOFF, TERM=vt100)
+  └─ login
+      └─ fish  (config.fish: if on /dev/wy60 → run `muthur`, NOT exec)
+          └─ muthur
+              └─ fish (Shell tab, on a PTY, TERM=vt100)
+```
+
+- Authentication is delegated to agetty/login.
+- If MUTHUR exits or crashes, the user lands in plain fish — an out-of-process
+  emergency fallback for free.
+- MUTHUR always restores termios on exit, including via a panic hook.
+- Build: static `x86_64-unknown-linux-musl` binary built on the dev machine;
+  `make deploy` copies it to the server. TLS via rustls (no OpenSSL).
+- Config: `~/.config/muthur/config.toml`. Contains the LLM API key; MUTHUR
+  refuses to start if the file is group/world readable (must be `0600`).
+- Logs: `~/.local/state/muthur/muthur.log` (tracing, rotated) plus a separate
+  LLM tool-call audit log.
+
+## Modes
+
+1. **Boot splash** — Weyland-Yutani / "MU/TH/UR 6000 — INTERFACE 2037" boot
+   text at teletype speed, interleaving real facts (hostname, CPU, RAM, link
+   speed). ~3–5 s, skippable with any key.
+2. **TUI** — three tabs: Utility, MU/TH/UR, Shell.
+3. **Emergency passthrough** (`prefix p`) — the Shell tab's PTY output goes to
+   the wire **untranslated**. The virtual terminal keeps being fed in the
+   background so leaving passthrough repaints the Shell tab correctly. Input
+   is still scanned for the prefix key so passthrough can be exited. Doubles
+   as a debugging aid for the translator.
+
+## Screen layout ("chrome")
+
+Modelled on the Alien: Isolation personal terminal
+(`Inspiration/alien-console/img/real-main.jpg`):
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│▓USCSS <SHIP> ── MU/TH/UR 6000 ─────────────────────── 17 NOV 2137 14:02▓▓▓▓▓│  title bar (reverse video)
+│                                                                              │
+│ FOLDERS        ┌───────────────────────────────────────────────────────────┐ │
+│┌────────────┐  │                                                           │ │
+││ UTILITY    │──│                content pane (~60 cols)                    │ │
+│└────────────┘  │                                                           │ │
+│┌────────────┐  │                                                           │ │
+││ MU/TH/UR  *│  │                                                           │ │  * = activity marker
+│└────────────┘  │                                                           │ │
+│┌────────────┐  │                                                           │ │
+││ SHELL      │  │                                                           │ │
+│└────────────┘  └───────────────────────────────────────────────────────────┘ │
+│ F1/F2/F3 SELECT ..... ^] f FULLSCREEN ..... PGUP/PGDN SCROLL ..... ^] ? HELP │  footer
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+- Title bar: ship name (config, e.g. `USCSS <hostname>`), in-universe date
+  (real date + configurable year offset; real date available on a key).
+- **Fullscreen** (`prefix f`) hides title bar, sidebar and footer. State is
+  remembered **per tab**. All tabs — including Shell — start windowed.
+  In fullscreen, pressing the prefix shows a transient one-line reverse-video
+  strip (`PREFIX: …`).
+- Background tabs keep running; the sidebar shows an activity marker when a
+  background tab has new output (e.g. a finished MU/TH/UR reply).
+
+## Keys
+
+- **F1 / F2 / F3** — Utility / MU/TH/UR / Shell.
+- **Prefix `Ctrl-]`** then:
+  - `f` fullscreen toggle · `p` passthrough toggle · `[` scrollback (Shell)
+  - `r` force full redraw · `]` send a literal `Ctrl-]` · `?` help
+- Raw byte sequences for WY-60 keys (F-keys, arrows, PgUp/PgDn) in VT100
+  personality are **not yet known**; `muthur testcard` has a key-echo mode to
+  discover them. The keymap lives in config with defaults filled in from
+  those findings.
+
+## Modules
+
+Single Rust crate, tokio runtime.
+
+| Module | Responsibility |
+|---|---|
+| `link` | Owns the terminal fd — serial device or plain stdio (dev). termios raw mode that preserves IXON/IXOFF; baud setup; guaranteed restore on drop/panic. |
+| `dialect` | `Dialect` trait describing the output language: cursor addressing, attributes, charset switching, scroll regions, and the **allowlist** of sequences. `Vt100Dialect` for v1; `Wyse60Dialect` (native personality: dim attribute, graphics set, pages) later without touching other modules. |
+| `backend` | `Wy60Backend: ratatui::backend::Backend`. **The only path to the wire.** Cell diffing, cursor-motion coalescing, DECSTBM scroll-region optimisation, byte-budget pacing, top-to-bottom painting. Generic over `Dialect`. |
+| `input` | Byte stream → key events via configurable keymap; prefix-key state machine. |
+| `app` | Event bus (`Input`, `Tick`, `PtyOutput`, `LlmChunk`, `Metrics`, later `Alert`), chrome rendering, tab focus, per-tab fullscreen, mode transitions. |
+| `tabs::utility` | System monitor (see below). |
+| `tabs::muthur` | Chat UI (see below). |
+| `tabs::shell` | PTY + virtual terminal + translation (see below). |
+| `llm` | OpenAI-compatible client: streaming (SSE), tool-calling loop, conversation store. |
+| `tools` | Tool registry and safety tiers; audit logging. |
+| `metrics` | `MetricsSource` trait; `LocalSource` for v1. |
+| `splash` | Boot sequence. |
+| `testcard` | `muthur testcard` subcommand: attribute / line-drawing probe and key-echo mode. |
+| `config` | TOML load, defaults, `0600` permission check. |
+
+### Shell tab
+
+- fish spawned on a PTY with `TERM=vt100`.
+- PTY output feeds a `vt100::Parser` (virtual screen + scrollback). This is
+  what makes tab switching possible: returning to Shell repaints from the
+  virtual screen.
+- Each frame the virtual screen is translated into the ratatui buffer:
+  colours → bold / reverse / underline; Unicode → DEC Special Graphics where
+  possible, ASCII fallback otherwise, `?` as a last resort.
+- Fullscreen toggle resizes the PTY (`SIGWINCH`) so apps redraw at the new size.
+- `prefix [` enters scrollback over the virtual terminal's history.
+
+### MU/TH/UR tab
+
+- Configurable `base_url`, `model`, `api_key`; streaming responses.
+- **Teletype reveal**: tokens go into a buffer; a fixed-rate (~40–60 cps,
+  configurable) reveal drains it, decoupled from token arrival. Any key skips
+  the reveal.
+- Output **uppercased** (configurable). User input echoed uppercase.
+- Prompt `READY FOR INQUIRY`; single-line horizontally-scrolling input;
+  PgUp/PgDn scrollback.
+- System prompt: terse MU/TH/UR 6000 persona; the server is "the ship";
+  plain text only. A light post-processor strips residual markdown.
+- Memory: one persistent conversation log on disk (JSONL), oldest turns
+  trimmed/summarised to fit the context window; a purge command clears it.
+  Format leaves room for multiple sessions later.
+- Errors (endpoint down etc.) shown in-character (`UNABLE TO COMPLY — …`).
+
+### Tools & safety
+
+The tool-calling loop is designed in from day one even before tools exist.
+
+- **Tier 1 — read-only, auto-run**: metrics snapshot, `systemctl status`,
+  journal tail, disk usage, etc.
+- **Tier 2 — named actions from a config allowlist**, executed only after an
+  on-screen `OVERRIDE REQUIRED — CONFIRM Y/N`
+  (e.g. `restart_service(name ∈ allowlist)`).
+- **Never** arbitrary shell execution.
+- Every tool call written to the audit log.
+
+### Utility tab
+
+Refresh every 2 s, diffs only, game-style boxed panels:
+
+- CPU overall gauge + per-core mini-bars; rolling CPU/network sparklines
+  (VT100-safe glyphs).
+- Memory / swap gauges; per-mount disk usage gauges.
+- Load average, uptime.
+- Failed systemd units (reverse video).
+- Top 5 processes.
+- Containers, only if a runtime (Docker/Podman) is present.
+
+### Metrics
+
+`MetricsSource` trait consumed by both the Utility tab and MU/TH/UR tools.
+v1: `LocalSource` (`sysinfo`, `/proc`, `systemctl`). Later: `InfluxSource`
+for multi-server monitoring — tools then get a "which host" parameter.
+
+## Testing & development
+
+- **Stdio link** — runs in any desktop terminal for development.
+- **`--strict`** — every byte written is checked against the dialect
+  allowlist; violations are logged (or panic in tests).
+- **Golden tests** — render a screen state and snapshot the exact bytes sent.
+- **`muthur testcard`** on the real WY-60 — confirms which attributes and
+  charset features actually work, and records key sequences.
+
+## Milestones
+
+| | Scope |
+|---|---|
+| **M0** | `link`, `config` skeleton, `muthur testcard` (attribute probe + key echo). Validates hardware first. |
+| **M1** | `dialect`, `Wy60Backend`, chrome, tab switching, `--strict`, golden tests. |
+| **M2** | Shell tab: PTY, `vt100` translation, scrollback, fullscreen/SIGWINCH, passthrough. |
+| **M3** | Utility tab + `LocalSource`. |
+| **M4** | MU/TH/UR chat: streaming, persona, reveal, persistent log. |
+| **M5** | Tools: tier 1, then tier 2 with confirmation. |
+| **M6** | Splash, deploy tooling (udev rule, getty override, fish snippet, `make deploy`), polish. |
+
+## Deferred (post-v1)
+
+- Native `Wyse60Dialect`.
+- Hardware (RTS/CTS) flow control.
+- Proactive alerts from MU/TH/UR (event bus already accommodates them).
+- InfluxDB metrics source / multi-server.
+- Multiple chat sessions ("folders").
+- Idle lock (v1 relies on the terminal's own screen blanking).

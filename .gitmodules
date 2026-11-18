@@ -1,0 +1,3 @@
+[submodule "Inspiration/alien-console"]
+	path = Inspiration/alien-console
+	url = https://github.com/brenns10/alien-console
