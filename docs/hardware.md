@@ -17,7 +17,10 @@ All 15 probes render correctly: normal, bold, underline, blink, reverse and
 their combinations, dim, DEC Special Graphics / line drawing, double-width,
 double-height, scroll regions (DECSTBM), and full 43-row addressing.
 
-Autowrap: writing past column 80 wraps to the next line. Leave autowrap
+Autowrap: writing past column 80 wraps to the next line. The wrap is
+**deferred** (VT100 pending-wrap): writing the bottom-right cell (row 43,
+column 80) does not scroll — testcard item 16, confirmed 2026-11-18. The
+renderer may write every cell. Leave autowrap
 **on** — the `vt100` terminfo entry assumes it, and passthrough mode depends
 on the terminal matching terminfo.
 
@@ -61,7 +64,3 @@ on the terminal matching terminfo.
   queueing), so it can only be confirmed on the real port: the run loop logs the
   queue depth at debug level in `~/.local/state/muthur/muthur.log` when run
   with `MUTHUR_DEBUG=1`.
-- **Does writing the bottom-right cell scroll the screen?** The renderer
-  writes row 43, column 80 (fullscreen borders, the prefix strip) and relies on
-  VT100 deferred wrap. Testcard item 16 checks this; if the card shifts up a
-  line, the backend must never write that cell.
