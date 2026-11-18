@@ -1,6 +1,8 @@
 //! System metrics: the data model shared by the Utility tab and (M5) the
 //! MU/TH/UR tools, plus formatting helpers.
 
+pub mod probes;
+
 use std::collections::VecDeque;
 
 /// One reading of the whole system.
