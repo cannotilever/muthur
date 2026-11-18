@@ -7,16 +7,17 @@ use ratatui::widgets::Block;
 const LEVELS: [char; 5] = ['⎽', '⎼', '─', '⎻', '⎺'];
 const MIN_BAR: usize = 4;
 
-/// `LABEL[█████     ]  50% DETAIL`, exactly `width` wide when there is room.
+/// `LABEL [█████     ]  50% DETAIL`, exactly `width` wide when there is room.
+/// Pad `detail` to a common width to line up several gauges.
 pub fn gauge_line(label: &str, pct: f32, detail: &str, width: u16) -> Line<'static> {
     let pct = if pct.is_finite() { pct.clamp(0.0, 100.0) } else { 0.0 };
     let tail = if detail.is_empty() { String::new() } else { format!(" {detail}") };
-    // label(5) + "[]" + " 100%" + tail
-    let fixed = 5 + 2 + 5 + tail.chars().count();
+    // label(5) + " [" + "]" + " 100%" + tail
+    let fixed = 5 + 3 + 5 + tail.chars().count();
     let bar = (width as usize).saturating_sub(fixed).max(MIN_BAR);
     let filled = (bar as f32 * pct / 100.0).floor() as usize;
     let s = format!(
-        "{label:<5.5}[{}{}] {:>3}%{tail}",
+        "{label:<5.5} [{}{}] {:>3}%{tail}",
         "█".repeat(filled),
         " ".repeat(bar - filled),
         pct.round() as u32
