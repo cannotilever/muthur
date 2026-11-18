@@ -1,0 +1,203 @@
+//! The terminal link: a raw-mode fd (serial device or stdio) with guaranteed
+//! termios restore on drop and on panic.
+
+pub use crate::config::FlowControl;
+use crate::config::LinkConfig;
+use anyhow::{Context, bail};
+use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+use nix::sys::termios::{
+    BaudRate, ControlFlags, InputFlags, LocalFlags, OutputFlags, SetArg, SpecialCharacterIndices,
+    Termios, cfsetspeed, tcgetattr, tcsetattr,
+};
+use std::fs::File;
+use std::os::unix::fs::OpenOptionsExt;
+use std::io::{self, Read, Write};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
+use std::sync::{Mutex, Once};
+use std::time::Duration;
+
+/// Map a numeric baud rate to a termios `BaudRate`.
+pub fn baud_rate(baud: u32) -> anyhow::Result<BaudRate> {
+    Ok(match baud {
+        1200 => BaudRate::B1200,
+        2400 => BaudRate::B2400,
+        4800 => BaudRate::B4800,
+        9600 => BaudRate::B9600,
+        19200 => BaudRate::B19200,
+        38400 => BaudRate::B38400,
+        57600 => BaudRate::B57600,
+        115200 => BaudRate::B115200,
+        other => bail!("unsupported baud rate {other}"),
+    })
+}
+
+/// Raw-mode transform of `t`, preserving the requested flow control.
+pub fn make_raw(t: &Termios, flow: FlowControl) -> Termios {
+    let mut r = t.clone();
+    r.local_flags.remove(
+        LocalFlags::ICANON | LocalFlags::ECHO | LocalFlags::ECHONL | LocalFlags::ISIG | LocalFlags::IEXTEN,
+    );
+    r.input_flags.remove(
+        InputFlags::ICRNL
+            | InputFlags::INLCR
+            | InputFlags::IGNCR
+            | InputFlags::ISTRIP
+            | InputFlags::BRKINT
+            | InputFlags::PARMRK,
+    );
+    r.output_flags.remove(OutputFlags::OPOST);
+    r.control_flags.remove(ControlFlags::CSIZE | ControlFlags::PARENB);
+    r.control_flags.insert(ControlFlags::CS8);
+    r.control_chars[SpecialCharacterIndices::VMIN as usize] = 1;
+    r.control_chars[SpecialCharacterIndices::VTIME as usize] = 0;
+    let soft = InputFlags::IXON | InputFlags::IXOFF;
+    match flow {
+        FlowControl::XonXoff => {
+            r.input_flags.insert(soft);
+            r.control_flags.remove(ControlFlags::CRTSCTS);
+        }
+        FlowControl::RtsCts => {
+            r.input_flags.remove(soft);
+            r.control_flags.insert(ControlFlags::CRTSCTS);
+        }
+        FlowControl::None => {
+            r.input_flags.remove(soft);
+            r.control_flags.remove(ControlFlags::CRTSCTS);
+        }
+    }
+    r
+}
+
+/// Read with a timeout. `Ok(0)` means the timeout elapsed with no data.
+pub trait ReadTimeout {
+    fn read_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize>;
+}
+
+/// The fd + original termios of the live link, for the panic hook.
+static RESTORE: Mutex<Option<(RawFd, Termios)>> = Mutex::new(None);
+
+/// Install a panic hook that restores the live link's termios and resets
+/// attributes/charset before the default hook prints the panic message.
+pub fn install_panic_hook() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if let Ok(guard) = RESTORE.lock()
+                && let Some((fd, t)) = guard.as_ref()
+            {
+                // SAFETY: the fd is registered only while its Link is alive.
+                let bfd = unsafe { BorrowedFd::borrow_raw(*fd) };
+                let _ = tcsetattr(bfd, SetArg::TCSADRAIN, t);
+                let _ = nix::unistd::write(bfd, b"\x1b[0m\x1b(B\r\n");
+            }
+            prev(info);
+        }));
+    });
+}
+
+/// A terminal in raw mode. Restores the original termios on drop.
+pub struct Link {
+    file: File,
+    original: Termios,
+}
+
+impl Link {
+    /// Open the configured serial device and set baud + flow control.
+    pub fn open_device(cfg: &LinkConfig) -> anyhow::Result<Link> {
+        let path = cfg.device.as_ref().context("no serial device configured")?;
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(nix::libc::O_NOCTTY)
+            .open(path)
+            .with_context(|| format!("opening {}", path.display()))?;
+        Link::from_fd(OwnedFd::from(f), Some(cfg.baud), cfg.flow)
+    }
+
+    /// Use the controlling terminal on stdin. Baud is left as agetty set it.
+    pub fn stdio(flow: FlowControl) -> anyhow::Result<Link> {
+        let fd = io::stdin().as_fd().try_clone_to_owned().context("dup stdin")?;
+        Link::from_fd(fd, None, flow)
+    }
+
+    pub fn from_fd(fd: OwnedFd, baud: Option<u32>, flow: FlowControl) -> anyhow::Result<Link> {
+        let original = tcgetattr(&fd).context("not a terminal")?;
+        let mut raw = make_raw(&original, flow);
+        if let Some(b) = baud {
+            cfsetspeed(&mut raw, baud_rate(b)?).context("setting baud")?;
+        }
+        tcsetattr(&fd, SetArg::TCSADRAIN, &raw).context("setting raw mode")?;
+        let file = File::from(fd);
+        *RESTORE.lock().unwrap_or_else(|e| e.into_inner()) = Some((file.as_raw_fd(), original.clone()));
+        Ok(Link { file, original })
+    }
+}
+
+impl Drop for Link {
+    fn drop(&mut self) {
+        let mut guard = RESTORE.lock().unwrap_or_else(|e| e.into_inner());
+        if matches!(guard.as_ref(), Some((fd, _)) if *fd == self.file.as_raw_fd()) {
+            *guard = None;
+        }
+        let _ = self.file.flush();
+        let _ = tcsetattr(&self.file, SetArg::TCSADRAIN, &self.original);
+    }
+}
+
+impl Read for Link {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.file.read(buf)
+    }
+}
+
+impl Write for Link {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.file.write(buf)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+
+impl ReadTimeout for Link {
+    fn read_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize> {
+        let ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+        let mut fds = [PollFd::new(self.file.as_fd(), PollFlags::POLLIN)];
+        let ready = poll(&mut fds, PollTimeout::try_from(ms).unwrap_or(PollTimeout::MAX))?;
+        if ready == 0 { Ok(0) } else { self.file.read(buf) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nix::sys::termios::{ControlFlags, InputFlags, LocalFlags, OutputFlags, Termios, tcgetattr};
+
+    fn sample_cooked() -> Termios {
+        let pty = nix::pty::openpty(None, None).unwrap();
+        tcgetattr(&pty.slave).unwrap()
+    }
+
+    #[test]
+    fn xonxoff_raw_keeps_software_flow() {
+        let t = make_raw(&sample_cooked(), FlowControl::XonXoff);
+        assert!(t.input_flags.contains(InputFlags::IXON | InputFlags::IXOFF));
+        assert!(!t.control_flags.contains(ControlFlags::CRTSCTS));
+        assert!(!t.local_flags.intersects(LocalFlags::ICANON | LocalFlags::ECHO | LocalFlags::ISIG));
+        assert!(!t.output_flags.contains(OutputFlags::OPOST));
+    }
+
+    #[test]
+    fn rtscts_raw_disables_software_flow() {
+        let t = make_raw(&sample_cooked(), FlowControl::RtsCts);
+        assert!(!t.input_flags.intersects(InputFlags::IXON | InputFlags::IXOFF));
+        assert!(t.control_flags.contains(ControlFlags::CRTSCTS));
+    }
+
+    #[test]
+    fn unsupported_baud_is_error() {
+        assert!(baud_rate(38400).is_ok());
+        assert!(baud_rate(38401).unwrap_err().to_string().contains("38401"));
+    }
+}
