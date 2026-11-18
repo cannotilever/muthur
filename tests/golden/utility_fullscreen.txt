@@ -1,0 +1,43 @@
+l SYSTEM - NOSTROMO qqqqqqqqqqqqqqqqqqqkl DISKS qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqk
+xUPTIME 3D 02:05   LOAD 0.42 0.38 0.30 xx/     [          ]  70% 700.0G/1000.0Gx
+mqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqjx/BOOT [          ]  50%    512.0M/1.0Gx
+l CPU qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqkx/TANK [          ]  55%      1.1T/2.0Tx
+xALL   [                         ]  47%xmqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqj
+xC00   [     ]   0% C01   [     ]   6% xl PROCESSES qqqqqqqqqqqqqqqqqqqqqqqqqqqk
+xC02   [     ]  12% C03   [     ]  18% xxPID     NAME              CPU%     MEMx
+xC04   [     ]  24% C05   [     ]  30% xx1382    RESTIC           121.5  500.0Mx
+xC06   [     ]  36% C07   [     ]  42% xx77      FISH               1.0    8.0Mx
+xC08   [     ]  48% C09   [     ]  54% xmqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqj
+xC10   [     ]  60% C11   [     ]  66% xl SERVICES qqqqqqqqqqqqqqqqqqqqqqqqqqqqk
+xC12   [     ]  72% C13   [     ]  78% xxFAILED AUTORANDR                      x
+xC14   [     ]  84% C15   [     ]  90% xxCONTAINERS                            x
+x                  srrqqpposrrqqpposrrqxxWEB UP                                x
+mqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqjx                                      x
+l MEMORY qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqkx                                      x
+xMEM   [             ]  38% 12.0G/32.0Gxx                                      x
+xSWAP  [             ]  13%   1.0G/8.0Gxx                                      x
+mqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqjx                                      x
+l NETWORK qqqqqqqqqqqqqqqqqqqqqqqqqqqqqkx                                      x
+xRX 7.4K/S   TX 6.0K/S                 xx                                      x
+x                  qqqqqqqppppppppoooooxx                                      x
+x                                      xx                                      x
+x                                      xx                                      x
+x                                      xx                                      x
+x                                      xx                                      x
+x                                      xx                                      x
+x                                      xx                                      x
+x                                      xx                                      x
+x                                      xx                                      x
+x                                      xx                                      x
+x                                      xx                                      x
+x                                      xx                                      x
+x                                      xx                                      x
+x                                      xx                                      x
+x                                      xx                                      x
+x                                      xx                                      x
+x                                      xx                                      x
+x                                      xx                                      x
+x                                      xx                                      x
+x                                      xx                                      x
+x                                      xx                                      x
+mqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqjmqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqj
