@@ -5,6 +5,7 @@ use nix::unistd::Pid;
 use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -24,13 +25,17 @@ pub trait Runner: Send + Sync {
 
 pub struct SystemRunner;
 
-fn drain<R: Read + Send + 'static>(mut r: R) -> std::thread::JoinHandle<Vec<u8>> {
+fn drain<R: Read + Send + 'static>(mut r: R) -> mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = r.read_to_end(&mut buf);
-        buf
-    })
+        let _ = tx.send(buf);
+    });
+    rx
 }
+
+const GRACE: Duration = Duration::from_millis(200);
 
 impl Runner for SystemRunner {
     fn run(&self, argv: &[String], timeout: Duration) -> RunOutput {
@@ -39,6 +44,7 @@ impl Runner for SystemRunner {
         };
         let mut child = match Command::new(cmd)
             .args(args)
+            .env("LC_ALL", "C")
             .process_group(0)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -58,30 +64,31 @@ impl Runner for SystemRunner {
             let _ = child.wait();
             return RunOutput::NotFound;
         };
-        let (out_t, err_t) = (drain(out), drain(err));
+        let (out_rx, err_rx) = (drain(out), drain(err));
         let deadline = Instant::now() + timeout;
+        let pgid = Pid::from_raw(child.id() as i32);
         let status = loop {
             match child.try_wait() {
                 Ok(Some(s)) => break Some(s),
-                Ok(None) if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(20))
-                }
+                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
                 _ => {
-                    let _ = killpg(Pid::from_raw(child.id() as i32), Signal::SIGKILL);
+                    let _ = killpg(pgid, Signal::SIGKILL);
                     let _ = child.wait();
                     break None;
                 }
             }
         };
-        let stdout = String::from_utf8_lossy(&out_t.join().unwrap_or_default()).into_owned();
-        let stderr = String::from_utf8_lossy(&err_t.join().unwrap_or_default()).into_owned();
+        // Stragglers in the group (grandchildren holding the pipes) die too.
+        let _ = killpg(pgid, Signal::SIGKILL);
+        let wait = deadline.saturating_duration_since(Instant::now()) + GRACE;
+        let end = Instant::now() + wait;
+        let collect = |rx: &mpsc::Receiver<Vec<u8>>| rx.recv_timeout(end.saturating_duration_since(Instant::now()));
+        let (o, e) = (collect(&out_rx), collect(&err_rx));
         match status {
-            // Death by signal has no exit code; report -1.
-            Some(s) => RunOutput::Exited {
-                code: s.code().unwrap_or(-1),
-                stdout,
-                stderr,
-            },
+            Some(s) => {
+                let text = |r: Result<Vec<u8>, _>| String::from_utf8_lossy(&r.unwrap_or_default()).into_owned();
+                RunOutput::Exited { code: s.code().unwrap_or(-1), stdout: text(o), stderr: text(e) }
+            }
             None => RunOutput::TimedOut,
         }
     }
@@ -122,5 +129,20 @@ mod tests {
             RunOutput::TimedOut
         );
         assert!(t.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn grandchild_holding_pipe_does_not_block() {
+        let t = Instant::now();
+        let _ = SystemRunner.run(&v(&["sh", "-c", "sleep 5 & echo hi"]), Duration::from_millis(300));
+        assert!(t.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn locale_is_forced_to_c() {
+        assert_eq!(
+            SystemRunner.run(&v(&["sh", "-c", "echo $LC_ALL"]), Duration::from_secs(2)),
+            RunOutput::Exited { code: 0, stdout: "C\n".into(), stderr: String::new() }
+        );
     }
 }

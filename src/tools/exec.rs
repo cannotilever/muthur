@@ -144,7 +144,7 @@ pub fn execute(inv: &Invocation, ctx: &ExecCtx) -> ToolOutcome {
             if tier2 {
                 let lower = stderr.to_lowercase();
                 if REFUSALS.iter().any(|p| lower.contains(p)) {
-                    let first = stderr.lines().next().unwrap_or("").trim();
+                    let first = stderr.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
                     return outcome(
                         format!("INSUFFICIENT CLEARANCE: {first}"),
                         true,
@@ -372,6 +372,12 @@ mod tests {
             o.content,
             "INSUFFICIENT CLEARANCE: sudo: a password is required"
         );
+    }
+
+    #[test]
+    fn refusal_uses_first_non_empty_line() {
+        let (_fr, c) = ctx(exited(1, "", "\n  \nsudo: not allowed\nmore"));
+        assert_eq!(execute(&restart(), &c).content, "INSUFFICIENT CLEARANCE: sudo: not allowed");
     }
 
     #[test]
