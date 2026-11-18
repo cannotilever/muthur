@@ -60,9 +60,9 @@ pub fn card(cols: u16, rows: u16) -> Vec<u8> {
 
     // 11: a box drawn with line-drawing characters.
     sc.label(row, 11, "LINE-DRAWN BOX");
-    sc.s("\x1b(0lqqqqqqqqqqk\x1b(B");
+    sc.s("\x1b(0lqqqqqqqqqqqk\x1b(B");
     sc.at(row + 1, SAMPLE_COL).s("\x1b(0x\x1b(B  MU/TH/UR \x1b(0x\x1b(B");
-    sc.at(row + 2, SAMPLE_COL).s("\x1b(0mqqqqqqqqqqj\x1b(B");
+    sc.at(row + 2, SAMPLE_COL).s("\x1b(0mqqqqqqqqqqqj\x1b(B");
     row += 3;
 
     // 12: double-width line (the line attribute applies to the whole row).
