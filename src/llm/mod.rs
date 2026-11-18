@@ -1,4 +1,5 @@
 //! LLM chat core types.
+pub mod anthropic;
 pub mod sse;
 
 #[derive(Clone, Debug, PartialEq)]
