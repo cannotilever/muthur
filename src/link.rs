@@ -169,19 +169,51 @@ impl Write for Link {
     }
 }
 
+/// Poll-then-read shared by `Link` and `LinkReader`. Hangup/EOF is an error.
+fn read_file_timeout(file: &mut File, buf: &mut [u8], timeout: Duration) -> io::Result<usize> {
+    let ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+    let mut fds = [PollFd::new(file.as_fd(), PollFlags::POLLIN)];
+    let ready = poll(&mut fds, PollTimeout::try_from(ms).unwrap_or(PollTimeout::MAX))?;
+    if ready == 0 {
+        return Ok(0);
+    }
+    // poll said readable (or hung up) and VMIN=1, so 0 bytes means EOF/hangup.
+    match file.read(buf)? {
+        0 => Err(io::Error::new(io::ErrorKind::UnexpectedEof, "terminal hung up")),
+        n => Ok(n),
+    }
+}
+
 impl ReadTimeout for Link {
     fn read_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize> {
-        let ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
-        let mut fds = [PollFd::new(self.file.as_fd(), PollFlags::POLLIN)];
-        let ready = poll(&mut fds, PollTimeout::try_from(ms).unwrap_or(PollTimeout::MAX))?;
-        if ready == 0 {
-            return Ok(0);
-        }
-        // poll said readable (or hung up) and VMIN=1, so 0 bytes means EOF/hangup.
-        match self.file.read(buf)? {
-            0 => Err(io::Error::new(io::ErrorKind::UnexpectedEof, "terminal hung up")),
-            n => Ok(n),
-        }
+        read_file_timeout(&mut self.file, buf, timeout)
+    }
+}
+
+/// An independent read handle on the link (for the input thread).
+pub struct LinkReader {
+    file: File,
+}
+
+impl ReadTimeout for LinkReader {
+    fn read_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize> {
+        read_file_timeout(&mut self.file, buf, timeout)
+    }
+}
+
+nix::ioctl_read_bad!(tiocoutq, nix::libc::TIOCOUTQ, nix::libc::c_int);
+
+impl Link {
+    pub fn reader(&self) -> io::Result<LinkReader> {
+        Ok(LinkReader { file: self.file.try_clone()? })
+    }
+
+    /// Bytes written but not yet transmitted (kernel output queue).
+    pub fn output_queue(&self) -> io::Result<usize> {
+        let mut n: nix::libc::c_int = 0;
+        // SAFETY: TIOCOUTQ writes one c_int through the pointer.
+        unsafe { tiocoutq(self.file.as_raw_fd(), &mut n) }?;
+        Ok(n.max(0) as usize)
     }
 }
 

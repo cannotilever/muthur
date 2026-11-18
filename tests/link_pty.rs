@@ -74,3 +74,23 @@ fn stale_input_is_discarded_on_open() {
     let mut buf = [0u8; 8];
     assert_eq!(l.read_timeout(&mut buf, Duration::from_millis(20)).unwrap(), 0);
 }
+
+#[test]
+fn reader_sees_input() {
+    let pty = nix::pty::openpty(None, None).unwrap();
+    let l = Link::from_fd(pty.slave, None, FlowControl::XonXoff).unwrap();
+    let mut r = l.reader().unwrap();
+    nix::unistd::write(&pty.master, b"k").unwrap();
+    let mut b = [0u8; 4];
+    assert_eq!(r.read_timeout(&mut b, Duration::from_millis(200)).unwrap(), 1);
+}
+
+#[test]
+fn output_queue_is_readable_and_idle_is_zero() {
+    // A pty has no driver write buffer (writes block while XOFF'd instead of
+    // queueing), so a non-zero queue can only be observed on the real port.
+    let pty = nix::pty::openpty(None, None).unwrap();
+    let l = Link::from_fd(pty.slave, None, FlowControl::XonXoff).unwrap();
+    assert_eq!(l.output_queue().unwrap(), 0);
+    drop(pty.master);
+}

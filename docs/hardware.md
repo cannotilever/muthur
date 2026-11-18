@@ -52,3 +52,11 @@ on the terminal matching terminfo.
   (Delete) and Shift-F15/F16 → `ESC[5~`/`ESC[6~` (they already are), so
   apps get standard codes.
 - **Login shell:** `stty rows 43 cols 80 erase ^H` on the serial tty.
+
+## Open questions
+
+- **Does `TIOCOUTQ` report queued bytes on the FTDI port?** The redraw
+  scheduler waits for the kernel output queue to drain below 256 bytes before
+  drawing. On a pty this is always 0 (writes block while XOFF'd instead of
+  queueing), so it can only be confirmed on the real port: the run loop logs the
+  queue depth at debug level in `~/.local/state/muthur/muthur.log`.
