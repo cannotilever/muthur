@@ -78,11 +78,30 @@ pub fn map_glyph(symbol: &str) -> Glyph {
         '⎻' => b'p',
         '⎼' => b'r',
         '⎽' => b's',
-        '█' | '▇' | '▆' | '▅' | '▌' | '▐' | '▀' | '▄' => return Glyph::ReverseSpace,
+        '█' | '▉' | '▊' | '▋' | '▇' | '▆' | '▅' | '▌' | '▐' | '▀' | '▄' => return Glyph::ReverseSpace,
         '▁' | '▂' | '▃' | '▏' | '▎' | '▍' => return Glyph::Ascii(b' '),
-        _ => return Glyph::Ascii(b'?'),
+        _ => return transliterate(c),
     };
     Glyph::Graphics(g)
+}
+
+/// ASCII stand-in for a character the terminal cannot show.
+fn transliterate(c: char) -> Glyph {
+    // Prompt glyphs that deunicode renders poorly.
+    let explicit = match c {
+        '❯' | '›' | '➜' | '→' | '»' | '▶' => Some(b'>'),
+        '❮' | '‹' | '←' | '«' | '◀' => Some(b'<'),
+        '✓' | '✔' => Some(b'v'),
+        '✗' | '✘' => Some(b'x'),
+        _ => None,
+    };
+    if let Some(b) = explicit {
+        return Glyph::Ascii(b);
+    }
+    match deunicode::deunicode_char(c).and_then(|s| s.bytes().next()) {
+        Some(b) if (0x21..=0x7e).contains(&b) => Glyph::Ascii(b),
+        _ => Glyph::Ascii(b'?'),
+    }
 }
 
 /// An output language. Rows/cols are 0-based in, 1-based on the wire.
@@ -96,6 +115,10 @@ pub trait Dialect {
     fn clear(&self, out: &mut Vec<u8>);
     fn set_scroll_region(&self, out: &mut Vec<u8>, top: u16, bottom: u16);
     fn reset_scroll_region(&self, out: &mut Vec<u8>);
+    /// Line feed: at the bottom margin, scrolls the region up one line.
+    fn index(&self, out: &mut Vec<u8>);
+    /// Reverse index: at the top margin, scrolls the region down one line.
+    fn reverse_index(&self, out: &mut Vec<u8>);
     /// Is this complete escape sequence safe to send?
     fn is_allowed(&self, seq: &[u8]) -> bool;
 }
@@ -141,8 +164,15 @@ impl Dialect for Vt100Dialect {
     fn reset_scroll_region(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(b"\x1b[r");
     }
+    fn index(&self, out: &mut Vec<u8>) {
+        out.push(b'\n');
+    }
+    fn reverse_index(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(b"\x1bM");
+    }
     fn is_allowed(&self, seq: &[u8]) -> bool {
         match seq {
+            [0x1b, b'M'] => true,
             [0x1b, b'(', b'0' | b'B'] => true,
             [0x1b, b'#', b'3' | b'4' | b'5' | b'6'] => true,
             [0x1b, b'[', body @ .., fin] => {
@@ -179,9 +209,27 @@ mod tests {
     #[test]
     fn blocks_and_unknowns() {
         assert_eq!(map_glyph("█"), Glyph::ReverseSpace);
-        assert_eq!(map_glyph("é"), Glyph::Ascii(b'?'));
+        assert_eq!(map_glyph("\u{E000}"), Glyph::Ascii(b'?'));
         assert_eq!(map_glyph(""), Glyph::Ascii(b' '));
         assert_eq!(map_glyph("A"), Glyph::Ascii(b'A'));
+    }
+
+    #[test]
+    fn transliterates_common_unicode() {
+        assert_eq!(map_glyph("é"), Glyph::Ascii(b'e'));
+        assert_eq!(map_glyph("…"), Glyph::Ascii(b'.'));
+        assert_eq!(map_glyph("—"), Glyph::Ascii(b'-'));
+        assert_eq!(map_glyph("❯"), Glyph::Ascii(b'>'));
+        assert_eq!(map_glyph("中"), Glyph::Ascii(b'Z'));
+        assert_eq!(map_glyph("▉"), Glyph::ReverseSpace);
+    }
+
+    #[test]
+    fn reverse_index_allowed() {
+        let mut o = vec![];
+        Vt100Dialect.reverse_index(&mut o);
+        assert_eq!(o, b"\x1bM");
+        assert!(Vt100Dialect.is_allowed(b"\x1bM"));
     }
 
     #[test]

@@ -286,7 +286,7 @@ mod tests {
     #[test]
     fn non_ascii_becomes_question_mark() {
         let mut t = term();
-        put(&mut t, 0, 0, "é", Style::new());
+        put(&mut t, 0, 0, "\u{E000}", Style::new());
         let bytes = take(&mut t);
         assert!(bytes.contains(&b'?'));
         assert!(bytes.iter().all(|&b| b < 0x80));
@@ -317,7 +317,7 @@ mod tests {
         put(&mut t, 0, 0, "ABCD", Style::new());
         t.draw(|f| f.render_widget(Paragraph::new("中CD"), Rect::new(0, 0, 4, 1))).unwrap();
         let p = screen(&take(&mut t));
-        assert_eq!(text_at(&p, 0, 0, 4), "? CD");
+        assert_eq!(text_at(&p, 0, 0, 4), "Z CD"); // 中 transliterates to "Zhong"
     }
 
     #[test]
