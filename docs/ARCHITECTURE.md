@@ -51,6 +51,7 @@ serial-getty@wy60 (38400, XON/XOFF, TERM=vt100)
   `make deploy` copies it to the server. TLS via rustls (no OpenSSL).
 - Config: `~/.config/muthur/config.toml`. Contains the LLM API key; MUTHUR
   refuses to start if the file is group/world readable (must be `0600`).
+  Annotated example with every key and its default: `docs/config.example.toml`.
 - Logs: `~/.local/state/muthur/muthur.log` (tracing, rotated) plus a separate
   LLM tool-call audit log.
 

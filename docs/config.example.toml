@@ -1,0 +1,103 @@
+# MUTHUR example configuration
+#
+# Copy to ~/.config/muthur/config.toml and lock it down:
+#     install -Dm600 docs/config.example.toml ~/.config/muthur/config.toml
+# MUTHUR refuses to start if the file is readable by group or others, because
+# it holds the LLM API key.
+#
+# Every key is optional. The values shown are the defaults unless marked
+# otherwise.
+
+# ── Serial link ──────────────────────────────────────────────────────────────
+[link]
+# Serial device. Leave unset to use stdio (when launched by agetty on /dev/wy60).
+# device = "/dev/wy60"
+baud = 38400
+# "xon-xoff" | "rts-cts" | "none". RTS/CTS does not work with the null-modem
+# cabling, so keep XON/XOFF.
+flow = "xon-xoff"
+
+# ── Terminal geometry ────────────────────────────────────────────────────────
+[terminal]
+# WY-60 with its status line disabled. The chrome needs at least 80x43.
+cols = 80
+rows = 43
+
+# ── Title bar ────────────────────────────────────────────────────────────────
+[chrome]
+# Unset → "USCSS <HOSTNAME>".
+# ship_name = "USCSS NOSTROMO"
+# Added to the real year for the in-universe date (2026 + 111 = 2137).
+year_offset = 111
+
+# ── SHELL folder (F3) ────────────────────────────────────────────────────────
+[shell]
+command = "fish"
+args = []
+# Lines of history kept for ^] [
+scrollback = 1000
+
+# ── UTILITY folder (F1) ──────────────────────────────────────────────────────
+[utility]
+# Refresh interval (minimum 1).
+interval_secs = 2
+# "auto" (docker, then podman) | "docker" | "podman" | "none"
+containers = "auto"
+# Filesystem types left out of the DISKS panel. Network and FUSE filesystems
+# are excluded so a hung mount can't freeze the collector.
+exclude_fs = [
+    "tmpfs", "devtmpfs", "efivarfs", "overlay", "squashfs", "proc", "sysfs",
+    "cgroup2", "ramfs", "autofs", "fuse", "9p", "ceph", "glusterfs", "nfs",
+    "nfs4", "cifs", "smb3",
+]
+
+# ── MU/TH/UR folder (F2) ─────────────────────────────────────────────────────
+[muthur]
+# "anthropic" (native Messages API) | "openai" (OpenAI-compatible, e.g. vLLM)
+provider = "anthropic"
+# Anthropic default shown. Required for openai, e.g. "http://10.0.0.5:8000".
+base_url = "https://api.anthropic.com"
+# Anthropic default shown. Required for openai: the model name vLLM serves.
+model = "claude-sonnet-5-5"
+# Required for anthropic (without one, inquiries get "NO ACCESS CODE").
+# Optional for openai: sent as "Authorization: Bearer <key>" when set.
+# NOT A DEFAULT: replace with your key.
+api_key = "sk-ant-REPLACE-ME"
+# Longest reply, in tokens.
+max_tokens = 4096
+# Anthropic only: "low" | "medium" | "high" | "xhigh" | "max". Terse chat
+# rarely needs more than "low".
+effort = "low"
+# Anthropic only: let the server retry a refused request on another model.
+fallbacks = true
+# Anthropic only: prompt-cache lifetime, "5m" or "1h". "1h" costs more to write
+# but survives long pauses at the terminal.
+cache_ttl = "5m"
+# Budget for the conversation sent to the model, estimated at characters / 4.
+# When exceeded, the oldest exchanges are dropped down to half the budget; the
+# full log stays on disk. For vLLM, set this to about 0.75 × max_model_len.
+context_tokens = 200000
+# Teletype reveal speed, characters per second.
+reveal_cps = 50
+# Uppercase both MU/TH/UR's replies and your input.
+uppercase = true
+# Replaces the built-in MU/TH/UR 6000 persona. "{SHIP}" is replaced by the ship
+# name. Changing this (or model/provider) clears saved thinking once.
+# system_prompt = """
+# You are MU/TH/UR 6000, the mainframe computer of the {SHIP}. ...
+# """
+
+# Local vLLM instead of Anthropic: replace the [muthur] keys above with e.g.
+#   provider = "openai"
+#   base_url = "http://10.0.0.5:8000"
+#   model = "Qwen/Qwen3-32B"
+#   context_tokens = 24000     # vLLM started with --max-model-len 32768
+#   (effort, fallbacks and cache_ttl are ignored for openai)
+
+# ── Keymap overrides ─────────────────────────────────────────────────────────
+# Key name → byte sequence the terminal sends. The defaults are the WY-60
+# measurements in docs/hardware.md; only list keys that differ. Names include
+# F1–F16, SHIFT-F1–SHIFT-F16, PAGEUP, PAGEDOWN, UP, DOWN, LEFT, RIGHT, HOME,
+# APP-UP/DOWN/LEFT/RIGHT, APP-ENTER, PF1, PF3, DELETECHAR, INSERT.
+[keys]
+# PAGEUP = "\u001b[5~"

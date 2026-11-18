@@ -241,6 +241,19 @@ mod tests {
         (dir, p)
     }
 
+    /// docs/config.example.toml must parse and, apart from the keys it spells
+    /// out explicitly, show exactly the defaults.
+    #[test]
+    fn example_config_shows_defaults() {
+        let text = include_str!("../docs/config.example.toml");
+        let got: Config = toml::from_str(text).unwrap();
+        let mut want = Config::default();
+        want.muthur.base_url = Some("https://api.anthropic.com".into());
+        want.muthur.model = Some("claude-sonnet-5-5".into());
+        want.muthur.api_key = Some("sk-ant-REPLACE-ME".into());
+        assert_eq!(got, want);
+    }
+
     #[test]
     fn missing_file_yields_defaults() {
         let dir = tempfile::tempdir().unwrap();
