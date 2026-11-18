@@ -2,6 +2,7 @@
 
 use crate::config::{Elevate, ToolsSection};
 use crate::llm::ToolSpec;
+pub mod audit;
 pub mod exec;
 pub mod runner;
 
