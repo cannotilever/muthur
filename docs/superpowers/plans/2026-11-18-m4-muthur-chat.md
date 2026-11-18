@@ -434,7 +434,7 @@ impl Reveal {
 - **Line start.** At the start of a line, buffer characters until the prefix can be decided: up to 4 characters, a newline, or a non-marker character.
   - `#`…`# ` prefixes are dropped.
   - `* `, `+ ` and `- ` become `- `.
-  - A line that starts with ```` ``` ```` toggles `in_fence`, and the whole line (up to its `\n`) is dropped.
+  - A line that starts with ```` ``` ```` toggles `in_fence`, and that fence line (up to its `\n`) is dropped. Lines inside a fence are kept verbatim, with no inline stripping.
 - **Inside a line:**
   - `*` and `` ` `` are dropped. So is `__`, but a single `_` is kept.
   - `[` starts link buffering, up to 200 characters or a newline. `[t](u)` → `t (u)`. If that pattern does not complete, the buffer is flushed as it is.
@@ -448,7 +448,7 @@ impl Reveal {
 
 - [ ] **Step 1: Failing tests**:
 ```rust
-#[test] fn strips_markdown() { assert_eq!(display_text("## Status\n**All** `systems` nominal.\n* one\n```\ncode\n```\nsee [docs](http://x)\n", false), "Status\nAll systems nominal.\n- one\nsee docs (http://x)\n"); }
+#[test] fn strips_markdown() { assert_eq!(display_text("## Status\n**All** `systems` nominal.\n* one\n```\ncode\n```\nsee [docs](http://x)\n", false), "Status\nAll systems nominal.\n- one\ncode\nsee docs (http://x)\n"); }
 #[test] fn markers_split_across_chunks() { let src = "## Head\n**bo"; let rest = "ld** [l](u) x_y __z__\n"; for cut in 0..src.len() { let mut c = Cleaner::new(); let mut out = c.push(&src[..cut]); out += &c.push(&src[cut..]); out += &c.push(rest); out += &c.finish(); assert_eq!(out, "Head\nbold l (u) x_y z\n", "cut {cut}"); } }
 #[test] fn unterminated_link_is_flushed() { assert_eq!(display_text("a [b c", false), "a [b c"); }
 #[test] fn transliterates_punctuation_and_emoji() { assert_eq!(ascii_safe("A \u{2014} \u{201c}B\u{201d} \u{2026}"), "A -- \"B\" ..."); let s = ascii_safe("\u{1f680} \u{65e5}"); assert!(s.chars().all(|c| c == '\n' || (' '..='~').contains(&c))); }
