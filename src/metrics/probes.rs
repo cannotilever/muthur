@@ -2,7 +2,10 @@
 //! and containers. Every probe has a timeout and degrades to `None`.
 
 use super::Container;
+use nix::sys::signal::{Signal, killpg};
+use nix::unistd::Pid;
 use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -11,6 +14,9 @@ use std::time::{Duration, Instant};
 pub fn run_probe(cmd: &str, args: &[&str], timeout: Duration) -> Option<String> {
     let mut child = Command::new(cmd)
         .args(args)
+        // Own process group, so a timeout can kill wrappers' children too
+        // (they'd otherwise hold stdout open and stall the reader).
+        .process_group(0)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -29,7 +35,7 @@ pub fn run_probe(cmd: &str, args: &[&str], timeout: Duration) -> Option<String> 
             Ok(Some(status)) => break Some(status),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
             _ => {
-                let _ = child.kill();
+                let _ = killpg(Pid::from_raw(child.id() as i32), Signal::SIGKILL);
                 let _ = child.wait();
                 break None;
             }
@@ -112,6 +118,13 @@ mod tests {
         let t = Instant::now();
         assert_eq!(run_probe("sleep", &["5"], Duration::from_millis(200)), None);
         assert!(t.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn timeout_kills_grandchildren_holding_stdout() {
+        let t = Instant::now();
+        assert_eq!(run_probe("sh", &["-c", "sleep 5 & wait"], Duration::from_millis(200)), None);
+        assert!(t.elapsed() < Duration::from_secs(1), "{:?}", t.elapsed());
     }
 
     #[test]

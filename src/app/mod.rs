@@ -57,6 +57,10 @@ impl App {
         self.tabs[TabId::Utility.index()].on_metrics(&s);
     }
 
+    pub fn on_metrics_offline(&mut self, why: &str) {
+        self.tabs[TabId::Utility.index()].on_metrics_offline(why);
+    }
+
     pub fn on_pty(&mut self, ev: PtyEvent) {
         if ev == PtyEvent::Exited && self.passthrough {
             self.passthrough = false;

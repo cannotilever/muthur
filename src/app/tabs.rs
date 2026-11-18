@@ -54,6 +54,8 @@ pub trait Tab {
     }
     /// A new metrics snapshot (Utility only).
     fn on_metrics(&mut self, _s: &crate::metrics::Snapshot) {}
+    /// The metrics source is failing (Utility only).
+    fn on_metrics_offline(&mut self, _why: &str) {}
 }
 
 /// Stand-in until a tab's milestone lands.

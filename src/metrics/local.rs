@@ -5,7 +5,7 @@ use super::{Container, Disk, MetricsSource, NetRate, Proc, Snapshot, Usage};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
-use sysinfo::{Disks, Networks, ProcessesToUpdate, System};
+use sysinfo::{Disks, Networks, ProcessesToUpdate, System, ThreadKind};
 
 /// External probes are slow; refresh them at most this often.
 const SLOW_PROBE_EVERY: Duration = Duration::from_secs(10);
@@ -24,9 +24,32 @@ pub enum ContainerRuntime {
 
 /// Filesystem types that are never real storage.
 pub fn default_exclude() -> Vec<String> {
-    ["tmpfs", "devtmpfs", "efivarfs", "overlay", "squashfs", "proc", "sysfs", "cgroup2", "ramfs", "autofs"]
+    // Network and FUSE filesystems are excluded too: a hung mount would block
+    // statvfs and freeze the whole collector.
+    [
+        "tmpfs", "devtmpfs", "efivarfs", "overlay", "squashfs", "proc", "sysfs", "cgroup2", "ramfs", "autofs",
+        "fuse", "9p", "ceph", "glusterfs", "nfs", "nfs4", "cifs", "smb3",
+    ]
         .map(String::from)
         .to_vec()
+}
+
+/// `fs` matches an entry exactly or as a subtype (`fuse` excludes `fuse.sshfs`).
+pub fn is_excluded(fs: &str, exclude: &[String]) -> bool {
+    exclude.iter().any(|x| fs == x || fs.strip_prefix(x.as_str()).is_some_and(|rest| rest.starts_with('.')))
+}
+
+/// Interfaces to count: physical ones only, so traffic isn't counted again on
+/// veth/bridge/bond devices. Falls back to everything but `lo` when no
+/// interface looks physical (containers, unusual VMs).
+pub fn select_interfaces<'a>(names: &[&'a str], physical: impl Fn(&str) -> bool) -> Vec<&'a str> {
+    let named: Vec<&str> = names.iter().copied().filter(|n| *n != "lo").collect();
+    let phys: Vec<&str> = named.iter().copied().filter(|n| physical(n)).collect();
+    if phys.is_empty() { named } else { phys }
+}
+
+fn is_physical(iface: &str) -> bool {
+    std::path::Path::new("/sys/class/net").join(iface).join("device").exists()
 }
 
 pub struct LocalSource {
@@ -81,7 +104,7 @@ impl LocalSource {
             .disks
             .iter()
             .filter(|d| d.total_space() > 0)
-            .filter(|d| !self.exclude_fs.iter().any(|x| d.file_system() == x.as_str()))
+            .filter(|d| !is_excluded(&d.file_system().to_string_lossy(), &self.exclude_fs))
             .filter(|d| seen.insert(d.name().to_owned()))
             .map(|d| Disk {
                 mount: d.mount_point().to_string_lossy().into_owned(),
@@ -92,20 +115,25 @@ impl LocalSource {
         out
     }
 
-    fn top(&self) -> Vec<Proc> {
-        let mut procs: Vec<Proc> = self
-            .sys
+    /// Every process eligible for the top list: whole processes (sysinfo also
+    /// lists each userland thread on Linux) plus kernel threads, which are
+    /// often the real consumers on a NAS (md raid, kswapd, kworker).
+    pub fn candidates(&self) -> Vec<Proc> {
+        self.sys
             .processes()
             .values()
-            // On Linux sysinfo also lists every thread; keep whole processes only.
-            .filter(|p| p.thread_kind().is_none())
+            .filter(|p| p.thread_kind() != Some(ThreadKind::Userland))
             .map(|p| Proc {
                 pid: p.pid().as_u32(),
                 name: p.name().to_string_lossy().to_uppercase().chars().take(15).collect(),
                 cpu: p.cpu_usage(),
                 mem: p.memory(),
             })
-            .collect();
+            .collect()
+    }
+
+    fn top(&self) -> Vec<Proc> {
+        let mut procs = self.candidates();
         procs.sort_by(|a, b| b.cpu.total_cmp(&a.cpu).then(b.mem.cmp(&a.mem)));
         procs.truncate(5);
         procs
@@ -122,20 +150,24 @@ impl MetricsSource for LocalSource {
         let now = Instant::now();
         let secs = self.last_sample.map(|t| now.duration_since(t).as_secs_f64()).filter(|s| *s > 0.0);
         self.last_sample = Some(now);
+        let names: Vec<String> = self.networks.keys().map(|n| n.to_string_lossy().into_owned()).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let counted: HashSet<&str> = select_interfaces(&refs, is_physical).into_iter().collect();
         let (rx, tx) = self
             .networks
             .iter()
-            .filter(|(name, _)| name.as_os_str() != "lo")
+            .filter(|(name, _)| counted.contains(name.to_string_lossy().as_ref()))
             .fold((0u64, 0u64), |(r, t), (_, d)| (r + d.received(), t + d.transmitted()));
         let net = match secs {
             Some(s) => NetRate { rx_bps: (rx as f64 / s) as u64, tx_bps: (tx as f64 / s) as u64 },
             None => NetRate::default(),
         };
         self.refresh_probes();
-        let load = System::load_average()?;
+        // Degrade field by field: a sandbox without /proc/loadavg still gets the rest.
+        let load = System::load_average().unwrap_or_default();
         Ok(Snapshot {
             host: System::host_name().unwrap_or_default().to_uppercase(),
-            uptime_secs: System::uptime()?,
+            uptime_secs: System::uptime().unwrap_or_default(),
             load: [load.one, load.five, load.fifteen],
             cpu_total: self.sys.global_cpu_usage(),
             cpu_cores: self.sys.cpus().iter().map(|c| c.usage()).collect(),
@@ -196,6 +228,31 @@ mod tests {
         for p in &a.top {
             assert!(listed.contains(&p.pid), "{p:?} is a thread, not a process");
         }
+    }
+
+    #[test]
+    fn kernel_threads_are_candidates() {
+        let mut s = LocalSource::new(ContainerRuntime::None, default_exclude()).unwrap();
+        s.snapshot().unwrap();
+        assert!(s.candidates().iter().any(|p| p.pid == 2), "kthreadd (pid 2) missing");
+    }
+
+    #[test]
+    fn physical_interfaces_only() {
+        let names = ["lo", "eth0", "docker0", "veth12", "br-1", "bond0", "enp3s0"];
+        let phys = |n: &str| n == "eth0" || n == "enp3s0";
+        assert_eq!(select_interfaces(&names, phys), vec!["eth0", "enp3s0"]);
+        assert_eq!(select_interfaces(&["lo", "veth0", "tun0"], |_| false), vec!["veth0", "tun0"]);
+    }
+
+    #[test]
+    fn fuse_and_network_filesystems_excluded() {
+        let ex = default_exclude();
+        for fs in ["fuse.sshfs", "fuse.rclone", "fuseblk_not", "9p", "ceph", "glusterfs", "tmpfs"] {
+            let want = fs != "fuseblk_not";
+            assert_eq!(is_excluded(fs, &ex), want, "{fs}");
+        }
+        assert!(!is_excluded("xfs", &ex) && !is_excluded("ext4", &ex));
     }
 
     #[test]

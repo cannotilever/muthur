@@ -125,11 +125,42 @@ fn many_cores_fit() {
 }
 
 #[test]
+fn failed_units_survive_a_big_machine() {
+    let mut t = UtilityTab::new();
+    let top: Vec<Proc> = (0..5).map(|i| Proc { pid: i, name: format!("P{i}"), cpu: 1.0, mem: 1 }).collect();
+    t.on_snapshot(Snapshot { cpu_cores: vec![5.0; 32], top, ..snap() });
+    let s = text(&render(&mut t, WINDOWED));
+    assert!(s.contains("FAILED AUTORANDR"), "{s}");
+}
+
+#[test]
+fn long_mount_names_stay_distinct() {
+    let mut t = UtilityTab::new();
+    let u = Usage { used: G, total: 2 * G };
+    t.on_snapshot(Snapshot {
+        disks: vec![Disk { mount: "/mnt/backup".into(), usage: u }, Disk { mount: "/mnt/media".into(), usage: u }],
+        ..snap()
+    });
+    let s = text(&render(&mut t, WINDOWED));
+    assert!(s.contains("/MNT/BACKUP") && s.contains("/MNT/MEDIA"), "{s}");
+}
+
+#[test]
+fn offline_telemetry_is_shown_and_clears() {
+    let mut t = UtilityTab::new();
+    t.on_offline("PERMISSION DENIED");
+    let s = text(&render(&mut t, WINDOWED));
+    assert!(s.contains("TELEMETRY OFFLINE") && s.contains("PERMISSION DENIED"), "{s}");
+    t.on_snapshot(snap());
+    assert!(!text(&render(&mut t, WINDOWED)).contains("OFFLINE"));
+}
+
+#[test]
 fn services_panel_handles_none() {
     let mut t = UtilityTab::new();
     t.on_snapshot(Snapshot { failed_units: None, containers: None, ..snap() });
     let s = text(&render(&mut t, FULL));
-    assert!(s.contains("UNITS N/A") && s.contains("CONTAINERS N/A"), "{s}");
+    assert!(s.contains("UNITS N/A") && !s.contains("CONTAINERS"), "{s}");
 }
 
 #[test]

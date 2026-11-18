@@ -14,7 +14,7 @@ use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
-use widgets::{gauge_line, panel, sparkline};
+use widgets::{gauge_line, gauge_line_w, panel, sparkline};
 
 /// Samples kept for the sparklines (2 minutes at the default 2 s interval).
 const HISTORY: usize = 60;
@@ -22,6 +22,8 @@ const HISTORY: usize = 60;
 const CORE_COL: u16 = 18;
 const MAX_DISKS: usize = 6;
 const TWO_COLUMNS_FROM: u16 = 78;
+/// Widest a disk label gets before it is cut.
+const MAX_MOUNT_LABEL: usize = 16;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Kind {
@@ -36,6 +38,8 @@ enum Kind {
 
 pub struct UtilityTab {
     snap: Option<Snapshot>,
+    /// Why the metrics source is failing; cleared by the next snapshot.
+    offline: Option<String>,
     cpu: History,
     net: History,
     last_failed: usize,
@@ -61,10 +65,22 @@ fn aligned_details(usages: &[crate::metrics::Usage]) -> Vec<String> {
 
 impl UtilityTab {
     pub fn new() -> Self {
-        Self { snap: None, cpu: History::new(HISTORY), net: History::new(HISTORY), last_failed: 0, activity: false }
+        Self {
+            snap: None,
+            offline: None,
+            cpu: History::new(HISTORY),
+            net: History::new(HISTORY),
+            last_failed: 0,
+            activity: false,
+        }
+    }
+
+    pub fn on_offline(&mut self, why: &str) {
+        self.offline = Some(why.to_string());
     }
 
     pub fn on_snapshot(&mut self, s: Snapshot) {
+        self.offline = None;
         self.cpu.push(s.cpu_total);
         self.net.push((s.net.rx_bps + s.net.tx_bps) as f32);
         let failed = s.failed_units.as_ref().map_or(0, Vec::len);
@@ -87,7 +103,7 @@ impl UtilityTab {
             Some(u) => lines.extend(u.iter().map(|n| (format!("FAILED {n}"), reverse()))),
         }
         match &s.containers {
-            None => lines.push(("CONTAINERS N/A".to_string(), Style::new())),
+            None => {} // no container runtime here: say nothing (spec)
             Some(c) if c.is_empty() => lines.push(("CONTAINERS NONE".to_string(), Style::new())),
             Some(c) => {
                 lines.push(("CONTAINERS".to_string(), Style::new()));
@@ -170,8 +186,9 @@ impl UtilityTab {
                 }
                 let disks: Vec<_> = s.disks.iter().take(MAX_DISKS).collect();
                 let details = aligned_details(&disks.iter().map(|d| d.usage).collect::<Vec<_>>());
+                let label_w = disks.iter().map(|d| d.mount.chars().count()).max().unwrap_or(0).clamp(5, MAX_MOUNT_LABEL);
                 for (d, detail) in disks.iter().zip(&details) {
-                    lines.push(gauge_line(&d.mount.to_uppercase(), d.usage.percent(), detail, w));
+                    lines.push(gauge_line_w(&d.mount.to_uppercase(), label_w, d.usage.percent(), detail, w));
                 }
             }
             Kind::Network => {
@@ -223,22 +240,30 @@ impl UtilityTab {
 
 impl Tab for UtilityTab {
     fn render(&mut self, area: Rect, buf: &mut Buffer) {
-        let Some(s) = &self.snap else {
+        let message = match (&self.offline, &self.snap) {
+            (Some(why), _) => Some(vec![Line::from("TELEMETRY OFFLINE"), Line::from(why.clone())]),
+            (None, None) => Some(vec![Line::from("AWAITING TELEMETRY")]),
+            (None, Some(_)) => None,
+        };
+        if let Some(lines) = message {
             let block = panel("UTILITY");
             let inner = block.inner(area);
             block.render(area, buf);
-            let mid = Rect { y: inner.y + inner.height / 2, height: 1.min(inner.height), ..inner };
-            Paragraph::new("AWAITING TELEMETRY").alignment(Alignment::Center).render(mid, buf);
+            let h = (lines.len() as u16).min(inner.height);
+            let mid = Rect { y: inner.y + inner.height.saturating_sub(h) / 2, height: h, ..inner };
+            Paragraph::new(lines).alignment(Alignment::Center).render(mid, buf);
             return;
-        };
+        }
+        let Some(s) = &self.snap else { return };
         if area.width >= TWO_COLUMNS_FROM {
             let left_w = area.width / 2;
             let left = Rect { width: left_w, ..area };
             let right = Rect { x: area.x + left_w, width: area.width - left_w, ..area };
             self.draw_column(&[Kind::System, Kind::Cpu, Kind::Memory, Kind::Network], s, left, buf);
-            self.draw_column(&[Kind::Disks, Kind::Processes, Kind::Services], s, right, buf);
+            // Failed units first: they must never be the panel that gets dropped.
+            self.draw_column(&[Kind::Services, Kind::Disks, Kind::Processes], s, right, buf);
         } else {
-            let all = [Kind::System, Kind::Cpu, Kind::Memory, Kind::Disks, Kind::Network, Kind::Processes, Kind::Services];
+            let all = [Kind::System, Kind::Services, Kind::Cpu, Kind::Memory, Kind::Disks, Kind::Network, Kind::Processes];
             self.draw_column(&all, s, area, buf);
         }
     }

@@ -30,6 +30,7 @@ const RETRY: Duration = Duration::from_millis(20);
 pub enum Event {
     Keys(Vec<Key>),
     Metrics(Box<Snapshot>),
+    MetricsOffline(String),
     Hangup,
     Tick,
 }
@@ -44,20 +45,34 @@ pub fn check_geometry(cols: u16, rows: u16) -> anyhow::Result<()> {
 
 /// Take a snapshot every `interval` and send it; errors are logged and the
 /// loop carries on. Ends when the app is gone.
+/// Consecutive failed snapshots before the Utility tab says TELEMETRY OFFLINE.
+pub const OFFLINE_AFTER: u32 = 3;
+
 pub fn spawn_metrics(
     mut source: Box<dyn MetricsSource + Send>,
     interval: Duration,
     tx: UnboundedSender<Event>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
+        let mut errors = 0;
         loop {
-            match source.snapshot() {
+            let sent = match source.snapshot() {
                 Ok(s) => {
-                    if tx.send(Event::Metrics(Box::new(s))).is_err() {
-                        return;
+                    errors = 0;
+                    tx.send(Event::Metrics(Box::new(s)))
+                }
+                Err(e) => {
+                    errors += 1;
+                    tracing::warn!("metrics: {e:#}");
+                    if errors == OFFLINE_AFTER {
+                        tx.send(Event::MetricsOffline(format!("{e:#}").to_uppercase()))
+                    } else {
+                        Ok(())
                     }
                 }
-                Err(e) => tracing::warn!("metrics: {e:#}"),
+            };
+            if sent.is_err() {
+                return; // the app is gone
             }
             std::thread::sleep(interval);
         }
@@ -137,6 +152,10 @@ pub async fn event_loop<W: Write>(
                 }
                 Some(Event::Metrics(s)) => {
                     app.on_metrics(*s);
+                    dirty = true;
+                }
+                Some(Event::MetricsOffline(why)) => {
+                    app.on_metrics_offline(&why);
                     dirty = true;
                 }
                 Some(Event::Tick) => dirty = true,
@@ -220,7 +239,10 @@ pub fn run(cfg: &Config, strict: bool) -> anyhow::Result<()> {
         Ok(src) => {
             spawn_metrics(Box::new(src), Duration::from_secs(cfg.utility.interval_secs.max(1)), tx.clone());
         }
-        Err(e) => tracing::error!("metrics unavailable: {e:#}"),
+        Err(e) => {
+            tracing::error!("metrics unavailable: {e:#}");
+            let _ = tx.send(Event::MetricsOffline(format!("{e:#}").to_uppercase()));
+        }
     }
     let mut app = App::assemble(chrome, UtilityTab::new(), shell);
     tracing::info!(cols, rows, strict, "MU/TH/UR online");
@@ -382,6 +404,30 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         spawn_metrics(Box::new(FakeSource { calls: 0, fail_every_other: true }), Duration::from_millis(10), tx);
         assert_eq!(next_metrics(&mut rx).unwrap().host, "HOST2");
+    }
+
+    struct BrokenSource;
+    impl crate::metrics::MetricsSource for BrokenSource {
+        fn snapshot(&mut self) -> anyhow::Result<crate::metrics::Snapshot> {
+            anyhow::bail!("no /proc")
+        }
+    }
+
+    #[test]
+    fn collector_reports_offline_after_repeated_errors() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        spawn_metrics(Box::new(BrokenSource), Duration::from_millis(5), tx);
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            match rx.try_recv() {
+                Ok(Event::MetricsOffline(why)) => {
+                    assert!(why.contains("NO /PROC"), "{why}");
+                    break;
+                }
+                _ if std::time::Instant::now() > deadline => panic!("no offline event"),
+                _ => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
     }
 
     #[tokio::test]
