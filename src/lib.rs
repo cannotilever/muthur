@@ -13,4 +13,5 @@ pub mod scroll;
 pub mod shell;
 pub mod strict;
 pub mod testcard;
+pub mod tools;
 pub mod utility;

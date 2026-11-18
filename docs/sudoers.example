@@ -1,0 +1,10 @@
+# install with: visudo -f /etc/sudoers.d/muthur
+# One line per verb/unit allowed in [tools.services]; replace jake with your user.
+jake ALL=(root) NOPASSWD: /usr/bin/systemctl restart nginx.service
+jake ALL=(root) NOPASSWD: /usr/bin/systemctl start nginx.service
+jake ALL=(root) NOPASSWD: /usr/bin/systemctl stop nginx.service
+
+# doas.conf equivalent (elevate = "doas"):
+# permit nopass jake cmd /usr/bin/systemctl args restart nginx.service
+# permit nopass jake cmd /usr/bin/systemctl args start nginx.service
+# permit nopass jake cmd /usr/bin/systemctl args stop nginx.service
