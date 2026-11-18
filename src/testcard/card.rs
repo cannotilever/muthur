@@ -89,8 +89,11 @@ pub fn card(cols: u16, rows: u16) -> Vec<u8> {
     sc.label(row, 15, "LAST COLUMN").s("X AT LAST COL; DOES Y WRAP BELOW?");
     sc.at(row, cols).s("XY");
 
-    let bottom = format!("BOTTOM ROW {rows} - PRESS ANY KEY");
-    sc.at(rows, 1).s(&bottom).s("\x1b[0m\x1b(B");
+    // 16: the bottom-right cell. On a VT100 (deferred wrap) writing it must not
+    // scroll; if the title bar has left row 1, the terminal wraps immediately.
+    let bottom = format!("BOTTOM ROW {rows} - PRESS ANY KEY    16 BOTTOM-RIGHT # ->");
+    sc.at(rows, 1).s(&bottom);
+    sc.at(rows, cols).s("#\x1b[0m\x1b(B");
     sc.0.into_bytes()
 }
 
@@ -130,6 +133,13 @@ mod tests {
         }
         assert!(s.contains("BOTTOM ROW 43"));
         assert!(s.ends_with("\x1b[0m\x1b(B"));
+    }
+
+    #[test]
+    fn card_probes_bottom_right_cell() {
+        let s = String::from_utf8(card(80, 43)).unwrap();
+        assert!(s.contains("\x1b[43;80H#"), "no bottom-right write");
+        assert!(s.contains("16 BOTTOM-RIGHT"));
     }
 
     #[test]

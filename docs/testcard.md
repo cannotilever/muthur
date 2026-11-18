@@ -37,7 +37,7 @@ flow = "xon-xoff"   # or "rts-cts", "none"
 
 ## 1. Attribute card: `muthur testcard`
 
-Shows 15 numbered probes. **Report every item number that looks wrong.**
+Shows 16 numbered probes. **Report every item number that looks wrong.**
 Here is what each item should look like:
 
 | # | Probe | Expected |
@@ -51,6 +51,7 @@ Here is what each item should look like:
 | 14 | Scroll region | Exactly `SCROLL 3`, `SCROLL 4`, `SCROLL 5` under the label |
 | 15 | Last column | `X` in column 80. Note whether `Y` appears at the start of the next row |
 | — | Bottom row | `BOTTOM ROW 43 - PRESS ANY KEY` on the very last line |
+| 16 | Bottom-right cell | `#` in the very last cell, **and the title bar still on row 1**. If the whole card has shifted up a line, the terminal wraps immediately instead of deferring the wrap. |
 
 Also note any stray characters, such as `[1m` or `#6` printed literally.
 Those mean the terminal doesn't understand that sequence. Press any key to exit.

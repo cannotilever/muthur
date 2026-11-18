@@ -10,6 +10,7 @@ use ratatui::backend::{Backend, ClearType, WindowSize};
 use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Size};
 use std::io::{self, Write};
+use unicode_width::UnicodeWidthStr;
 
 /// Use cursor-forward instead of an absolute move for gaps up to this size.
 const MAX_CUF: u16 = 4;
@@ -76,7 +77,15 @@ impl<W: Write, D: Dialect> Wy60Backend<W, D> {
         self.set_attrs(attrs);
         self.set_charset(charset);
         self.out.push(byte);
-        self.cursor = if col + 1 >= self.cols { None } else { Some((row, col + 1)) };
+        // A wide grapheme covers extra cells that ratatui's diff never sends:
+        // blank them so nothing stale shows through.
+        let width = (cell.symbol().width() as u16).max(1);
+        for extra in 1..width {
+            if col + extra < self.cols {
+                self.out.push(b' ');
+            }
+        }
+        self.cursor = if col + width >= self.cols { None } else { Some((row, col + width)) };
     }
 }
 
@@ -300,6 +309,15 @@ mod tests {
             .unwrap();
         let s = String::from_utf8(take(&mut t)).unwrap();
         assert!(s.ends_with("\x1b[0m\x1b(B") || s.ends_with("\x1b(B\x1b[0m"), "{s:?}");
+    }
+
+    #[test]
+    fn wide_char_clears_its_second_cell() {
+        let mut t = term();
+        put(&mut t, 0, 0, "ABCD", Style::new());
+        t.draw(|f| f.render_widget(Paragraph::new("中CD"), Rect::new(0, 0, 4, 1))).unwrap();
+        let p = screen(&take(&mut t));
+        assert_eq!(text_at(&p, 0, 0, 4), "? CD");
     }
 
     #[test]

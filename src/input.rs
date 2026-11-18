@@ -150,6 +150,18 @@ impl KeyParser {
             if self.keymap.is_strict_prefix(&self.pending) {
                 break; // wait for more bytes
             }
+            // ESC followed by anything but `[`/`O` is an Esc keypress, then a new key.
+            if self.pending.len() >= 2 && !matches!(self.pending[1], b'[' | b'O') {
+                self.pending.remove(0);
+                keys.push(Key::Esc);
+                continue;
+            }
+            // A control byte can't be inside a sequence: what came before it was
+            // a broken sequence, and the control is a key of its own.
+            if let Some(i) = self.pending.iter().skip(1).position(|&b| b < 0x20) {
+                keys.push(Key::Unknown(self.pending.drain(..=i).collect()));
+                continue;
+            }
             match sequence_end(&self.pending) {
                 Some(end) => keys.push(Key::Unknown(self.pending.drain(..=end).collect())),
                 None => break, // incomplete unknown sequence; timeout resolves it
@@ -214,6 +226,30 @@ mod tests {
     #[test]
     fn unknown_sequence_is_unknown_key() {
         assert_eq!(parser().feed(b"\x1b[99zA"), vec![Key::Unknown(b"\x1b[99z".to_vec()), Key::Char('A')]);
+    }
+
+    #[test]
+    fn esc_then_char_is_two_keys() {
+        assert_eq!(parser().feed(b"\x1bx"), vec![Key::Esc, Key::Char('x')]);
+    }
+
+    #[test]
+    fn esc_esc_is_two_escapes() {
+        let mut p = parser();
+        assert_eq!(p.feed(b"\x1b\x1b"), vec![Key::Esc]);
+        assert_eq!(p.timeout(), vec![Key::Esc]);
+    }
+
+    #[test]
+    fn esc_then_prefix_key_split_across_reads() {
+        let mut p = parser();
+        assert!(p.feed(b"\x1b").is_empty());
+        assert_eq!(p.feed(b"\x1d"), vec![Key::Esc, Key::Ctrl(']')]);
+    }
+
+    #[test]
+    fn control_inside_csi_breaks_it() {
+        assert_eq!(parser().feed(b"\x1b[1\x1d"), vec![Key::Unknown(b"\x1b[1".to_vec()), Key::Ctrl(']')]);
     }
 
     #[test]

@@ -61,3 +61,7 @@ on the terminal matching terminfo.
   queueing), so it can only be confirmed on the real port: the run loop logs the
   queue depth at debug level in `~/.local/state/muthur/muthur.log` when run
   with `MUTHUR_DEBUG=1`.
+- **Does writing the bottom-right cell scroll the screen?** The renderer
+  writes row 43, column 80 (fullscreen borders, the prefix strip) and relies on
+  VT100 deferred wrap. Testcard item 16 checks this; if the card shifts up a
+  line, the backend must never write that cell.

@@ -26,6 +26,14 @@ pub enum Event {
     Tick,
 }
 
+/// The chrome is laid out for 80×43; smaller screens cannot hold it.
+pub fn check_geometry(cols: u16, rows: u16) -> anyhow::Result<()> {
+    if cols < 80 || rows < 43 {
+        anyhow::bail!("MU/TH/UR needs at least 80x43 (got {cols}x{rows})");
+    }
+    Ok(())
+}
+
 pub fn should_draw(dirty: bool, outq: usize) -> bool {
     dirty && outq < OUTQ_LOW
 }
@@ -123,6 +131,7 @@ fn ship_name(cfg: &Config) -> String {
 
 /// Run the TUI on the configured link until quit or hangup.
 pub fn run(cfg: &Config, strict: bool) -> anyhow::Result<()> {
+    check_geometry(cfg.terminal.cols, cfg.terminal.rows)?;
     let _log = init_logging()?;
     install_panic_hook();
     let link = match cfg.link.device {
@@ -184,6 +193,14 @@ mod tests {
         let mut t = Terminal::new(Wy60Backend::new(Vec::new(), Vt100Dialect, 80, 43)).unwrap();
         t.clear().unwrap();
         (app, t)
+    }
+
+    #[test]
+    fn geometry_must_fit_the_chrome() {
+        assert!(check_geometry(80, 43).is_ok());
+        assert!(check_geometry(132, 50).is_ok());
+        assert!(check_geometry(80, 24).unwrap_err().to_string().contains("80x43"));
+        assert!(check_geometry(40, 43).is_err());
     }
 
     #[test]
