@@ -14,17 +14,18 @@ use chrono::NaiveDateTime;
 use ratatui::Terminal;
 use std::io::Write;
 use std::time::Duration;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{Receiver, UnboundedReceiver, UnboundedSender};
 
 /// Draw only when fewer than this many bytes are still waiting to be sent,
 /// so a slow or XOFF'd link never accumulates stale frames.
 pub const OUTQ_LOW: usize = 256;
+/// PTY output chunks (≤ 4 KB each) buffered between the reader and the loop.
+pub const PTY_QUEUE: usize = 16;
 /// How soon to re-check the queue when a draw was deferred.
 const RETRY: Duration = Duration::from_millis(20);
 
 pub enum Event {
     Keys(Vec<Key>),
-    Pty(PtyEvent),
     Hangup,
     Tick,
 }
@@ -81,6 +82,7 @@ pub async fn event_loop<W: Write>(
     app: &mut App,
     terminal: &mut Terminal<Wy60Backend<W, Vt100Dialect>>,
     rx: &mut UnboundedReceiver<Event>,
+    pty_rx: &mut Receiver<PtyEvent>,
     outq: impl Fn() -> usize,
     clock: impl Fn() -> NaiveDateTime,
 ) -> anyhow::Result<()> {
@@ -98,6 +100,8 @@ pub async fn event_loop<W: Write>(
             was_passthrough = app.passthrough;
         }
         tokio::select! {
+            // Keys first: ^C and ^] must never wait behind queued output.
+            biased;
             ev = rx.recv() => match ev {
                 Some(Event::Keys(keys)) => {
                     for k in keys {
@@ -105,18 +109,18 @@ pub async fn event_loop<W: Write>(
                     }
                     dirty = true;
                 }
-                Some(Event::Pty(ev)) => {
-                    if app.passthrough && let PtyEvent::Output(bytes) = &ev {
-                        let w = terminal.backend_mut().writer_mut();
-                        w.write_all(bytes)?;
-                        w.flush()?;
-                    }
-                    app.on_pty(ev);
-                    dirty = true;
-                }
                 Some(Event::Tick) => dirty = true,
                 Some(Event::Hangup) | None => return Ok(()),
             },
+            Some(ev) = pty_rx.recv() => {
+                if app.passthrough && let PtyEvent::Output(bytes) = &ev {
+                    let w = terminal.backend_mut().writer_mut();
+                    w.write_all(bytes)?;
+                    w.flush()?;
+                }
+                app.on_pty(ev);
+                dirty = true;
+            }
             _ = tick.tick() => dirty = true,
             _ = tokio::time::sleep(RETRY), if dirty => {}
         }
@@ -175,9 +179,11 @@ pub fn run(cfg: &Config, strict: bool) -> anyhow::Result<()> {
         args: cfg.shell.args.clone(),
         scrollback: cfg.shell.scrollback,
     };
-    let pty_tx = tx.clone();
+    // Bounded: when the loop falls behind (passthrough at 38400 baud), the
+    // reader thread blocks, the PTY fills, and the program writing blocks too.
+    let (pty_tx, mut pty_rx) = tokio::sync::mpsc::channel(PTY_QUEUE);
     let shell = ShellTab::new(shell_cfg, hints, move |e| {
-        let _ = pty_tx.send(Event::Pty(e));
+        let _ = pty_tx.blocking_send(e);
     });
     let chrome = ChromeView { ship_name: ship_name(cfg), year_offset: cfg.chrome.year_offset };
     let mut app = App::with_shell(chrome, shell);
@@ -191,7 +197,7 @@ pub fn run(cfg: &Config, strict: bool) -> anyhow::Result<()> {
         }
         q
     };
-    let result = rt.block_on(event_loop(&mut app, &mut terminal, &mut rx, outq, || {
+    let result = rt.block_on(event_loop(&mut app, &mut terminal, &mut rx, &mut pty_rx, outq, || {
         chrono::Local::now().naive_local()
     }));
 
@@ -235,6 +241,10 @@ mod tests {
         assert!(check_geometry(40, 43).is_err());
     }
 
+    fn no_pty() -> tokio::sync::mpsc::Receiver<PtyEvent> {
+        tokio::sync::mpsc::channel(1).1
+    }
+
     #[test]
     fn should_draw_waits_for_queue() {
         assert!(should_draw(true, 0));
@@ -248,7 +258,7 @@ mod tests {
         let (mut app, mut t) = setup();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         tx.send(Event::Hangup).unwrap();
-        let r = tokio::time::timeout(Duration::from_millis(100), event_loop(&mut app, &mut t, &mut rx, || 0, now)).await;
+        let r = tokio::time::timeout(Duration::from_millis(100), event_loop(&mut app, &mut t, &mut rx, &mut no_pty(), || 0, now)).await;
         assert!(r.expect("loop did not exit").is_ok());
     }
 
@@ -258,7 +268,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         tx.send(Event::Keys(vec![Key::Ctrl(']'), Key::Char('r')])).unwrap();
         tx.send(Event::Keys(vec![Key::Ctrl(']'), Key::Char('q')])).unwrap();
-        let r = tokio::time::timeout(Duration::from_millis(500), event_loop(&mut app, &mut t, &mut rx, || 0, now)).await;
+        let r = tokio::time::timeout(Duration::from_millis(500), event_loop(&mut app, &mut t, &mut rx, &mut no_pty(), || 0, now)).await;
         assert!(r.expect("loop did not exit").is_ok());
         let out = String::from_utf8(t.backend().writer().clone()).unwrap();
         assert_eq!(out.matches("\x1b[2J").count(), 2, "initial clear + redraw");
@@ -270,11 +280,31 @@ mod tests {
         let (mut app, mut t) = setup();
         app.passthrough = true;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        tx.send(Event::Pty(crate::shell::PtyEvent::Output(b"\x1b[31mX".to_vec()))).unwrap();
-        tx.send(Event::Keys(vec![Key::Ctrl(']'), Key::Char('q')])).unwrap();
-        event_loop(&mut app, &mut t, &mut rx, || 0, now).await.unwrap();
+        let (ptx, mut prx) = tokio::sync::mpsc::channel(4);
+        ptx.send(PtyEvent::Output(b"\x1b[31mX".to_vec())).await.unwrap();
+        let quit = async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            tx.send(Event::Keys(vec![Key::Ctrl(']'), Key::Char('q')])).unwrap();
+        };
+        let (r, _) = tokio::join!(event_loop(&mut app, &mut t, &mut rx, &mut prx, || 0, now), quit);
+        r.unwrap();
         let out = t.backend().writer().clone();
         assert!(out.windows(6).any(|w| w == b"\x1b[31mX"), "{:?}", String::from_utf8_lossy(&out));
+    }
+
+    #[tokio::test]
+    async fn keys_jump_ahead_of_queued_output() {
+        let (mut app, mut t) = setup();
+        app.passthrough = true;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (ptx, mut prx) = tokio::sync::mpsc::channel(64);
+        for _ in 0..64 {
+            ptx.send(PtyEvent::Output(b"FLOOD".to_vec())).await.unwrap();
+        }
+        tx.send(Event::Keys(vec![Key::Ctrl(']'), Key::Char('q')])).unwrap();
+        event_loop(&mut app, &mut t, &mut rx, &mut prx, || 0, now).await.unwrap();
+        let out = String::from_utf8_lossy(t.backend().writer()).into_owned();
+        assert_eq!(out.matches("FLOOD").count(), 0, "quit waited behind chunks");
     }
 
     #[tokio::test]
@@ -282,7 +312,7 @@ mod tests {
         let (mut app, mut t) = setup();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         tx.send(Event::Keys(vec![Key::Ctrl(']'), Key::Char('q')])).unwrap();
-        event_loop(&mut app, &mut t, &mut rx, || OUTQ_LOW, now).await.unwrap();
+        event_loop(&mut app, &mut t, &mut rx, &mut no_pty(), || OUTQ_LOW, now).await.unwrap();
         let out = String::from_utf8(t.backend().writer().clone()).unwrap();
         assert!(!out.contains("MU/TH/UR"), "drew while the queue was full");
     }

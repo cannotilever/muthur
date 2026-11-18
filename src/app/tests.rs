@@ -291,3 +291,14 @@ fn shell_exit_ends_passthrough() {
     app.on_pty(PtyEvent::Exited);
     assert!(!app.passthrough && app.redraw);
 }
+
+#[test]
+fn f_keys_ignored_in_passthrough() {
+    let (mut app, _rx) = shell_app(&["-c", "sleep 5"]);
+    keys(&mut app, &[Key::F(3)]);
+    draw(&mut app);
+    keys(&mut app, &[Key::Ctrl(']'), Key::Char('p'), Key::F(1)]);
+    assert_eq!(app.active, TabId::Shell);
+    keys(&mut app, &[Key::Ctrl(']'), Key::Char('p')]);
+    assert!(!app.passthrough);
+}

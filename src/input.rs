@@ -69,6 +69,19 @@ impl Keymap {
         add("RIGHT", "\x1b[C", Key::Right);
         add("LEFT", "\x1b[D", Key::Left);
         add("HOME", "\x1b[H", Key::Home);
+        // Sent once a program enables application cursor / keypad mode (smkx),
+        // which reaches the WY-60 directly in passthrough.
+        add("APP-UP", "\x1bOA", Key::Up);
+        add("APP-DOWN", "\x1bOB", Key::Down);
+        add("APP-RIGHT", "\x1bOC", Key::Right);
+        add("APP-LEFT", "\x1bOD", Key::Left);
+        add("APP-ENTER", "\x1bOM", Key::Enter);
+        for (i, d) in ('0'..='9').enumerate() {
+            add(&format!("APP-KP{d}"), &format!("\x1bO{}", (b'p' + i as u8) as char), Key::Char(d));
+        }
+        add("APP-KPMINUS", "\x1bOm", Key::Char('-'));
+        add("APP-KPCOMMA", "\x1bOl", Key::Char(','));
+        add("APP-KPDOT", "\x1bOn", Key::Char('.'));
         add("PF1", "\x1bOP", Key::Pf(1));
         add("DELETECHAR", "\x1bOQ", Key::DeleteChar); // Line Del/Char
         add("PF3", "\x1bOR", Key::Pf(3));
@@ -250,6 +263,14 @@ mod tests {
     #[test]
     fn control_inside_csi_breaks_it() {
         assert_eq!(parser().feed(b"\x1b[1\x1d"), vec![Key::Unknown(b"\x1b[1".to_vec()), Key::Ctrl(']')]);
+    }
+
+    #[test]
+    fn application_mode_keys() {
+        assert_eq!(
+            parser().feed(b"\x1bOA\x1bOD\x1bOM\x1bOp\x1bOy\x1bOm\x1bOl\x1bOn"),
+            vec![Key::Up, Key::Left, Key::Enter, Key::Char('0'), Key::Char('9'), Key::Char('-'), Key::Char(','), Key::Char('.')]
+        );
     }
 
     #[test]

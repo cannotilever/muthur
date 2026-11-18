@@ -156,7 +156,9 @@ impl Dialect for Vt100Dialect {
         });
     }
     fn clear(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(b"\x1b[0m\x1b(B\x1b[r\x1b[2J\x1b[H");
+        // SI, DECCKM off and DECKPNM undo modes a program may have left set
+        // through passthrough.
+        out.extend_from_slice(b"\x1b[0m\x0f\x1b(B\x1b[?1l\x1b>\x1b[r\x1b[2J\x1b[H");
     }
     fn set_scroll_region(&self, out: &mut Vec<u8>, top: u16, bottom: u16) {
         push(out, format_args!("\x1b[{};{}r", top + 1, bottom + 1));
@@ -172,7 +174,8 @@ impl Dialect for Vt100Dialect {
     }
     fn is_allowed(&self, seq: &[u8]) -> bool {
         match seq {
-            [0x1b, b'M'] => true,
+            [0x1b, b'M'] | [0x1b, b'>'] => true,
+            b"\x1b[?1l" => true,
             [0x1b, b'(', b'0' | b'B'] => true,
             [0x1b, b'#', b'3' | b'4' | b'5' | b'6'] => true,
             [0x1b, b'[', body @ .., fin] => {
@@ -230,6 +233,18 @@ mod tests {
         Vt100Dialect.reverse_index(&mut o);
         assert_eq!(o, b"\x1bM");
         assert!(Vt100Dialect.is_allowed(b"\x1bM"));
+    }
+
+    #[test]
+    fn clear_resets_modes_left_by_passthrough() {
+        let mut o = vec![];
+        Vt100Dialect.clear(&mut o);
+        let s = String::from_utf8(o).unwrap();
+        for seq in ["\x0f", "\x1b[?1l", "\x1b>"] {
+            assert!(s.contains(seq), "{seq:?} missing from {s:?}");
+        }
+        assert!(Vt100Dialect.is_allowed(b"\x1b[?1l") && Vt100Dialect.is_allowed(b"\x1b>"));
+        assert!(!Vt100Dialect.is_allowed(b"\x1b[?25l"));
     }
 
     #[test]

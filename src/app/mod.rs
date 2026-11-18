@@ -113,6 +113,10 @@ impl App {
                 'd' => self.show_real_date ^= true,
                 '?' => self.overlay = Some(Overlay::Help),
                 ']' => self.tabs[self.active.index()].handle_key(&Key::Ctrl(']')),
+                'p' if self.passthrough => {
+                    self.passthrough = false;
+                    self.redraw = true;
+                }
                 'p' if tab.supports_passthrough() => {
                     self.passthrough ^= true;
                     if self.passthrough {
@@ -128,6 +132,8 @@ impl App {
             return;
         }
         match key {
+            // The screen belongs to the shell in passthrough: no tab switching.
+            Key::F(1..=3) if self.passthrough => {}
             Key::F(n @ 1..=3) => self.switch(TabId::ALL[n as usize - 1]),
             Key::Ctrl(']') => self.prefix = true,
             k => self.tabs[self.active.index()].handle_key(&k),

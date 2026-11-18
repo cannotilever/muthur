@@ -27,7 +27,9 @@ pub fn encode_key(key: &Key, app_cursor: bool) -> Option<Vec<u8>> {
         Key::InsertKey => tilde(2),
         Key::Pf(n @ 1..=4) => vec![0x1b, b'O', b'P' + n - 1],
         Key::F(4) => b"\x1bOS".to_vec(),
-        Key::F(n @ 5..=16) => tilde([15, 17, 18, 19, 20, 21, 23, 24, 25, 26, 28, 29][*n as usize - 5]),
+        // kf5..kf10 from vt100 terminfo; beyond that, xterm codes.
+        Key::F(n @ 5..=10) => vec![0x1b, b'O', b"tuvlwx"[*n as usize - 5]],
+        Key::F(n @ 11..=16) => tilde([23, 24, 25, 26, 28, 29][*n as usize - 11]),
         Key::F(_) | Key::Pf(_) | Key::ShiftF(_) | Key::Unknown(_) => return None,
     })
 }
@@ -59,8 +61,11 @@ mod tests {
             (Key::Pf(1), Some(b"\x1bOP")),
             (Key::Pf(3), Some(b"\x1bOR")),
             (Key::F(4), Some(b"\x1bOS")),
-            (Key::F(5), Some(b"\x1b[15~")),
-            (Key::F(6), Some(b"\x1b[17~")),
+            (Key::F(5), Some(b"\x1bOt")),
+            (Key::F(6), Some(b"\x1bOu")),
+            (Key::F(9), Some(b"\x1bOw")),
+            (Key::F(10), Some(b"\x1bOx")),
+            (Key::F(11), Some(b"\x1b[23~")),
             (Key::F(16), Some(b"\x1b[29~")),
             (Key::F(1), None),
             (Key::F(3), None),

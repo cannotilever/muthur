@@ -49,7 +49,7 @@ impl<W: Write, D: Dialect> StrictWriter<W, D> {
         }
         match b {
             0x1b => self.pending.push(b),
-            b'\r' | b'\n' | 0x08 | 0x20..=0x7e => {}
+            b'\r' | b'\n' | 0x08 | 0x0f | 0x20..=0x7e => {}
             _ => self.violation(vec![b]),
         }
     }
@@ -88,6 +88,15 @@ mod tests {
         w.write_all(b"\x1b[1").unwrap();
         w.write_all(b";1H").unwrap();
         assert!(w.violations.is_empty());
+    }
+
+    #[test]
+    fn clear_sequence_is_allowed() {
+        let mut w = StrictWriter::new(Vec::new(), Vt100Dialect);
+        let mut o = vec![];
+        crate::dialect::Dialect::clear(&Vt100Dialect, &mut o);
+        w.write_all(&o).unwrap();
+        assert!(w.violations.is_empty(), "{:?}", w.violations);
     }
 
     #[test]
