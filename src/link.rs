@@ -9,6 +9,7 @@ use nix::sys::termios::{
     BaudRate, ControlFlags, InputFlags, LocalFlags, OutputFlags, SetArg, SpecialCharacterIndices,
     Termios, cfsetspeed, tcgetattr, tcsetattr,
 };
+use nix::fcntl::{FcntlArg, OFlag, fcntl};
 use std::fs::File;
 use std::os::unix::fs::OpenOptionsExt;
 use std::io::{self, Read, Write};
@@ -47,7 +48,10 @@ pub fn make_raw(t: &Termios, flow: FlowControl) -> Termios {
     );
     r.output_flags.remove(OutputFlags::OPOST);
     r.control_flags.remove(ControlFlags::CSIZE | ControlFlags::PARENB);
-    r.control_flags.insert(ControlFlags::CS8);
+    // CLOCAL: ignore modem lines (no carrier on a null-modem link); CREAD: enable receiver.
+    r.control_flags.insert(ControlFlags::CS8 | ControlFlags::CLOCAL | ControlFlags::CREAD);
+    // IXANY would let any keypress resume output the terminal paused with XOFF.
+    r.input_flags.remove(InputFlags::IXANY);
     r.control_chars[SpecialCharacterIndices::VMIN as usize] = 1;
     r.control_chars[SpecialCharacterIndices::VTIME as usize] = 0;
     let soft = InputFlags::IXON | InputFlags::IXOFF;
@@ -68,7 +72,8 @@ pub fn make_raw(t: &Termios, flow: FlowControl) -> Termios {
     r
 }
 
-/// Read with a timeout. `Ok(0)` means the timeout elapsed with no data.
+/// Read with a timeout. `Ok(0)` means the timeout elapsed with no data;
+/// hangup/EOF is an error, never `Ok(0)`.
 pub trait ReadTimeout {
     fn read_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize>;
 }
@@ -88,7 +93,8 @@ pub fn install_panic_hook() {
             {
                 // SAFETY: the fd is registered only while its Link is alive.
                 let bfd = unsafe { BorrowedFd::borrow_raw(*fd) };
-                let _ = tcsetattr(bfd, SetArg::TCSADRAIN, t);
+                // TCSANOW: never block behind a terminal stuck in XOFF.
+                let _ = tcsetattr(bfd, SetArg::TCSANOW, t);
                 let _ = nix::unistd::write(bfd, b"\x1b[0m\x1b(B\r\n");
             }
             prev(info);
@@ -109,9 +115,11 @@ impl Link {
         let f = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .custom_flags(nix::libc::O_NOCTTY)
+            // O_NONBLOCK so open() never waits for carrier; cleared below.
+            .custom_flags(nix::libc::O_NOCTTY | nix::libc::O_NONBLOCK)
             .open(path)
             .with_context(|| format!("opening {}", path.display()))?;
+        fcntl(&f, FcntlArg::F_SETFL(OFlag::empty())).context("clearing O_NONBLOCK")?;
         Link::from_fd(OwnedFd::from(f), Some(cfg.baud), cfg.flow)
     }
 
@@ -127,7 +135,8 @@ impl Link {
         if let Some(b) = baud {
             cfsetspeed(&mut raw, baud_rate(b)?).context("setting baud")?;
         }
-        tcsetattr(&fd, SetArg::TCSADRAIN, &raw).context("setting raw mode")?;
+        // TCSAFLUSH also discards stale input (line noise, keys typed earlier).
+        tcsetattr(&fd, SetArg::TCSAFLUSH, &raw).context("setting raw mode")?;
         let file = File::from(fd);
         *RESTORE.lock().unwrap_or_else(|e| e.into_inner()) = Some((file.as_raw_fd(), original.clone()));
         Ok(Link { file, original })
@@ -165,7 +174,14 @@ impl ReadTimeout for Link {
         let ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
         let mut fds = [PollFd::new(self.file.as_fd(), PollFlags::POLLIN)];
         let ready = poll(&mut fds, PollTimeout::try_from(ms).unwrap_or(PollTimeout::MAX))?;
-        if ready == 0 { Ok(0) } else { self.file.read(buf) }
+        if ready == 0 {
+            return Ok(0);
+        }
+        // poll said readable (or hung up) and VMIN=1, so 0 bytes means EOF/hangup.
+        match self.file.read(buf)? {
+            0 => Err(io::Error::new(io::ErrorKind::UnexpectedEof, "terminal hung up")),
+            n => Ok(n),
+        }
     }
 }
 
@@ -193,6 +209,16 @@ mod tests {
         let t = make_raw(&sample_cooked(), FlowControl::RtsCts);
         assert!(!t.input_flags.intersects(InputFlags::IXON | InputFlags::IXOFF));
         assert!(t.control_flags.contains(ControlFlags::CRTSCTS));
+    }
+
+    #[test]
+    fn raw_forces_local_and_receiver_and_clears_ixany() {
+        let mut cooked = sample_cooked();
+        cooked.input_flags.insert(InputFlags::IXANY);
+        cooked.control_flags.remove(ControlFlags::CLOCAL | ControlFlags::CREAD);
+        let t = make_raw(&cooked, FlowControl::XonXoff);
+        assert!(t.control_flags.contains(ControlFlags::CLOCAL | ControlFlags::CREAD));
+        assert!(!t.input_flags.contains(InputFlags::IXANY));
     }
 
     #[test]

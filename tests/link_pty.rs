@@ -54,3 +54,23 @@ fn panic_hook_restores_termios() {
     let t = tcgetattr(&pty.slave).unwrap();
     assert!(t.local_flags.contains(LocalFlags::ICANON | LocalFlags::ECHO), "termios not restored");
 }
+
+#[test]
+fn hangup_is_an_error_not_a_timeout() {
+    let pty = nix::pty::openpty(None, None).unwrap();
+    let mut l = Link::from_fd(pty.slave, None, FlowControl::XonXoff).unwrap();
+    drop(pty.master);
+    let mut buf = [0u8; 8];
+    assert!(l.read_timeout(&mut buf, Duration::from_millis(20)).is_err());
+    assert!(muthur::testcard::keys::read_key(&mut l, Duration::from_millis(20)).is_err());
+}
+
+#[test]
+fn stale_input_is_discarded_on_open() {
+    let pty = nix::pty::openpty(None, None).unwrap();
+    nix::unistd::write(&pty.master, b"noise").unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    let mut l = Link::from_fd(pty.slave, None, FlowControl::XonXoff).unwrap();
+    let mut buf = [0u8; 8];
+    assert_eq!(l.read_timeout(&mut buf, Duration::from_millis(20)).unwrap(), 0);
+}
