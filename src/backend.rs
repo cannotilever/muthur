@@ -88,7 +88,8 @@ impl<W: Write, D: Dialect> Backend for Wy60Backend<W, D> {
         I: Iterator<Item = (u16, u16, &'a Cell)>,
     {
         for (x, y, cell) in content {
-            if !cell.skip && x < self.cols && y < self.rows {
+            // ratatui's diff already omits skipped cells.
+            if x < self.cols && y < self.rows {
                 self.put(y, x, cell);
             }
         }
