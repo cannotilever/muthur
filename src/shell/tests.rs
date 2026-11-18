@@ -129,3 +129,15 @@ fn activity_flag_set_by_output() {
     assert!(t.take_activity());
     assert!(!t.take_activity());
 }
+
+#[test]
+fn scrollback_indicator_in_fullscreen() {
+    let (mut t, _h, rx) = tab("seq 1 100; sleep 5");
+    pump(&mut t, &rx, FULL, |s| s.contains("100"));
+    t.enter_scrollback();
+    t.handle_key(&Key::PageUp);
+    let buf = render(&mut t, FULL);
+    let top = text(&buf).lines().next().unwrap().to_string();
+    assert!(top.trim_end().ends_with("SCROLLBACK -43"), "{top:?}");
+    assert!(buf[(79, 0)].modifier.contains(Modifier::REVERSED));
+}

@@ -117,7 +117,7 @@ Single Rust crate, tokio runtime.
 |---|---|
 | `link` | Owns the terminal fd — serial device or plain stdio (dev). termios raw mode that preserves IXON/IXOFF; baud setup; guaranteed restore on drop/panic. |
 | `dialect` | `Dialect` trait describing the output language: cursor addressing, attributes, charset switching, scroll regions, and the **allowlist** of sequences. `Vt100Dialect` for v1; `Wyse60Dialect` (native personality: dim attribute, graphics set, pages) later without touching other modules. |
-| `backend` | `Wy60Backend: ratatui::backend::Backend`. **The only path to the wire.** Cell diffing, cursor-motion coalescing, DECSTBM scroll-region optimisation, byte-budget pacing, top-to-bottom painting. Generic over `Dialect`. |
+| `backend` | `Wy60Backend: ratatui::backend::Backend`. **The only path to the wire.** Keeps two full grids — `want` (built from ratatui's diffs) and `shown` (what the terminal displays) — and emits exactly the cells where they differ. Tabs may leave a **scroll hint** (shared `HintSlot`); the backend then scrolls that band of full-width lines with DECSTBM + LF/RI and the compare repairs anything the scroll disturbed (sidebar, borders), so a wrong hint costs bytes, never correctness. Cursor/attribute/charset changes are coalesced; redraws wait for the kernel output queue to drain. Generic over `Dialect`. |
 | `input` | Byte stream → key events via configurable keymap; prefix-key state machine. |
 | `app` | Event bus (`Input`, `Tick`, `PtyOutput`, `LlmChunk`, `Metrics`, later `Alert`), chrome rendering, tab focus, per-tab fullscreen, mode transitions. |
 | `tabs::utility` | System monitor (see below). |

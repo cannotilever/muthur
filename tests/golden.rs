@@ -47,3 +47,48 @@ fn fullscreen_shell() {
 fn prefix_strip() {
     scene("prefix_strip", &[Key::Ctrl(']')]);
 }
+
+#[test]
+fn shell_windowed_echo() {
+    use muthur::scroll::HintSlot;
+    use muthur::shell::{ShellConfig, ShellTab};
+    use std::time::{Duration, Instant};
+
+    let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 17).unwrap().and_hms_opt(14, 2, 0).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let hints = HintSlot::default();
+    let cfg = ShellConfig {
+        command: "sh".into(),
+        args: vec!["-c".into(), "printf 'MUTHUR SHELL OK\\n'; sleep 5".into()],
+        scrollback: 100,
+    };
+    let shell = ShellTab::new(cfg, hints.clone(), move |e| {
+        let _ = tx.send(e);
+    });
+    let mut app = App::with_shell(ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 }, shell);
+    let w = StrictWriter::new(Vec::new(), Vt100Dialect);
+    let mut t = Terminal::new(Wy60Backend::new(w, Vt100Dialect, 80, 43).with_hints(hints)).unwrap();
+    t.clear().unwrap();
+    app.handle_key(Key::F(3));
+    let mut p = vt100::Parser::new(NonZeroU16::new(43).unwrap(), NonZeroU16::new(80).unwrap(), 0);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut sent = 0;
+    while Instant::now() < deadline && !p.screen().contents().contains("MUTHUR SHELL OK") {
+        t.draw(|f| app.render(f, now)).unwrap();
+        let bytes = &t.backend().writer().inner;
+        p.process(&bytes[sent..]);
+        sent = bytes.len();
+        if let Ok(ev) = rx.recv_timeout(Duration::from_millis(20)) {
+            app.on_pty(ev);
+        }
+    }
+    let strict = t.backend().writer();
+    assert!(strict.violations.is_empty(), "{:?}", strict.violations);
+    let text = p.screen().contents();
+    let path = format!("{}/tests/golden/shell_windowed_echo.txt", env!("CARGO_MANIFEST_DIR"));
+    if std::env::var("UPDATE_GOLDEN").is_ok() {
+        std::fs::write(&path, &text).unwrap();
+    }
+    let want = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("missing {path}; run with UPDATE_GOLDEN=1"));
+    assert_eq!(text, want);
+}

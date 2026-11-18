@@ -234,6 +234,12 @@ impl Tab for ShellTab {
         }
         self.resize_to_pane();
         self.copy_screen(buf);
+        if fullscreen && self.scrollback_mode {
+            // No border to carry the title: tag the top-right corner instead.
+            let tag = format!(" SCROLLBACK -{} ", self.parser.screen().scrollback());
+            let x = pane.x + pane.width.saturating_sub(tag.len() as u16);
+            buf.set_stringn(x, pane.y, &tag, pane.width as usize, Style::new().add_modifier(Modifier::REVERSED));
+        }
     }
 
     fn handle_key(&mut self, key: &Key) {
