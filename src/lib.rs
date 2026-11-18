@@ -7,6 +7,7 @@ pub mod input;
 pub mod link;
 pub mod llm;
 pub mod metrics;
+pub mod muthur;
 pub mod run;
 pub mod scroll;
 pub mod shell;
