@@ -9,7 +9,7 @@ pub const PATH: &str = "/v1/messages";
 
 pub fn headers(cfg: &MuthurSection) -> Vec<(&'static str, String)> {
     let mut h = vec![
-        ("x-api-key", cfg.api_key.clone().unwrap_or_default()),
+        ("x-api-key", cfg.api_key().unwrap_or_default().to_string()),
         ("anthropic-version", "2023-06-01".to_string()),
         ("content-type", "application/json".to_string()),
     ];
@@ -68,8 +68,8 @@ pub fn replay_blocks(raw: &[Value], strip_thinking: bool) -> Vec<Value> {
             if thinking && (strip_thinking || last_fallback.is_some_and(|f| *i < f)) {
                 return false;
             }
-            // An empty text block (e.g. a refusal) would be rejected on replay.
-            !(t == "text" && b.get("text").and_then(Value::as_str) == Some(""))
+            // An empty or whitespace-only text block (e.g. a refusal) would be rejected on replay.
+            !(t == "text" && b.get("text").and_then(Value::as_str).is_some_and(|s| s.trim().is_empty()))
         })
         .map(|(_, b)| b.clone())
         .collect()
@@ -264,6 +264,16 @@ mod tests {
         assert_eq!(p.finish(), vec![StreamEvent::Error(LlmError::Transmission)]);
     }
     #[test] fn replay_fallback_rule() { let raw = vec![json!({"type":"thinking","thinking":"","signature":"s"}), json!({"type":"fallback"}), json!({"type":"thinking","thinking":"","signature":"t"}), json!({"type":"text","text":"X"})]; assert_eq!(replay_blocks(&raw, false), raw[1..].to_vec()); assert_eq!(replay_blocks(&raw, true), vec![raw[1].clone(), raw[3].clone()]); }
+    #[test] fn replay_drops_whitespace_text() { let raw = vec![json!({"type":"text","text":" \n "}), json!({"type":"text","text":"X"})]; assert_eq!(replay_blocks(&raw, false), raw[1..].to_vec()); }
+    #[test] fn fallback_fixture_keeps_order_and_replay_drops_pre_fallback_thinking() {
+        let ev = run("anthropic_fallback.sse");
+        assert_eq!(texts(&ev), "PROCEEDING.");
+        let Some(StreamEvent::Done{stop: Stop::End, raw: Some(raw), ..}) = ev.last() else { panic!("{ev:?}") };
+        let types: Vec<&str> = raw.iter().map(|b| b["type"].as_str().unwrap()).collect();
+        assert_eq!(types, ["thinking", "fallback", "text"]);
+        assert_eq!(replay_blocks(raw, false), raw[1..].to_vec());
+    }
+    #[test] fn api_key_is_trimmed() { let cfg = MuthurSection{ api_key: Some("  k\n".into()), ..Default::default() }; assert!(headers(&cfg).contains(&("x-api-key", "k".into()))); }
     #[test] fn replay_drops_tool_use() { let raw = vec![json!({"type":"text","text":"A"}), json!({"type":"tool_use","id":"1","name":"m","input":{}})]; assert_eq!(replay_blocks(&raw, false), raw[..1].to_vec()); }
     #[test] fn body_shape() { let cfg = MuthurSection{ api_key: Some("k".into()), ..Default::default() }; let b = request_body(&cfg, &req_with(vec![user("HI")])); assert_eq!(b["model"], "claude-sonnet-5-5"); assert_eq!(b["cache_control"], json!({"type":"ephemeral"})); assert_eq!(b["stream"], true); assert_eq!(b["output_config"]["effort"], "low"); assert_eq!(b["fallbacks"], "default"); assert!(b.get("thinking").is_none()); assert_eq!(b["messages"][0], json!({"role":"user","content":"HI"})); }
     #[test] fn no_fallbacks_no_beta() { let cfg = MuthurSection{ fallbacks: false, api_key: Some("k".into()), ..Default::default() }; assert!(request_body(&cfg, &req_with(vec![])).get("fallbacks").is_none()); assert!(!headers(&cfg).iter().any(|(k,_)| *k == "anthropic-beta")); }

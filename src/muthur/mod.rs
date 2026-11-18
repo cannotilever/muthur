@@ -264,7 +264,7 @@ impl MuthurTab {
         self.transcript.push(Entry::User(line));
         self.clear_input();
         self.req_id += 1;
-        let messages = match self.log.window(self.cfg.provider, &self.system, self.cfg.context_tokens) {
+        let messages = match self.log.window(self.cfg.provider, self.cfg.model().unwrap_or_default(), &self.system, self.cfg.context_tokens) {
             Ok(m) => m,
             Err(e) => {
                 tracing::error!("chat log: cannot build message window: {e}");

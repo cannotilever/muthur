@@ -179,9 +179,18 @@ impl Cleaner {
 }
 
 /// Keep printable ASCII, newline and DEC graphics glyphs; transliterate the rest.
+/// `\r` is dropped and `\t` becomes four spaces.
 pub fn ascii_safe(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
+        match c {
+            '\r' => continue,
+            '\t' => {
+                out.push_str("    ");
+                continue;
+            }
+            _ => {}
+        }
         if c == '\n' || (' '..='~').contains(&c) {
             out.push(c);
             continue;
@@ -222,5 +231,6 @@ mod tests {
     #[test] fn markers_split_across_chunks() { let src = "## Head\n**bo"; let rest = "ld** [l](u) x_y __z__\n"; for cut in 0..src.len() { let mut c = Cleaner::new(); let mut out = c.push(&src[..cut]); out += &c.push(&src[cut..]); out += &c.push(rest); out += &c.finish(); assert_eq!(out, "Head\nbold l (u) x_y z\n", "cut {cut}"); } }
     #[test] fn unterminated_link_is_flushed() { assert_eq!(display_text("a [b c", false), "a [b c"); }
     #[test] fn transliterates_punctuation_and_emoji() { assert_eq!(ascii_safe("A \u{2014} \u{201c}B\u{201d} \u{2026}"), "A -- \"B\" ..."); let s = ascii_safe("\u{1f680} \u{65e5}"); assert!(s.chars().all(|c| c == '\n' || (' '..='~').contains(&c))); }
+    #[test] fn tabs_expand_and_cr_dropped() { assert_eq!(ascii_safe("a\tb\r\nc\r"), "a    b\nc"); }
     #[test] fn uppercases() { assert_eq!(display_text("ok", true), "OK"); }
 }

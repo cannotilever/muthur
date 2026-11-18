@@ -89,7 +89,11 @@ impl ChatLog {
         line.push_str(&rec.to_string());
         line.push('\n');
         let mut f = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(&self.path)?;
-        f.write_all(line.as_bytes())?;
+        if let Err(e) = f.write_all(line.as_bytes()) {
+            // A partial line may be on disk; start the next record on a fresh line.
+            self.needs_newline = true;
+            return Err(e);
+        }
         self.needs_newline = false;
         self.next_seq += 1;
         self.records.push(rec);
@@ -150,7 +154,7 @@ impl ChatLog {
                 continue;
             }
             let stop = a.get("stop").and_then(Value::as_str).unwrap_or("");
-            if stop == "error" || text(a).is_empty() {
+            if matches!(stop, "error" | "refusal") || text(a).trim().is_empty() {
                 continue;
             }
             starts.push(seq(u));
@@ -181,8 +185,8 @@ impl ChatLog {
         (system.chars().count() + n) / 4
     }
 
-    pub fn window(&mut self, provider: Provider, system: &str, budget_tokens: usize) -> std::io::Result<Vec<Message>> {
-        let h = fnv64(system);
+    pub fn window(&mut self, provider: Provider, model: &str, system: &str, budget_tokens: usize) -> std::io::Result<Vec<Message>> {
+        let h = fnv64(&format!("{provider:?}\n{model}\n{system}"));
         let last = self.latest_epoch().map(|e| (e["from"].as_u64().unwrap_or(0), e["system_hash"].as_str().unwrap_or("").to_string()));
         if last.as_ref().map(|l| l.1.as_str()) != Some(h.as_str()) {
             self.append_epoch(last.map(|l| l.0).unwrap_or(0), "system_changed", &h)?;
@@ -273,7 +277,7 @@ mod tests {
         let raw = thinking_raw("B");
         l.append_assistant(asst("B", Some(raw.clone())), "t").unwrap();
         l.append_user("C", "t").unwrap();
-        let w = l.window(Provider::Anthropic, "SYS", 200000).unwrap();
+        let w = l.window(Provider::Anthropic, "m", "SYS", 200000).unwrap();
         assert_eq!(w.len(), 3);
         assert_eq!(w[1].content, MessageContent::Blocks(raw));
         assert_eq!(w[2].content, t("C"));
@@ -293,7 +297,7 @@ mod tests {
     #[test]
     fn failed_pairs_and_orphans_excluded() {
         let (_d, mut l) = failed_log();
-        let w = l.window(Provider::Anthropic, "SYS", 200000).unwrap();
+        let w = l.window(Provider::Anthropic, "m", "SYS", 200000).unwrap();
         assert_eq!(w, vec![Message { role: Role::User, content: t("C") }]);
     }
 
@@ -303,7 +307,7 @@ mod tests {
         l.append_user("A", "t").unwrap();
         l.append_assistant(asst("B", Some(thinking_raw("B"))), "t").unwrap();
         l.append_user("C", "t").unwrap();
-        let w = l.window(Provider::Openai, "SYS", 200000).unwrap();
+        let w = l.window(Provider::Openai, "m", "SYS", 200000).unwrap();
         assert_eq!(w.len(), 3);
         assert_eq!(w[1].content, t("B"));
     }
@@ -312,14 +316,14 @@ mod tests {
     fn system_change_strips_thinking_once() {
         let (_d, mut l) = log();
         l.append_user("A", "t").unwrap();
-        l.window(Provider::Anthropic, "SYS1", 200000).unwrap();
+        l.window(Provider::Anthropic, "m", "SYS1", 200000).unwrap();
         l.append_assistant(asst("B", Some(thinking_raw("B"))), "t").unwrap();
         l.append_user("C", "t").unwrap();
-        let w = l.window(Provider::Anthropic, "SYS2", 200000).unwrap();
+        let w = l.window(Provider::Anthropic, "m", "SYS2", 200000).unwrap();
         assert!(!has_thinking(&w[1].content));
         l.append_assistant(asst("D", Some(thinking_raw("D"))), "t").unwrap();
         l.append_user("E", "t").unwrap();
-        let w = l.window(Provider::Anthropic, "SYS2", 200000).unwrap();
+        let w = l.window(Provider::Anthropic, "m", "SYS2", 200000).unwrap();
         assert!(!has_thinking(&w[1].content));
         assert!(has_thinking(&w[3].content));
     }
@@ -337,13 +341,13 @@ mod tests {
             l.append_assistant(asst(&big, None), "t").unwrap();
         }
         l.append_user("now", "t").unwrap();
-        let w = l.window(Provider::Anthropic, "SYS", 1000).unwrap();
+        let w = l.window(Provider::Anthropic, "m", "SYS", 1000).unwrap();
         assert!(ChatLog::estimate("SYS", &w) <= 500);
         assert_eq!(epochs(&l, "trim"), 1);
         l.append_assistant(asst("ok", None), "t").unwrap();
         l.append_user("next", "t").unwrap();
         let n = l.records.iter().filter(|r| kind(r) == "epoch").count();
-        l.window(Provider::Anthropic, "SYS", 1000).unwrap();
+        l.window(Provider::Anthropic, "m", "SYS", 1000).unwrap();
         assert_eq!(l.records.iter().filter(|r| kind(r) == "epoch").count(), n);
     }
 
@@ -367,6 +371,65 @@ mod tests {
         assert!(!d.path().join("chat.jsonl").exists());
         assert!(l.history().is_empty());
         assert_eq!(l.append_user("B", "t").unwrap(), 0);
+    }
+
+    #[test]
+    fn refused_pairs_excluded_but_shown() {
+        let (_d, mut l) = log();
+        l.append_user("A", "t").unwrap();
+        let mut a = asst("PARTIAL", Some(vec![json!({"type":"text","text":"PARTIAL"})]));
+        a.stop = "refusal".into();
+        l.append_assistant(a, "t").unwrap();
+        l.append_user("C", "t").unwrap();
+        let w = l.window(Provider::Anthropic, "m", "SYS", 200000).unwrap();
+        assert_eq!(w, vec![Message { role: Role::User, content: t("C") }]);
+        assert_eq!(l.history()[0].reply, Some(("PARTIAL".into(), "refusal".into())));
+    }
+
+    #[test]
+    fn whitespace_only_reply_excluded() {
+        let (_d, mut l) = log();
+        l.append_user("A", "t").unwrap();
+        l.append_assistant(asst(" \n\t", Some(vec![json!({"type":"text","text":" \n\t"})])), "t").unwrap();
+        l.append_user("C", "t").unwrap();
+        let w = l.window(Provider::Anthropic, "m", "SYS", 200000).unwrap();
+        assert_eq!(w, vec![Message { role: Role::User, content: t("C") }]);
+    }
+
+    #[test]
+    fn model_change_starts_epoch_and_strips_thinking_once() {
+        let (_d, mut l) = log();
+        l.append_user("A", "t").unwrap();
+        l.window(Provider::Anthropic, "m1", "SYS", 200000).unwrap();
+        l.append_assistant(asst("B", Some(thinking_raw("B"))), "t").unwrap();
+        l.append_user("C", "t").unwrap();
+        let w = l.window(Provider::Anthropic, "m2", "SYS", 200000).unwrap();
+        assert_eq!(epochs(&l, "system_changed"), 2);
+        assert!(!has_thinking(&w[1].content));
+        l.append_assistant(asst("D", Some(thinking_raw("D"))), "t").unwrap();
+        l.append_user("E", "t").unwrap();
+        let w = l.window(Provider::Anthropic, "m2", "SYS", 200000).unwrap();
+        assert_eq!(epochs(&l, "system_changed"), 2);
+        assert!(!has_thinking(&w[1].content));
+        assert!(has_thinking(&w[3].content));
+    }
+
+    #[test]
+    fn provider_change_starts_epoch() {
+        let (_d, mut l) = log();
+        l.append_user("A", "t").unwrap();
+        l.window(Provider::Anthropic, "m", "SYS", 200000).unwrap();
+        l.window(Provider::Openai, "m", "SYS", 200000).unwrap();
+        assert_eq!(epochs(&l, "system_changed"), 2);
+    }
+
+    #[test]
+    fn failed_write_forces_fresh_line() {
+        let (_d, mut l) = log();
+        l.append_user("A", "t").unwrap();
+        l.path = PathBuf::from("/dev/full");
+        assert!(l.append_user("B", "t").is_err());
+        assert!(l.needs_newline);
     }
 
     #[test]

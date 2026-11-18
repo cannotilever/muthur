@@ -208,11 +208,11 @@ The layout is the same in the windowed content pane (61×40) and in fullscreen (
 
 1. Find the latest `epoch` E; if there is none, `from = 0`.
 2. Take the user/assistant pairs with `seq ≥ from`.
-3. Leave out any pair whose assistant record has `stop: error` or empty text, and any trailing user record that has no answer (it is the current inquiry, which is appended separately).
+3. Leave out any pair whose assistant record has `stop: error` or `stop: refusal`, or empty/whitespace-only text, and any trailing user record that has no answer (it is the current inquiry, which is appended separately).
 4. **Anthropic.** An assistant record with `seq < E.seq` is sent with its thinking and redacted-thinking blocks removed from `raw` (falling back to `text` if nothing is left). Records written after E replay `raw` exactly, with the fallback rule applied. Interrupted records are sent as plain text.
 5. **OpenAI.** Only `text` is sent.
 6. **Trimming.** If the estimated size (system + window + new inquiry, chars/4) is over `context_tokens`, write a new `epoch` with `reason: trim`. Its `from` is chosen so that the remaining window is ≤ 50 % of the budget, cutting only between whole exchanges. Then rebuild the window.
-7. **System change.** If the current system hash differs from the last recorded one, write `epoch { from: <unchanged>, reason: system_changed }` before building the window.
+7. **System change.** `system_hash` covers provider, model and system prompt (`fnv64("{provider:?}\n{model}\n{system}")`). If the current hash differs from the last recorded one, write `epoch { from: <unchanged>, reason: system_changed }` before building the window.
 
 ### Other rules
 

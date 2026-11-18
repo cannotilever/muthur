@@ -9,7 +9,7 @@ pub const PATH: &str = "/v1/chat/completions";
 
 pub fn headers(cfg: &MuthurSection) -> Vec<(&'static str, String)> {
     let mut h = vec![("content-type", "application/json".to_string())];
-    if let Some(k) = cfg.api_key.as_deref().filter(|k| !k.is_empty()) {
+    if let Some(k) = cfg.api_key() {
         h.push(("authorization", format!("Bearer {k}")));
     }
     h
@@ -153,6 +153,7 @@ mod tests {
     #[test] fn length_is_max_tokens() { assert!(matches!(run("openai_length.sse").last(), Some(StreamEvent::Done{stop: Stop::MaxTokens, ..}))); }
     #[test] fn system_goes_first() { let b = request_body(&cfg(), &ChatRequest{ system: "SYS".into(), messages: vec![user("HI")] }); assert_eq!(b["messages"][0], json!({"role":"system","content":"SYS"})); assert_eq!(b["messages"][1], json!({"role":"user","content":"HI"})); assert_eq!(b["model"], "qwen"); assert_eq!(b["stream"], true); }
     #[test] fn bearer_only_with_key() { assert!(!headers(&cfg()).iter().any(|(k,_)| *k == "authorization")); assert!(headers(&MuthurSection{ api_key: Some("k".into()), ..cfg() }).contains(&("authorization", "Bearer k".into()))); }
+    #[test] fn api_key_is_trimmed() { assert!(headers(&MuthurSection{ api_key: Some(" k\n".into()), ..cfg() }).contains(&("authorization", "Bearer k".into()))); assert!(!headers(&MuthurSection{ api_key: Some("  ".into()), ..cfg() }).iter().any(|(k,_)| *k == "authorization")); }
     #[test] fn missing_done_is_transmission_error() {
         let mut p = Parser::new();
         let mut dec = SseDecoder::default();

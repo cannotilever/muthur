@@ -119,7 +119,7 @@ Single Rust crate, tokio runtime.
 | `dialect` | `Dialect` trait describing the output language: cursor addressing, attributes, charset switching, scroll regions, and the **allowlist** of sequences. `Vt100Dialect` for v1; `Wyse60Dialect` (native personality: dim attribute, graphics set, pages) later without touching other modules. |
 | `backend` | `Wy60Backend: ratatui::backend::Backend`. **The only path to the wire.** Keeps two full grids — `want` (built from ratatui's diffs) and `shown` (what the terminal displays) — and emits exactly the cells where they differ. Tabs may leave a **scroll hint** (shared `HintSlot`); the backend then scrolls that band of full-width lines with DECSTBM + LF/RI and the compare repairs anything the scroll disturbed (sidebar, borders), so a wrong hint costs bytes, never correctness. Cursor/attribute/charset changes are coalesced; redraws wait for the kernel output queue to drain. Generic over `Dialect`. |
 | `input` | Byte stream → key events via configurable keymap; prefix-key state machine. |
-| `app` | Event bus (`Input`, `Tick`, `PtyOutput`, `LlmChunk`, `Metrics`, later `Alert`), chrome rendering, tab focus, per-tab fullscreen, mode transitions. |
+| `app` | Event bus (`Input`, `Tick`, `PtyOutput`, `Llm`, `Metrics`, later `Alert`), chrome rendering, tab focus, per-tab fullscreen, mode transitions. |
 | `tabs::utility` | System monitor (see below). |
 | `tabs::muthur` | Chat UI (see below). |
 | `tabs::shell` | PTY + virtual terminal + translation (see below). |
@@ -158,6 +158,39 @@ Single Rust crate, tokio runtime.
   trimmed/summarised to fit the context window; a purge command clears it.
   Format leaves room for multiple sessions later.
 - Errors (endpoint down etc.) shown in-character (`UNABLE TO COMPLY — …`).
+
+#### MU/TH/UR configuration
+
+All keys live in the `[muthur]` table of the config file (which must be
+`0600`, protecting `api_key`). Every key is optional.
+
+| key | default | meaning |
+|---|---|---|
+| `provider` | `"anthropic"` | `"anthropic"` (Messages API) or `"openai"` (OpenAI-compatible chat completions, e.g. vLLM) |
+| `base_url` | `"https://api.anthropic.com"` for anthropic; none for openai | endpoint root; **required** for openai |
+| `model` | `"claude-sonnet-5-5"` for anthropic; none for openai | model name; **required** for openai |
+| `api_key` | none | required for anthropic (`x-api-key`); optional for openai (sent as `Bearer`); surrounding whitespace is trimmed, blank counts as unset |
+| `max_tokens` | `4096` | per-reply output cap |
+| `effort` | `"low"` | anthropic only: `output_config.effort` |
+| `fallbacks` | `true` | anthropic only: server-side fallback (`fallbacks: "default"` + beta header) |
+| `cache_ttl` | `"5m"` | anthropic only: prompt-cache TTL, `"5m"` or `"1h"` |
+| `context_tokens` | `200000` | history trim budget, estimated as chars/4 |
+| `reveal_cps` | `50` | teletype reveal rate, characters per second |
+| `uppercase` | `true` | uppercase replies on screen |
+| `system_prompt` | none | empty or unset uses the built-in MU/TH/UR persona |
+
+- **vLLM:** set `context_tokens` to about 0.75 × the server's
+  `max_model_len` (the chars/4 estimate is rough and the reply needs room).
+- **Chat log:** `~/.local/state/muthur/chat.jsonl`, mode `0600`, append-only
+  JSONL. If it cannot be opened, a fresh temporary log is created in
+  `$XDG_RUNTIME_DIR` (or the temp dir) and history does not persist.
+  Changing the system prompt, provider or model starts a new epoch, so older
+  thinking blocks are not replayed. `/PURGE` deletes it.
+- **Token usage** for each turn (input, cache write/read, output) is logged to
+  `muthur.log` (anthropic; the openai stream reports none). Request/response
+  bodies and headers are never logged.
+- **Alpine:** install `ca-certificates`, or TLS to the endpoint fails
+  (`NO CARRIER`).
 
 ### Tools & safety
 

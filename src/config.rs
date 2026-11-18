@@ -163,6 +163,11 @@ impl MuthurSection {
         }
     }
 
+    /// The API key (trimmed), or `None` when unset or blank.
+    pub fn api_key(&self) -> Option<&str> {
+        self.api_key.as_deref().map(str::trim).filter(|k| !k.is_empty())
+    }
+
     /// The system prompt, or `None` when unset or blank.
     pub fn system_prompt(&self) -> Option<&str> {
         self.system_prompt.as_deref().filter(|s| !s.trim().is_empty())
@@ -171,9 +176,9 @@ impl MuthurSection {
     /// Whether the configured provider has what it needs to make a request.
     pub fn readiness(&self) -> Result<(), LlmError> {
         match self.provider {
-            Provider::Anthropic => match self.api_key.as_deref() {
-                Some(key) if !key.is_empty() => Ok(()),
-                _ => Err(LlmError::NoAccessCode),
+            Provider::Anthropic => match self.api_key() {
+                Some(_) => Ok(()),
+                None => Err(LlmError::NoAccessCode),
             },
             Provider::Openai => match (self.base_url(), self.model()) {
                 (Some(_), Some(_)) => Ok(()),
@@ -295,6 +300,12 @@ mod tests {
             (m.max_tokens, m.effort.as_str(), m.fallbacks, m.cache_ttl.as_str(), m.context_tokens, m.reveal_cps, m.uppercase),
             (4096, "low", true, "5m", 200000, 50, true)
         );
+        assert_eq!(m.readiness(), Err(LlmError::NoAccessCode));
+    }
+
+    #[test]
+    fn whitespace_api_key_is_missing() {
+        let m = MuthurSection { api_key: Some(" \t\n".into()), ..Default::default() };
         assert_eq!(m.readiness(), Err(LlmError::NoAccessCode));
     }
 

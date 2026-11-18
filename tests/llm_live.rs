@@ -14,7 +14,7 @@ const SYSTEM: &str = "You are a terse test responder. Answer in at most ten word
 /// One turn: stream the window, assert text and a clean end, return (text, raw, model).
 async fn turn(client: &LlmClient, cfg: &MuthurSection, log: &mut ChatLog, user: &str) -> Assistant {
     log.append_user(user, "2026-11-18T00:00:00Z").unwrap();
-    let messages = log.window(cfg.provider, SYSTEM, cfg.context_tokens).unwrap();
+    let messages = log.window(cfg.provider, cfg.model().unwrap_or_default(), SYSTEM, cfg.context_tokens).unwrap();
     let mut text = String::new();
     let mut done = None;
     client
@@ -27,16 +27,22 @@ async fn turn(client: &LlmClient, cfg: &MuthurSection, log: &mut ChatLog, user: 
         .await;
     let (stop, model, raw) = done.expect("no Done event");
     assert_eq!(stop, Stop::End);
+    let stop = stop.log_str().to_string();
     assert!(!text.trim().is_empty(), "empty reply");
     println!("--- reply: {text}");
-    Assistant { provider: cfg.provider, model: model.unwrap_or_default(), text, stop: "end".into(), raw }
+    Assistant { provider: cfg.provider, model: model.unwrap_or_default(), text, stop, raw }
 }
 
-async fn round_trip(cfg: MuthurSection) {
+async fn round_trip(cfg: MuthurSection, first: &str) {
     let dir = tempfile::tempdir().unwrap();
     let mut log = ChatLog::open(dir.path().join("chat.jsonl")).unwrap();
     let client = LlmClient::new(cfg.clone()).unwrap();
-    let a = turn(&client, &cfg, &mut log, "STATE YOUR DESIGNATION.").await;
+    let a = turn(&client, &cfg, &mut log, first).await;
+    if cfg.provider == Provider::Anthropic {
+        // Not asserted: adaptive thinking may skip a short problem.
+        let thought = a.raw.as_ref().is_some_and(|r| r.iter().any(|b| b["type"] == "thinking"));
+        println!("--- turn 1 raw contains a thinking block: {thought}");
+    }
     log.append_assistant(a, "2026-11-18T00:00:01Z").unwrap();
     // Replays the first answer (with thinking blocks on Anthropic) in the window.
     let b = turn(&client, &cfg, &mut log, "REPEAT YOUR LAST ANSWER IN THREE WORDS.").await;
@@ -50,7 +56,13 @@ async fn anthropic_round_trip() {
         println!("skipped: MUTHUR_LIVE_ANTHROPIC_KEY not set");
         return;
     };
-    round_trip(MuthurSection { provider: Provider::Anthropic, api_key: Some(key), ..MuthurSection::default() }).await;
+    // effort=high and a small reasoning problem so turn 1 likely carries a
+    // signed thinking block that turn 2 must replay.
+    round_trip(
+        MuthurSection { provider: Provider::Anthropic, api_key: Some(key), effort: "high".into(), ..MuthurSection::default() },
+        "A ship travels 3 light-years at 0.5c, then 2 light-years at 0.25c. Total travel time in years? Answer with the number only.",
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -66,6 +78,6 @@ async fn openai_round_trip() {
         model: Some(model),
         api_key: std::env::var("MUTHUR_LIVE_OPENAI_KEY").ok(),
         ..MuthurSection::default()
-    })
+    }, "STATE YOUR DESIGNATION.")
     .await;
 }
