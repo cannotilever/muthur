@@ -139,26 +139,33 @@ impl Default for MuthurSection {
 }
 
 impl MuthurSection {
-    /// Explicit `base_url` (trailing '/' trimmed), else the Anthropic default; `None` for Openai.
+    /// Explicit `base_url` (trimmed, trailing '/' removed), else the Anthropic default;
+    /// a blank explicit value counts as unset. `None` for Openai.
     pub fn base_url(&self) -> Option<&str> {
-        match &self.base_url {
-            Some(url) => Some(url.trim_end_matches('/')),
-            None => match self.provider {
+        match self.base_url.as_deref().map(|u| u.trim().trim_end_matches('/')) {
+            Some(url) if !url.is_empty() => Some(url),
+            _ => match self.provider {
                 Provider::Anthropic => Some("https://api.anthropic.com"),
                 Provider::Openai => None,
             },
         }
     }
 
-    /// Explicit `model`, else the Anthropic default; `None` for Openai.
+    /// Explicit `model` (trimmed), else the Anthropic default; a blank explicit value
+    /// counts as unset. `None` for Openai.
     pub fn model(&self) -> Option<&str> {
-        match &self.model {
-            Some(m) => Some(m.as_str()),
-            None => match self.provider {
+        match self.model.as_deref().map(str::trim) {
+            Some(m) if !m.is_empty() => Some(m),
+            _ => match self.provider {
                 Provider::Anthropic => Some("claude-sonnet-5-5"),
                 Provider::Openai => None,
             },
         }
+    }
+
+    /// The system prompt, or `None` when unset or blank.
+    pub fn system_prompt(&self) -> Option<&str> {
+        self.system_prompt.as_deref().filter(|s| !s.trim().is_empty())
     }
 
     /// Whether the configured provider has what it needs to make a request.
@@ -303,6 +310,48 @@ mod tests {
     fn openai_without_url_is_not_configured() {
         let m = MuthurSection { provider: Provider::Openai, ..Default::default() };
         assert_eq!(m.readiness(), Err(LlmError::NotConfigured));
+    }
+
+    #[test]
+    fn blank_openai_base_url_is_not_configured() {
+        for url in ["", "   ", "/"] {
+            let m = MuthurSection {
+                provider: Provider::Openai,
+                base_url: Some(url.into()),
+                model: Some("qwen".into()),
+                ..Default::default()
+            };
+            assert_eq!(m.readiness(), Err(LlmError::NotConfigured), "base_url {url:?}");
+        }
+    }
+
+    #[test]
+    fn blank_openai_model_is_not_configured() {
+        let m = MuthurSection {
+            provider: Provider::Openai,
+            base_url: Some("http://10.0.0.5:8000".into()),
+            model: Some("  ".into()),
+            ..Default::default()
+        };
+        assert_eq!(m.readiness(), Err(LlmError::NotConfigured));
+    }
+
+    #[test]
+    fn blank_anthropic_model_falls_back_to_default() {
+        let m = MuthurSection { model: Some("".into()), ..Default::default() };
+        assert_eq!(m.model(), Some("claude-sonnet-5-5"));
+    }
+
+    #[test]
+    fn system_prompt_blank_counts_as_none() {
+        let mut m = MuthurSection::default();
+        assert_eq!(m.system_prompt(), None);
+        m.system_prompt = Some("".into());
+        assert_eq!(m.system_prompt(), None);
+        m.system_prompt = Some("   ".into());
+        assert_eq!(m.system_prompt(), None);
+        m.system_prompt = Some("Be terse.".into());
+        assert_eq!(m.system_prompt(), Some("Be terse."));
     }
 
     #[test]
