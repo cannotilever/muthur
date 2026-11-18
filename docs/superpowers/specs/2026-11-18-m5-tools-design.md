@@ -54,10 +54,10 @@ start = []
 stop = []
 ```
 
-- **Unit names** in the config, and arguments from the model, are normalised: a name with no `.` gets `.service` appended. A valid name:
+- **Unit names** in the config, and arguments from the model, are normalised: a name gets `.service` appended unless it already ends in a known unit suffix (`.service`, `.socket`, `.timer`, `.mount`, `.target`, `.path`, `.slice`, `.scope`, `.swap`, `.automount`, `.device`). A valid name:
   - matches `^[A-Za-z0-9@._:-]+$`;
   - is 1–128 characters;
-  - does not start with `-`.
+  - does not start with `-` or `.`.
 - **Allowlist matching** compares normalised names.
 - **Docs.** `docs/config.example.toml` gains the section, and its sync test keeps passing. `docs/sudoers.example` shows the matching rule, e.g. `jake ALL=(root) NOPASSWD: /usr/bin/systemctl restart nginx.service`.
 
@@ -91,9 +91,9 @@ All commands are run as an argument vector (no shell), with stdin set to null. O
 
 | Tool | Input schema | Runs | Timeout |
 |---|---|---|---|
-| `start_service` | `{unit: enum of tools.services.start}` | `<elevate> -n systemctl start <unit>` | 30 s |
-| `stop_service` | `{unit: enum of tools.services.stop}` | `<elevate> -n systemctl stop <unit>` | 30 s |
-| `restart_service` | `{unit: enum of tools.services.restart}` | `<elevate> -n systemctl restart <unit>` | 30 s |
+| `start_service` | `{unit: enum of tools.services.start}` | `<elevate> -n /usr/bin/systemctl start <unit>` | 30 s |
+| `stop_service` | `{unit: enum of tools.services.stop}` | `<elevate> -n /usr/bin/systemctl stop <unit>` | 30 s |
+| `restart_service` | `{unit: enum of tools.services.restart}` | `<elevate> -n /usr/bin/systemctl restart <unit>` | 30 s |
 
 On success the result is `COMPLETED: <VERB> <UNIT>`. The model checks the outcome with `service_status` if it needs to.
 

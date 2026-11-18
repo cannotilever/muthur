@@ -26,7 +26,7 @@ pub fn normalize_unit(s: &str) -> Option<String> {
     if s.is_empty() || s.len() > 128 || s.starts_with(['-', '.']) {
         return None;
     }
-    if !s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '_' | '.' | '-' | '@' | '\\')) {
+    if !s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '_' | '.' | '-' | '@')) {
         return None;
     }
     if SUFFIXES.iter().any(|x| s.ends_with(x)) {
@@ -151,6 +151,11 @@ fn spec(name: &str, description: &str, properties: Value) -> ToolSpec {
 
 impl ToolDefs {
     pub fn new(cfg: &ToolsSection) -> Self {
+        let mut journal_max_lines = cfg.journal_max_lines;
+        if journal_max_lines == 0 {
+            tracing::warn!("[tools].journal_max_lines = 0; using 1");
+            journal_max_lines = 1;
+        }
         let restart = normalize_list("restart", &cfg.services.restart);
         let start = normalize_list("start", &cfg.services.start);
         let stop = normalize_list("stop", &cfg.services.stop);
@@ -166,7 +171,7 @@ impl ToolDefs {
             specs.push(spec(
                 "journal",
                 "Recent journal lines for one systemd unit.",
-                json!({"unit": unit_free, "lines": {"type":"integer","minimum":1,"maximum":cfg.journal_max_lines}}),
+                json!({"unit": unit_free, "lines": {"type":"integer","minimum":1,"maximum":journal_max_lines}}),
             ));
             specs.push(spec(
                 "list_units",
@@ -195,7 +200,7 @@ impl ToolDefs {
             stop,
             enabled: cfg.enabled,
             max_rounds: cfg.max_rounds,
-            journal_max_lines: cfg.journal_max_lines,
+            journal_max_lines,
             elevate: cfg.elevate,
         }
     }
@@ -291,7 +296,7 @@ mod tests {
     }
 
     #[test] fn normalizes_units() { assert_eq!(normalize_unit("nginx").as_deref(), Some("nginx.service")); assert_eq!(normalize_unit("getty@tty1.service").as_deref(), Some("getty@tty1.service")); assert_eq!(normalize_unit("foo.timer").as_deref(), Some("foo.timer")); }
-    #[test] fn rejects_hostile_units() { for u in ["nginx; rm -rf /", "--help", "-x", "../x", "a b", "", &"a".repeat(129), "ng\ninx"] { assert_eq!(normalize_unit(u), None, "{u:?}"); } }
+    #[test] fn rejects_hostile_units() { for u in ["nginx; rm -rf /", "--help", "-x", "../x", "a b", "", &"a".repeat(129), "ng\ninx", "a\\b"] { assert_eq!(normalize_unit(u), None, "{u:?}"); } }
     #[test] fn definitions_order_and_allowlist_gating() { let d = ToolDefs::new(&ToolsSection{ services: ServiceLists{ restart: vec!["nginx".into()], ..Default::default() }, ..Default::default() }); let names: Vec<_> = d.specs().iter().map(|s| s.name.as_str()).collect(); assert_eq!(names, ["ship_status","service_status","journal","list_units","listening_ports","restart_service"]); assert_eq!(d.specs()[5].schema["properties"]["unit"]["enum"], json!(["nginx.service"])); }
     #[test] fn disabled_has_no_specs() { assert!(ToolDefs::new(&ToolsSection{ enabled: false, ..Default::default() }).specs().is_empty()); }
     #[test] fn validate_tier1() { let d = defs(); assert_eq!(d.validate("service_status", &json!({"unit":"nginx"})), Ok(Invocation::ServiceStatus{ unit: "nginx.service".into() })); assert_eq!(d.validate("journal", &json!({"unit":"nginx","lines":20})), Ok(Invocation::Journal{ unit: "nginx.service".into(), lines: 20 })); assert_eq!(d.validate("journal", &json!({"unit":"nginx","lines":51})), Err("lines out of range".into())); assert_eq!(d.validate("list_units", &json!({"state":"zombie"})), Err("invalid state".into())); }
@@ -299,5 +304,19 @@ mod tests {
     #[test] fn tier2_enforces_allowlist_even_past_schema() { let d = defs_with_restart(&["nginx"]); assert!(matches!(d.validate("restart_service", &json!({"unit":"nginx.service"})), Ok(Invocation::Service{ verb: Verb::Restart, .. }))); assert_eq!(d.validate("restart_service", &json!({"unit":"sshd"})), Err("unit not on allowlist".into())); assert_eq!(d.validate("stop_service", &json!({"unit":"nginx"})), Err("unknown tool stop_service".into())); }
     #[test] fn extra_argument_rejected() { assert_eq!(defs().validate("ship_status", &json!({"x":1})), Err("unexpected argument x".into())); }
     #[test] fn cap_truncates_on_char_boundary() { let s = "é".repeat(3000); let c = cap(s); assert!(c.ends_with("\n[TRUNCATED]")); assert!(c.len() <= CAP + 12); assert!(cap("short".into()) == "short"); }
+    #[test] fn more_validation() {
+        let d = defs();
+        assert_eq!(d.validate("service_status", &json!({"unit":"a;b"})), Err("invalid unit".into()));
+        assert_eq!(d.validate("journal", &json!({"unit":"nginx"})), Err("missing lines".into()));
+        assert_eq!(d.validate("journal", &json!({"unit":"nginx","lines":2.5})), Err("lines out of range".into()));
+        assert_eq!(d.validate("list_units", &json!({})), Err("missing state".into()));
+        let off = ToolDefs::new(&ToolsSection { enabled: false, ..Default::default() });
+        assert_eq!(off.validate("ship_status", &json!({})), Err("tools disabled".into()));
+        let r = defs_with_restart(&["nginx"]);
+        assert_eq!(r.validate("restart_service", &json!({"unit":"nginx","force":true})), Err("unexpected argument force".into()));
+        let z = ToolDefs::new(&ToolsSection { journal_max_lines: 0, ..Default::default() });
+        assert_eq!(z.specs()[2].schema["properties"]["lines"]["maximum"], json!(1));
+    }
+    #[test] fn cap_cuts_mid_character() { let s = format!("aa{}", "€".repeat(2000)); let c = cap(s); assert!(c.ends_with("\n[TRUNCATED]")); assert!(std::str::from_utf8(c.as_bytes()).is_ok()); assert!(c.len() < 4096 + 12 && c.len() > 4000); assert!(c.starts_with("aa€")); }
     #[test] fn labels() { assert_eq!(Invocation::Service{ verb: Verb::Restart, unit: "nginx.service".into() }.label(), "RESTART NGINX.SERVICE"); assert_eq!(Invocation::Journal{ unit: "a.service".into(), lines: 20 }.label(), "JOURNAL A.SERVICE 20"); }
 }
