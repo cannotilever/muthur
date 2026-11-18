@@ -6,5 +6,6 @@ pub mod input;
 pub mod link;
 pub mod run;
 pub mod scroll;
+pub mod shell;
 pub mod strict;
 pub mod testcard;
