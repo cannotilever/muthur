@@ -4,6 +4,7 @@ pub mod config;
 pub mod dialect;
 pub mod input;
 pub mod link;
+pub mod llm;
 pub mod metrics;
 pub mod run;
 pub mod scroll;

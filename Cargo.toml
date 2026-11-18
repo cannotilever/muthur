@@ -11,7 +11,7 @@ toml = "0.9"
 anyhow = "1"
 dirs = "6"
 ratatui = { version = "0.30", default-features = false, features = ["std", "layout-cache"] }
-tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time", "net", "io-util"] }
 chrono = "0.4"
 unicode-width = "0.2"
 deunicode = "1"
@@ -20,6 +20,9 @@ sysinfo = "0.40"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 tracing-appender = "0.2"
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3"
