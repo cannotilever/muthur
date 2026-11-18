@@ -7,6 +7,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Paragraph, Widget};
+use std::time::Duration;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TabId {
@@ -56,6 +57,12 @@ pub trait Tab {
     fn on_metrics(&mut self, _s: &crate::metrics::Snapshot) {}
     /// The metrics source is failing (Utility only).
     fn on_metrics_offline(&mut self, _why: &str) {}
+    /// A streamed LLM event for request `_req_id` (MU/TH/UR only).
+    fn on_llm(&mut self, _req_id: u64, _ev: crate::llm::StreamEvent) {}
+    /// How often the tab wants a redraw while animating; `None` when idle.
+    fn tick_interval(&self) -> Option<Duration> {
+        None
+    }
 }
 
 /// Stand-in until a tab's milestone lands.
