@@ -20,7 +20,7 @@ It exists for two reasons:
 | Geometry | **80×43**, WY-60 status line disabled |
 | Cable | USB FTDI → DB9, DB9 → DB25 null modem |
 | Speed | **38400 baud** |
-| Flow control | **XON/XOFF** (hardware RTS/CTS deferred; test procedure in README) |
+| Flow control | **XON/XOFF** (RTS/CTS tested: does not work with this cabling) |
 | Host | Dedicated server, Arch or Alpine, x86_64 |
 
 Consequences:
@@ -104,6 +104,9 @@ Modelled on the Alien: Isolation personal terminal
 - **Prefix `Ctrl-]`** then:
   - `f` fullscreen toggle · `p` passthrough toggle · `[` scrollback (Shell)
   - `r` force full redraw · `]` send a literal `Ctrl-]` · `?` help
+- Measured key sequences and output capabilities: see `docs/hardware.md`.
+  PgUp/PgDn are Shift-F15/Shift-F16 (the Page key only sends `^J`); delete-char
+  is Line Del/Char (PF2) because Del is a hold-screen key.
 - Raw byte sequences for WY-60 keys (F-keys, arrows, PgUp/PgDn) in VT100
   personality are **not yet known**; `muthur testcard` has a key-echo mode to
   discover them. The keymap lives in config with defaults filled in from
