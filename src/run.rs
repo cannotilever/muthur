@@ -6,6 +6,8 @@ use crate::config::Config;
 use crate::dialect::{Dialect, Vt100Dialect};
 use crate::input::{Key, KeyParser, Keymap};
 use crate::link::{Link, ReadTimeout, install_panic_hook};
+use crate::scroll::HintSlot;
+use crate::shell::{PtyEvent, ShellConfig, ShellTab};
 use crate::strict::StrictWriter;
 use crate::testcard::keys::KEY_GAP;
 use chrono::NaiveDateTime;
@@ -22,6 +24,7 @@ const RETRY: Duration = Duration::from_millis(20);
 
 pub enum Event {
     Keys(Vec<Key>),
+    Pty(PtyEvent),
     Hangup,
     Tick,
 }
@@ -83,10 +86,16 @@ pub async fn event_loop<W: Write>(
 ) -> anyhow::Result<()> {
     let mut dirty = true;
     let mut tick = tokio::time::interval(Duration::from_secs(1));
+    // Passthrough is on when entered from outside (tests) or by `^] p`.
+    let mut was_passthrough = false;
     loop {
-        if should_draw(dirty, outq()) {
+        // Entering passthrough: draw once more (the shell, now fullscreen,
+        // resizes its PTY to the whole screen), then stop drawing.
+        let entering = app.passthrough && !was_passthrough && dirty;
+        if (entering || !app.passthrough) && should_draw(dirty, outq()) {
             terminal.draw(|f| app.render(f, clock()))?;
             dirty = false;
+            was_passthrough = app.passthrough;
         }
         tokio::select! {
             ev = rx.recv() => match ev {
@@ -94,6 +103,15 @@ pub async fn event_loop<W: Write>(
                     for k in keys {
                         app.handle_key(k);
                     }
+                    dirty = true;
+                }
+                Some(Event::Pty(ev)) => {
+                    if app.passthrough && let PtyEvent::Output(bytes) = &ev {
+                        let w = terminal.backend_mut().writer_mut();
+                        w.write_all(bytes)?;
+                        w.flush()?;
+                    }
+                    app.on_pty(ev);
                     dirty = true;
                 }
                 Some(Event::Tick) => dirty = true,
@@ -104,6 +122,9 @@ pub async fn event_loop<W: Write>(
         }
         if app.quit {
             return Ok(());
+        }
+        if !app.passthrough {
+            was_passthrough = false;
         }
         if app.redraw {
             app.redraw = false;
@@ -140,15 +161,26 @@ pub fn run(cfg: &Config, strict: bool) -> anyhow::Result<()> {
     };
     let keymap = Keymap::wy60_default().with_overrides(&cfg.keys)?;
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    spawn_input(link.reader()?, KeyParser::new(keymap), tx);
+    spawn_input(link.reader()?, KeyParser::new(keymap), tx.clone());
 
     let out = link.writer()?;
     let writer: Box<dyn Write> =
         if strict { Box::new(StrictWriter::new(out, Vt100Dialect)) } else { Box::new(out) };
     let (cols, rows) = (cfg.terminal.cols, cfg.terminal.rows);
-    let mut terminal = Terminal::new(Wy60Backend::new(writer, Vt100Dialect, cols, rows))?;
+    let hints = HintSlot::default();
+    let mut terminal = Terminal::new(Wy60Backend::new(writer, Vt100Dialect, cols, rows).with_hints(hints.clone()))?;
     terminal.clear()?;
-    let mut app = App::new(ChromeView { ship_name: ship_name(cfg), year_offset: cfg.chrome.year_offset });
+    let shell_cfg = ShellConfig {
+        command: cfg.shell.command.clone(),
+        args: cfg.shell.args.clone(),
+        scrollback: cfg.shell.scrollback,
+    };
+    let pty_tx = tx.clone();
+    let shell = ShellTab::new(shell_cfg, hints, move |e| {
+        let _ = pty_tx.send(Event::Pty(e));
+    });
+    let chrome = ChromeView { ship_name: ship_name(cfg), year_offset: cfg.chrome.year_offset };
+    let mut app = App::with_shell(chrome, shell);
     tracing::info!(cols, rows, strict, "MU/TH/UR online");
 
     let rt = tokio::runtime::Builder::new_current_thread().enable_time().build()?;
@@ -231,6 +263,18 @@ mod tests {
         let out = String::from_utf8(t.backend().writer().clone()).unwrap();
         assert_eq!(out.matches("\x1b[2J").count(), 2, "initial clear + redraw");
         assert!(out.contains("17 NOV 2137 14:02"));
+    }
+
+    #[tokio::test]
+    async fn passthrough_writes_raw_bytes() {
+        let (mut app, mut t) = setup();
+        app.passthrough = true;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(Event::Pty(crate::shell::PtyEvent::Output(b"\x1b[31mX".to_vec()))).unwrap();
+        tx.send(Event::Keys(vec![Key::Ctrl(']'), Key::Char('q')])).unwrap();
+        event_loop(&mut app, &mut t, &mut rx, || 0, now).await.unwrap();
+        let out = t.backend().writer().clone();
+        assert!(out.windows(6).any(|w| w == b"\x1b[31mX"), "{:?}", String::from_utf8_lossy(&out));
     }
 
     #[tokio::test]

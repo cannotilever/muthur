@@ -20,13 +20,15 @@ pub const CONTENT: Rect = Rect { x: 19, y: 2, width: 61, height: 40 };
 
 const FOOTER: &str = "F1-F3 SELECT .... ^] F FULLSCREEN .... SH-F15/16 SCROLL .... ^] ? HELP";
 const PREFIX: &str = "PREFIX: F FULL  R REDRAW  D DATE  ? HELP  Q QUIT  ] SEND ^]";
-const HELP: [&str; 9] = [
+const HELP: [&str; 11] = [
     "F1 / F2 / F3     SELECT FOLDER",
     "SH-F15 / SH-F16  SCROLL UP / DOWN",
     "^] F             FULLSCREEN",
     "^] R             REDRAW SCREEN",
     "^] D             REAL / SHIP DATE",
-    "^] ]             SEND ^] TO FOLDER",
+    "^] [             SCROLLBACK (SHELL)",
+    "^] P             RAW PASSTHROUGH (SHELL)",
+    "^] ] OR ^] ^]    SEND ^] TO FOLDER",
     "^] Q             QUIT",
     "",
     "ANY KEY TO CLOSE",

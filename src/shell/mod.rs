@@ -270,6 +270,26 @@ impl Tab for ShellTab {
     fn take_activity(&mut self) -> bool {
         std::mem::take(&mut self.activity)
     }
+
+    fn cursor(&self) -> Option<Position> {
+        ShellTab::cursor(self)
+    }
+
+    fn on_pty(&mut self, ev: PtyEvent) {
+        match ev {
+            PtyEvent::Output(b) => self.on_output(&b),
+            PtyEvent::Exited => self.on_exit(),
+        }
+    }
+
+    fn enter_scrollback(&mut self) -> bool {
+        ShellTab::enter_scrollback(self);
+        true
+    }
+
+    fn supports_passthrough(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

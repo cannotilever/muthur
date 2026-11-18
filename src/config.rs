@@ -58,9 +58,25 @@ impl Default for ChromeConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct ShellSection {
+    pub command: String,
+    pub args: Vec<String>,
+    /// Lines of history kept for `^] [`.
+    pub scrollback: usize,
+}
+
+impl Default for ShellSection {
+    fn default() -> Self {
+        Self { command: "fish".into(), args: Vec::new(), scrollback: 1000 }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    pub shell: ShellSection,
     pub link: LinkConfig,
     pub terminal: TerminalConfig,
     pub chrome: ChromeConfig,
@@ -132,6 +148,7 @@ mod tests {
         assert_eq!((c.terminal.cols, c.terminal.rows), (80, 43));
         assert_eq!(c.chrome.year_offset, 111);
         assert!(c.chrome.ship_name.is_none() && c.keys.is_empty());
+        assert_eq!((c.shell.command.as_str(), c.shell.scrollback), ("fish", 1000));
     }
 
     #[test]

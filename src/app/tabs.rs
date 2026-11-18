@@ -1,6 +1,8 @@
 //! Tabs: the three folders of the personal terminal.
 
 use crate::input::Key;
+use crate::shell::PtyEvent;
+use ratatui::layout::Position;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::text::Line;
@@ -35,6 +37,19 @@ pub trait Tab {
     fn handle_key(&mut self, key: &Key);
     /// True once if something happened since the last call (sidebar marker).
     fn take_activity(&mut self) -> bool {
+        false
+    }
+    /// Where the terminal cursor belongs while this tab is shown.
+    fn cursor(&self) -> Option<Position> {
+        None
+    }
+    /// Output or exit from this tab's PTY (Shell only).
+    fn on_pty(&mut self, _ev: PtyEvent) {}
+    /// Enter scrollback; false if the tab has none.
+    fn enter_scrollback(&mut self) -> bool {
+        false
+    }
+    fn supports_passthrough(&self) -> bool {
         false
     }
 }

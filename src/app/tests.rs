@@ -175,3 +175,119 @@ fn renders_only_dialect_safe_glyphs() {
         }
     }
 }
+
+// ---- Shell integration (real `sh` on a PTY) ----
+
+use crate::scroll::HintSlot;
+use crate::shell::{PtyEvent, ShellConfig, ShellTab};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+fn shell_app(args: &[&str]) -> (App, mpsc::Receiver<PtyEvent>) {
+    let (tx, rx) = mpsc::channel();
+    let cfg = ShellConfig { command: "sh".into(), args: args.iter().map(|s| s.to_string()).collect(), scrollback: 100 };
+    let shell = ShellTab::new(cfg, HintSlot::default(), move |e| {
+        let _ = tx.send(e);
+    });
+    (App::with_shell(chrome(), shell), rx)
+}
+
+fn screen_text(buf: &Buffer) -> String {
+    (0..buf.area.height).map(|y| row(buf, y) + "\n").collect()
+}
+
+fn pump(app: &mut App, rx: &mpsc::Receiver<PtyEvent>, done: impl Fn(&str) -> bool) -> String {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let s = screen_text(&draw(app));
+        if done(&s) || Instant::now() > deadline {
+            return s;
+        }
+        if let Ok(ev) = rx.recv_timeout(Duration::from_millis(20)) {
+            app.on_pty(ev);
+        }
+    }
+}
+
+#[test]
+fn typing_reaches_shell() {
+    let (mut app, rx) = shell_app(&[]);
+    keys(&mut app, &[Key::F(3)]);
+    pump(&mut app, &rx, |s| s.contains('$'));
+    for c in "echo M\"\"U".chars() {
+        app.handle_key(Key::Char(c));
+    }
+    app.handle_key(Key::Enter);
+    let s = pump(&mut app, &rx, |s| s.lines().any(|l| l.chars().skip(20).take(59).collect::<String>().trim() == "MU"));
+    assert!(s.lines().any(|l| l.chars().skip(20).take(59).collect::<String>().trim() == "MU"), "{s}");
+}
+
+#[test]
+fn prefix_p_toggles_passthrough_only_on_shell() {
+    let (mut app, _rx) = shell_app(&["-c", "sleep 5"]);
+    keys(&mut app, &[Key::Ctrl(']'), Key::Char('p')]);
+    assert!(!app.passthrough);
+    assert!(screen_text(&draw(&mut app)).contains("NOT AVAILABLE"));
+    keys(&mut app, &[Key::Char('z'), Key::F(3), Key::Ctrl(']'), Key::Char('p')]);
+    assert!(app.passthrough);
+    assert!(!row(&draw(&mut app), 0).contains("MU/TH/UR 6000"), "shell not forced fullscreen");
+    keys(&mut app, &[Key::Ctrl(']'), Key::Char('p')]);
+    assert!(!app.passthrough && app.redraw);
+}
+
+#[test]
+fn prefix_bracket_enters_scrollback_only_on_shell() {
+    let (mut app, rx) = shell_app(&["-c", "seq 1 80; sleep 5"]);
+    keys(&mut app, &[Key::Ctrl(']'), Key::Char('[')]);
+    assert!(screen_text(&draw(&mut app)).contains("NOT AVAILABLE"));
+    keys(&mut app, &[Key::Char('z'), Key::F(3)]);
+    pump(&mut app, &rx, |s| s.contains("80"));
+    keys(&mut app, &[Key::Ctrl(']'), Key::Char('['), Key::PageUp]);
+    assert!(screen_text(&draw(&mut app)).contains("SCROLLBACK"));
+}
+
+#[test]
+fn double_prefix_sends_literal() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut app = App::with_tabs(
+        chrome(),
+        [
+            Box::new(Recorder(log.clone())),
+            Box::new(PlaceholderTab { id: TabId::Muthur }),
+            Box::new(PlaceholderTab { id: TabId::Shell }),
+        ],
+    );
+    keys(&mut app, &[Key::Ctrl(']'), Key::Ctrl(']')]);
+    assert_eq!(*log.lock().unwrap(), vec![Key::Ctrl(']')]);
+}
+
+#[test]
+fn shell_restart_after_exit() {
+    let (mut app, rx) = shell_app(&["-c", "echo RUN; exit 0"]);
+    keys(&mut app, &[Key::F(3)]);
+    pump(&mut app, &rx, |s| s.contains("SHELL TERMINATED"));
+    app.handle_key(Key::Enter);
+    let s = pump(&mut app, &rx, |s| s.contains("RUN") && !s.contains("TERMINATED"));
+    assert!(s.contains("RUN") && !s.contains("TERMINATED"), "{s}");
+}
+
+#[test]
+fn cursor_follows_shell() {
+    let (mut app, rx) = shell_app(&["-c", "printf ab; sleep 5"]);
+    assert_eq!(app.cursor(), None);
+    keys(&mut app, &[Key::F(3)]);
+    pump(&mut app, &rx, |s| s.contains("ab"));
+    assert_eq!(app.cursor(), Some(ratatui::layout::Position { x: 22, y: 3 }));
+    keys(&mut app, &[Key::Ctrl(']')]);
+    assert_eq!(app.cursor(), None, "prefix strip hides the cursor");
+}
+
+#[test]
+fn shell_exit_ends_passthrough() {
+    let (mut app, _rx) = shell_app(&["-c", "sleep 5"]);
+    keys(&mut app, &[Key::F(3)]);
+    draw(&mut app);
+    keys(&mut app, &[Key::Ctrl(']'), Key::Char('p')]);
+    app.on_pty(PtyEvent::Exited);
+    assert!(!app.passthrough && app.redraw);
+}

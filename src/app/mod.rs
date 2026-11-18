@@ -4,8 +4,10 @@ pub mod chrome;
 pub mod tabs;
 
 use crate::input::Key;
+use crate::shell::{PtyEvent, ShellTab};
 use chrono::NaiveDateTime;
 use ratatui::Frame;
+use ratatui::layout::Position;
 pub use tabs::{PlaceholderTab, Tab, TabId};
 
 /// What the title bar shows.
@@ -29,6 +31,8 @@ pub struct App {
     pub quit: bool,
     /// Set by `^] r`; the run loop clears and repaints everything.
     pub redraw: bool,
+    /// `^] p` on the Shell tab: PTY bytes go to the wire untranslated.
+    pub passthrough: bool,
     tabs: [Box<dyn Tab>; 3],
     activity: [bool; 3],
     chrome: ChromeView,
@@ -37,6 +41,34 @@ pub struct App {
 impl App {
     pub fn new(chrome: ChromeView) -> Self {
         Self::with_tabs(chrome, TabId::ALL.map(|id| Box::new(PlaceholderTab { id }) as Box<dyn Tab>))
+    }
+
+    /// Placeholders for Utility and MU/TH/UR, and a real shell.
+    pub fn with_shell(chrome: ChromeView, shell: ShellTab) -> Self {
+        Self::with_tabs(
+            chrome,
+            [
+                Box::new(PlaceholderTab { id: TabId::Utility }),
+                Box::new(PlaceholderTab { id: TabId::Muthur }),
+                Box::new(shell),
+            ],
+        )
+    }
+
+    pub fn on_pty(&mut self, ev: PtyEvent) {
+        if ev == PtyEvent::Exited && self.passthrough {
+            self.passthrough = false;
+            self.redraw = true;
+        }
+        self.tabs[TabId::Shell.index()].on_pty(ev);
+    }
+
+    /// The active tab's cursor, unless something is drawn over it.
+    pub fn cursor(&self) -> Option<Position> {
+        if self.overlay.is_some() || self.prefix {
+            return None;
+        }
+        self.tabs[self.active.index()].cursor()
     }
 
     pub fn with_tabs(chrome: ChromeView, tabs: [Box<dyn Tab>; 3]) -> Self {
@@ -48,6 +80,7 @@ impl App {
             show_real_date: false,
             quit: false,
             redraw: false,
+            passthrough: false,
             tabs,
             activity: [false; 3],
             chrome,
@@ -65,6 +98,12 @@ impl App {
         }
         if self.prefix {
             self.prefix = false;
+            let tab = &mut self.tabs[self.active.index()];
+            // ^] ^] sends a literal ^], like tmux/screen.
+            if key == Key::Ctrl(']') {
+                tab.handle_key(&key);
+                return;
+            }
             // WY-60 users often have caps lock on: accept either case.
             let Key::Char(c) = key else { return };
             match c.to_ascii_lowercase() {
@@ -74,7 +113,16 @@ impl App {
                 'd' => self.show_real_date ^= true,
                 '?' => self.overlay = Some(Overlay::Help),
                 ']' => self.tabs[self.active.index()].handle_key(&Key::Ctrl(']')),
-                'p' | '[' => self.overlay = Some(Overlay::Message("NOT AVAILABLE")),
+                'p' if tab.supports_passthrough() => {
+                    self.passthrough ^= true;
+                    if self.passthrough {
+                        self.fullscreen[self.active.index()] = true;
+                    } else {
+                        self.redraw = true;
+                    }
+                }
+                '[' if tab.enter_scrollback() => {}
+                'p' | '[' => self.overlay = Some(Overlay::Message("NOT AVAILABLE ON THIS FOLDER")),
                 _ => {}
             }
             return;
@@ -111,6 +159,9 @@ impl App {
             Some(Overlay::Help) => chrome::help(buf, area),
             Some(Overlay::Message(m)) => chrome::message(buf, area, m),
             None => {}
+        }
+        if let Some(p) = self.cursor() {
+            frame.set_cursor_position(p);
         }
     }
 }
