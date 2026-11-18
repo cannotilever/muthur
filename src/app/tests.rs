@@ -332,6 +332,25 @@ fn activity_marker_for_background_reply() {
     keys(&mut app, &[Key::F(2), Key::Char('H'), Key::Char('I'), Key::Enter, Key::F(1)]);
     app.on_llm(1, StreamEvent::Text("OK".into()));
     app.on_llm(1, StreamEvent::Done { stop: Stop::End, model: None, raw: None });
-    let s = screen_text(&draw(&mut app));
-    assert!(s.lines().any(|l| l.contains('*')), "{s}");
+    let buf = draw(&mut app);
+    let top = chrome::box_top(TabId::Muthur);
+    assert_eq!(buf[(chrome::BOX_X + chrome::BOX_W - 2, top + 1)].symbol(), "*");
+}
+
+#[test]
+fn hidden_reveal_does_not_drive_tick() {
+    use crate::llm::{Stop, StreamEvent};
+    let (m, _dir) = fake_muthur();
+    let shell = ShellTab::new(
+        ShellConfig { command: "sh".into(), args: vec!["-c".into(), "sleep 2".into()], scrollback: 10 },
+        HintSlot::default(),
+        |_| {},
+    );
+    let mut app = App::assemble(chrome(), crate::utility::UtilityTab::new(), m, shell);
+    keys(&mut app, &[Key::F(2), Key::Char('H'), Key::Enter, Key::F(1)]);
+    app.on_llm(1, StreamEvent::Text("OK".into()));
+    app.on_llm(1, StreamEvent::Done { stop: Stop::End, model: None, raw: None });
+    assert_eq!(app.tick_interval(), Duration::from_secs(1));
+    app.handle_key(Key::F(2));
+    assert!(app.tick_interval() < Duration::from_secs(1));
 }

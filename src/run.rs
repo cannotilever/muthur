@@ -212,12 +212,16 @@ fn ship_name(cfg: &Config) -> String {
 /// Chat log at `$XDG_STATE_HOME/muthur/chat.jsonl`, or a temp file (no
 /// persistence across runs) when that cannot be opened.
 fn open_chat_log() -> anyhow::Result<crate::chatlog::ChatLog> {
-    let path = dirs::state_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("muthur/chat.jsonl");
-    match crate::chatlog::ChatLog::open(path) {
+    let tmp = || std::env::temp_dir().join(format!("muthur-chat-{}.jsonl", std::process::id()));
+    let Some(dir) = dirs::state_dir() else {
+        tracing::error!("no state directory, chat history will not persist");
+        return crate::chatlog::ChatLog::open(tmp());
+    };
+    match crate::chatlog::ChatLog::open(dir.join("muthur/chat.jsonl")) {
         Ok(l) => Ok(l),
         Err(e) => {
             tracing::error!("chat log unavailable, history will not persist: {e:#}");
-            crate::chatlog::ChatLog::open(std::env::temp_dir().join(format!("muthur-chat-{}.jsonl", std::process::id())))
+            crate::chatlog::ChatLog::open(tmp())
         }
     }
 }

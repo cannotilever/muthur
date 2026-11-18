@@ -55,13 +55,11 @@ impl App {
         self.tabs[TabId::Muthur.index()].on_llm(req_id, ev);
     }
 
-    /// The fastest redraw cadence any tab asks for; 1 s when all are idle.
+    /// The active tab's redraw cadence; 1 s when it is idle.
     pub fn tick_interval(&self) -> std::time::Duration {
-        self.tabs
-            .iter()
-            .filter_map(|t| t.tick_interval())
-            .min()
-            .unwrap_or(std::time::Duration::from_secs(1))
+        // Hidden tabs only advance when rendered, so their animation must not
+        // drive the cadence; the 1 s tick still lights their activity marker.
+        self.tabs[self.active.index()].tick_interval().unwrap_or(std::time::Duration::from_secs(1))
     }
 
     pub fn on_metrics(&mut self, s: Snapshot) {
