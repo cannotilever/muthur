@@ -245,6 +245,10 @@ impl Tab for UtilityTab {
 
     fn handle_key(&mut self, _key: &Key) {}
 
+    fn on_metrics(&mut self, s: &Snapshot) {
+        self.on_snapshot(s.clone());
+    }
+
     fn take_activity(&mut self) -> bool {
         std::mem::take(&mut self.activity)
     }

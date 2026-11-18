@@ -73,10 +73,30 @@ impl Default for ShellSection {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct UtilitySection {
+    pub interval_secs: u64,
+    pub containers: crate::metrics::local::ContainerRuntime,
+    /// Filesystem types left out of the DISKS panel.
+    pub exclude_fs: Vec<String>,
+}
+
+impl Default for UtilitySection {
+    fn default() -> Self {
+        Self {
+            interval_secs: 2,
+            containers: crate::metrics::local::ContainerRuntime::Auto,
+            exclude_fs: crate::metrics::local::default_exclude(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub shell: ShellSection,
+    pub utility: UtilitySection,
     pub link: LinkConfig,
     pub terminal: TerminalConfig,
     pub chrome: ChromeConfig,
@@ -155,6 +175,22 @@ mod tests {
     fn keys_section_parses_escapes() {
         let (_d, p) = write_cfg("[keys]\nF1 = \"\\u001b[11~\"\n", 0o600);
         assert_eq!(load(&p).unwrap().keys["F1"], "\x1b[11~");
+    }
+
+    #[test]
+    fn utility_defaults() {
+        let c = Config::default();
+        assert_eq!(c.utility.interval_secs, 2);
+        assert_eq!(c.utility.containers, crate::metrics::local::ContainerRuntime::Auto);
+        assert!(c.utility.exclude_fs.iter().any(|f| f == "tmpfs"));
+    }
+
+    #[test]
+    fn utility_section_parses() {
+        let (_d, p) = write_cfg("[utility]\ninterval_secs = 5\ncontainers = \"podman\"\n", 0o600);
+        let c = load(&p).unwrap();
+        assert_eq!(c.utility.interval_secs, 5);
+        assert_eq!(c.utility.containers, crate::metrics::local::ContainerRuntime::Podman);
     }
 
     #[test]

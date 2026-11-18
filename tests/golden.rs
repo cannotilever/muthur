@@ -65,7 +65,11 @@ fn shell_windowed_echo() {
     let shell = ShellTab::new(cfg, hints.clone(), move |e| {
         let _ = tx.send(e);
     });
-    let mut app = App::with_shell(ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 }, shell);
+    let mut app = App::assemble(
+        ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 },
+        muthur::utility::UtilityTab::new(),
+        shell,
+    );
     let w = StrictWriter::new(Vec::new(), Vt100Dialect);
     let mut t = Terminal::new(Wy60Backend::new(w, Vt100Dialect, 80, 43).with_hints(hints)).unwrap();
     t.clear().unwrap();

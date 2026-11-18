@@ -4,7 +4,9 @@ pub mod chrome;
 pub mod tabs;
 
 use crate::input::Key;
+use crate::metrics::Snapshot;
 use crate::shell::{PtyEvent, ShellTab};
+use crate::utility::UtilityTab;
 use chrono::NaiveDateTime;
 use ratatui::Frame;
 use ratatui::layout::Position;
@@ -43,16 +45,16 @@ impl App {
         Self::with_tabs(chrome, TabId::ALL.map(|id| Box::new(PlaceholderTab { id }) as Box<dyn Tab>))
     }
 
-    /// Placeholders for Utility and MU/TH/UR, and a real shell.
-    pub fn with_shell(chrome: ChromeView, shell: ShellTab) -> Self {
+    /// The real Utility and Shell tabs; MU/TH/UR is still a placeholder.
+    pub fn assemble(chrome: ChromeView, utility: UtilityTab, shell: ShellTab) -> Self {
         Self::with_tabs(
             chrome,
-            [
-                Box::new(PlaceholderTab { id: TabId::Utility }),
-                Box::new(PlaceholderTab { id: TabId::Muthur }),
-                Box::new(shell),
-            ],
+            [Box::new(utility), Box::new(PlaceholderTab { id: TabId::Muthur }), Box::new(shell)],
         )
+    }
+
+    pub fn on_metrics(&mut self, s: Snapshot) {
+        self.tabs[TabId::Utility.index()].on_metrics(&s);
     }
 
     pub fn on_pty(&mut self, ev: PtyEvent) {

@@ -189,7 +189,7 @@ fn shell_app(args: &[&str]) -> (App, mpsc::Receiver<PtyEvent>) {
     let shell = ShellTab::new(cfg, HintSlot::default(), move |e| {
         let _ = tx.send(e);
     });
-    (App::with_shell(chrome(), shell), rx)
+    (App::assemble(chrome(), crate::utility::UtilityTab::new(), shell), rx)
 }
 
 fn screen_text(buf: &Buffer) -> String {

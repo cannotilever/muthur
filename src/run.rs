@@ -6,7 +6,10 @@ use crate::config::Config;
 use crate::dialect::{Dialect, Vt100Dialect};
 use crate::input::{Key, KeyParser, Keymap};
 use crate::link::{Link, ReadTimeout, install_panic_hook};
+use crate::metrics::local::LocalSource;
+use crate::metrics::{MetricsSource, Snapshot};
 use crate::scroll::HintSlot;
+use crate::utility::UtilityTab;
 use crate::shell::{PtyEvent, ShellConfig, ShellTab};
 use crate::strict::StrictWriter;
 use crate::testcard::keys::KEY_GAP;
@@ -26,6 +29,7 @@ const RETRY: Duration = Duration::from_millis(20);
 
 pub enum Event {
     Keys(Vec<Key>),
+    Metrics(Box<Snapshot>),
     Hangup,
     Tick,
 }
@@ -36,6 +40,28 @@ pub fn check_geometry(cols: u16, rows: u16) -> anyhow::Result<()> {
         anyhow::bail!("MU/TH/UR needs at least 80x43 (got {cols}x{rows})");
     }
     Ok(())
+}
+
+/// Take a snapshot every `interval` and send it; errors are logged and the
+/// loop carries on. Ends when the app is gone.
+pub fn spawn_metrics(
+    mut source: Box<dyn MetricsSource + Send>,
+    interval: Duration,
+    tx: UnboundedSender<Event>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        loop {
+            match source.snapshot() {
+                Ok(s) => {
+                    if tx.send(Event::Metrics(Box::new(s))).is_err() {
+                        return;
+                    }
+                }
+                Err(e) => tracing::warn!("metrics: {e:#}"),
+            }
+            std::thread::sleep(interval);
+        }
+    })
 }
 
 pub fn should_draw(dirty: bool, outq: usize) -> bool {
@@ -107,6 +133,10 @@ pub async fn event_loop<W: Write>(
                     for k in keys {
                         app.handle_key(k);
                     }
+                    dirty = true;
+                }
+                Some(Event::Metrics(s)) => {
+                    app.on_metrics(*s);
                     dirty = true;
                 }
                 Some(Event::Tick) => dirty = true,
@@ -186,7 +216,13 @@ pub fn run(cfg: &Config, strict: bool) -> anyhow::Result<()> {
         let _ = pty_tx.blocking_send(e);
     });
     let chrome = ChromeView { ship_name: ship_name(cfg), year_offset: cfg.chrome.year_offset };
-    let mut app = App::with_shell(chrome, shell);
+    match LocalSource::new(cfg.utility.containers, cfg.utility.exclude_fs.clone()) {
+        Ok(src) => {
+            spawn_metrics(Box::new(src), Duration::from_secs(cfg.utility.interval_secs.max(1)), tx.clone());
+        }
+        Err(e) => tracing::error!("metrics unavailable: {e:#}"),
+    }
+    let mut app = App::assemble(chrome, UtilityTab::new(), shell);
     tracing::info!(cols, rows, strict, "MU/TH/UR online");
 
     let rt = tokio::runtime::Builder::new_current_thread().enable_time().build()?;
@@ -305,6 +341,67 @@ mod tests {
         event_loop(&mut app, &mut t, &mut rx, &mut prx, || 0, now).await.unwrap();
         let out = String::from_utf8_lossy(t.backend().writer()).into_owned();
         assert_eq!(out.matches("FLOOD").count(), 0, "quit waited behind chunks");
+    }
+
+    struct FakeSource {
+        calls: usize,
+        fail_every_other: bool,
+    }
+    impl crate::metrics::MetricsSource for FakeSource {
+        fn snapshot(&mut self) -> anyhow::Result<crate::metrics::Snapshot> {
+            self.calls += 1;
+            if self.fail_every_other && self.calls % 2 == 1 {
+                anyhow::bail!("probe exploded");
+            }
+            Ok(crate::metrics::Snapshot { host: format!("HOST{}", self.calls), ..Default::default() })
+        }
+    }
+
+    fn next_metrics(rx: &mut tokio::sync::mpsc::UnboundedReceiver<Event>) -> Option<crate::metrics::Snapshot> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while std::time::Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(Event::Metrics(s)) => return Some(*s),
+                Ok(_) => {}
+                Err(_) => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn collector_sends_snapshots() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        spawn_metrics(Box::new(FakeSource { calls: 0, fail_every_other: false }), Duration::from_millis(10), tx);
+        assert_eq!(next_metrics(&mut rx).unwrap().host, "HOST1");
+        assert_eq!(next_metrics(&mut rx).unwrap().host, "HOST2");
+    }
+
+    #[test]
+    fn collector_survives_errors() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        spawn_metrics(Box::new(FakeSource { calls: 0, fail_every_other: true }), Duration::from_millis(10), tx);
+        assert_eq!(next_metrics(&mut rx).unwrap().host, "HOST2");
+    }
+
+    #[tokio::test]
+    async fn metrics_event_reaches_utility() {
+        let (_, mut t) = setup();
+        let mut app = crate::app::App::with_tabs(
+            ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 },
+            [
+                Box::new(crate::utility::UtilityTab::new()),
+                Box::new(crate::app::PlaceholderTab { id: crate::app::TabId::Muthur }),
+                Box::new(crate::app::PlaceholderTab { id: crate::app::TabId::Shell }),
+            ],
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let snap = crate::metrics::Snapshot { host: "NOSTROMO".into(), cpu_cores: vec![1.0], ..Default::default() };
+        tx.send(Event::Metrics(Box::new(snap))).unwrap();
+        tx.send(Event::Keys(vec![Key::Ctrl(']'), Key::Char('q')])).unwrap();
+        event_loop(&mut app, &mut t, &mut rx, &mut no_pty(), || 0, now).await.unwrap();
+        let out = String::from_utf8_lossy(t.backend().writer()).into_owned();
+        assert!(out.contains("NOSTROMO"), "{out:?}");
     }
 
     #[tokio::test]
