@@ -252,7 +252,7 @@ mod tests {
     fn req_with(messages: Vec<Message>) -> ChatRequest { ChatRequest { system: "SYS".into(), messages } }
 
     #[test] fn text_stream() { let ev = run("anthropic_text.sse"); assert_eq!(texts(&ev), "ALL SYSTEMS NOMINAL."); assert!(matches!(ev.last(), Some(StreamEvent::Done{stop: Stop::End, model: Some(_), ..}))); }
-    #[test] fn thinking_is_kept_raw_not_emitted() { let ev = run("anthropic_thinking.sse"); let StreamEvent::Done{raw: Some(raw), ..} = ev.last().unwrap() else { panic!() }; assert_eq!(raw[0]["type"], "thinking"); assert!(raw[0]["signature"].as_str().unwrap().len() > 0); assert_eq!(raw[1], json!({"type":"text","text": texts(&ev)})); assert!(!ev.iter().any(|e| matches!(e, StreamEvent::Text(t) if t.is_empty()))); }
+    #[test] fn thinking_is_kept_raw_not_emitted() { let ev = run("anthropic_thinking.sse"); let StreamEvent::Done{raw: Some(raw), ..} = ev.last().unwrap() else { panic!() }; assert_eq!(raw[0]["type"], "thinking"); assert!(!raw[0]["signature"].as_str().unwrap().is_empty()); assert_eq!(raw[1], json!({"type":"text","text": texts(&ev)})); assert!(!ev.iter().any(|e| matches!(e, StreamEvent::Text(t) if t.is_empty()))); }
     #[test] fn tool_input_is_reassembled() { let ev = run("anthropic_tool.sse"); assert!(ev.iter().any(|e| matches!(e, StreamEvent::ToolCall{name, input, ..} if name == "metrics" && input == &json!({"host":"local"})))); assert!(matches!(ev.last(), Some(StreamEvent::Done{stop: Stop::ToolUse, ..}))); }
     #[test] fn error_event() { assert_eq!(run("anthropic_error.sse").last(), Some(&StreamEvent::Error(LlmError::Overloaded))); }
     #[test] fn refusal_stop() { assert!(matches!(run("anthropic_refusal.sse").last(), Some(StreamEvent::Done{stop: Stop::Refusal, ..}))); }

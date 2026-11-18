@@ -9,6 +9,30 @@ use muthur::strict::StrictWriter;
 use ratatui::Terminal;
 use std::num::NonZeroU16;
 
+type Clock = std::rc::Rc<std::cell::Cell<std::time::Instant>>;
+
+fn muthur_tab(path: &std::path::Path, prefill: Option<(&str, &str)>) -> (muthur::muthur::MuthurTab, Clock) {
+    use muthur::chatlog::{Assistant, ChatLog};
+    use muthur::config::{MuthurSection, Provider};
+    use muthur::muthur::{MuthurDeps, MuthurTab};
+    let mut log = ChatLog::open(path.to_path_buf()).unwrap();
+    if let Some((q, a)) = prefill {
+        log.append_user(q, "ts").unwrap();
+        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: a.into(), stop: "end".into(), raw: None };
+        log.append_assistant(a, "ts").unwrap();
+    }
+    let clock: Clock = std::rc::Rc::new(std::cell::Cell::new(std::time::Instant::now()));
+    let c = clock.clone();
+    let deps = MuthurDeps {
+        spawn: Box::new(|_, _| Box::new(|| {})),
+        now: Box::new(move || c.get()),
+        ship_time: Box::new(|| "17 NOV 2137 14:02".into()),
+        timestamp: Box::new(|| "2026-11-17T14:02:00Z".into()),
+    };
+    let cfg = MuthurSection { api_key: Some("sk-test".into()), ..Default::default() };
+    (MuthurTab::new(cfg, "USCSS TEST", log, deps), clock)
+}
+
 fn scene(name: &str, keys: &[Key]) {
     let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 17).unwrap().and_hms_opt(14, 2, 0).unwrap();
     let mut app = App::new(ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 });
@@ -65,9 +89,11 @@ fn shell_windowed_echo() {
     let shell = ShellTab::new(cfg, hints.clone(), move |e| {
         let _ = tx.send(e);
     });
+    let dir = tempfile::tempdir().unwrap();
     let mut app = App::assemble(
         ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 },
         muthur::utility::UtilityTab::new(),
+        muthur_tab(&dir.path().join("c.jsonl"), None).0,
         shell,
     );
     let w = StrictWriter::new(Vec::new(), Vt100Dialect);
@@ -147,6 +173,47 @@ fn utility_fullscreen() {
     p.process(&strict.inner);
     let text = p.screen().contents();
     let path = format!("{}/tests/golden/utility_fullscreen.txt", env!("CARGO_MANIFEST_DIR"));
+    if std::env::var("UPDATE_GOLDEN").is_ok() {
+        std::fs::write(&path, &text).unwrap();
+    }
+    let want = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("missing {path}; run with UPDATE_GOLDEN=1"));
+    assert_eq!(text, want);
+}
+
+#[test]
+fn muthur_windowed() {
+    use muthur::llm::StreamEvent;
+    use muthur::app::PlaceholderTab;
+    let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 17).unwrap().and_hms_opt(14, 2, 0).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let (tab, clock) = muthur_tab(&dir.path().join("chat.jsonl"), Some(("HI", "GREETINGS.")));
+    let mut app = App::with_tabs(
+        ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 },
+        [
+            Box::new(PlaceholderTab { id: muthur::app::TabId::Utility }),
+            Box::new(tab),
+            Box::new(PlaceholderTab { id: muthur::app::TabId::Shell }),
+        ],
+    );
+    app.handle_key(Key::F(2));
+    for c in "REACTOR STATUS".chars() {
+        app.handle_key(Key::Char(c));
+    }
+    app.handle_key(Key::Enter);
+    app.on_llm(1, StreamEvent::Text("NO REACTOR TELEMETRY AVAILABLE \u{2014} SENSOR ACCESS NOT INSTALLED.".into()));
+    let mut t = Terminal::new(Wy60Backend::new(StrictWriter::new(Vec::new(), Vt100Dialect), Vt100Dialect, 80, 43)).unwrap();
+    t.clear().unwrap();
+    t.draw(|f| app.render(f, now)).unwrap(); // starts the reveal clock
+    clock.set(clock.get() + std::time::Duration::from_millis(400));
+    t.draw(|f| app.render(f, now)).unwrap();
+    let strict = t.backend().writer();
+    assert!(strict.violations.is_empty(), "{:?}", strict.violations);
+    let mut p = vt100::Parser::new(NonZeroU16::new(43).unwrap(), NonZeroU16::new(80).unwrap(), 0);
+    p.process(&strict.inner);
+    let text = p.screen().contents();
+    // The reveal cursor is a reverse-video space right after the 20th character.
+    assert!(p.screen().cell(11, 41).unwrap().inverse(), "no block cursor after partial reply");
+    let path = format!("{}/tests/golden/muthur_windowed.txt", env!("CARGO_MANIFEST_DIR"));
     if std::env::var("UPDATE_GOLDEN").is_ok() {
         std::fs::write(&path, &text).unwrap();
     }

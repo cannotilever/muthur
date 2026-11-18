@@ -1,0 +1,43 @@
+ USCSS TEST qq MU/TH/UR 6000                                  17 NOV 2137 14:02 
+
+ FOLDERS           l MU/TH/UR 6000 qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqk
+                   x INTERFACE 2037 READY.                                     x
+ lqqqqqqqqqqqqqqk  x                                                           x
+ x UTILITY      x  x > HI                                                      x
+ x              x  x                                                           x
+ x              x  x GREETINGS.                                                x
+ mqqqqqqqqqqqqqqj  x                                                           x
+                   x > REACTOR STATUS                                          x
+ lqqqqqqqqqqqqqqk  x                                                           x
+ x MU/TH/UR     x  x NO REACTOR TELEMETRY                                      x
+ x              tqqu                                                           x
+ x              x  x                                                           x
+ mqqqqqqqqqqqqqqj  x                                                           x
+                   x                                                           x
+ lqqqqqqqqqqqqqqk  x                                                           x
+ x SHELL        x  x                                                           x
+ x              x  x                                                           x
+ x              x  x                                                           x
+ mqqqqqqqqqqqqqqj  x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   tqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqu
+                   x RECEIVING                                                 x
+                   x >                                                         x
+                   mqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqj
+ F1-F3 SELECT .... ^] F FULLSCREEN .... SH-F15/16 SCROLL .... ^] ? HELP

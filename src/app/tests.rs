@@ -189,7 +189,7 @@ fn shell_app(args: &[&str]) -> (App, mpsc::Receiver<PtyEvent>) {
     let shell = ShellTab::new(cfg, HintSlot::default(), move |e| {
         let _ = tx.send(e);
     });
-    (App::assemble(chrome(), crate::utility::UtilityTab::new(), shell), rx)
+    (App::assemble(chrome(), crate::utility::UtilityTab::new(), fake_muthur().0, shell), rx)
 }
 
 fn screen_text(buf: &Buffer) -> String {
@@ -301,4 +301,37 @@ fn f_keys_ignored_in_passthrough() {
     assert_eq!(app.active, TabId::Shell);
     keys(&mut app, &[Key::Ctrl(']'), Key::Char('p')]);
     assert!(!app.passthrough);
+}
+
+// ---- MU/TH/UR integration ----
+
+pub(crate) fn fake_muthur() -> (crate::muthur::MuthurTab, tempfile::TempDir) {
+    use crate::muthur::{MuthurDeps, MuthurTab};
+    let dir = tempfile::tempdir().unwrap();
+    let log = crate::chatlog::ChatLog::open(dir.path().join("chat.jsonl")).unwrap();
+    let cfg = crate::config::MuthurSection { api_key: Some("sk-test".into()), ..Default::default() };
+    let deps = MuthurDeps {
+        spawn: Box::new(|_, _| Box::new(|| {})),
+        now: Box::new(Instant::now),
+        ship_time: Box::new(|| "18 NOV 2137 14:02".into()),
+        timestamp: Box::new(|| "2026-11-18T14:02:00Z".into()),
+    };
+    (MuthurTab::new(cfg, "USCSS TEST", log, deps), dir)
+}
+
+#[test]
+fn activity_marker_for_background_reply() {
+    use crate::llm::{Stop, StreamEvent};
+    let (m, _dir) = fake_muthur();
+    let (shell_tx, _rx) = mpsc::channel();
+    let cfg = ShellConfig { command: "sh".into(), args: vec!["-c".into(), "sleep 2".into()], scrollback: 10 };
+    let shell = ShellTab::new(cfg, HintSlot::default(), move |e| {
+        let _ = shell_tx.send(e);
+    });
+    let mut app = App::assemble(chrome(), crate::utility::UtilityTab::new(), m, shell);
+    keys(&mut app, &[Key::F(2), Key::Char('H'), Key::Char('I'), Key::Enter, Key::F(1)]);
+    app.on_llm(1, StreamEvent::Text("OK".into()));
+    app.on_llm(1, StreamEvent::Done { stop: Stop::End, model: None, raw: None });
+    let s = screen_text(&draw(&mut app));
+    assert!(s.lines().any(|l| l.contains('*')), "{s}");
 }

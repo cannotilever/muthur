@@ -160,7 +160,10 @@ pub async fn event_loop<W: Write>(
                     dirty = true;
                 }
                 Some(Event::Tick) => dirty = true,
-                Some(Event::Llm { .. }) => {}
+                Some(Event::Llm { req_id, ev }) => {
+                    app.on_llm(req_id, ev);
+                    dirty = true;
+                }
                 Some(Event::Hangup) | None => return Ok(()),
             },
             Some(ev) = pty_rx.recv() => {
@@ -173,6 +176,7 @@ pub async fn event_loop<W: Write>(
                 dirty = true;
             }
             _ = tick.tick() => dirty = true,
+            _ = tokio::time::sleep(app.tick_interval()), if app.tick_interval() < Duration::from_secs(1) => dirty = true,
             _ = tokio::time::sleep(RETRY), if dirty => {}
         }
         if app.quit {
@@ -203,6 +207,49 @@ fn ship_name(cfg: &Config) -> String {
         let host = nix::unistd::gethostname().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default();
         format!("USCSS {}", host.to_uppercase())
     })
+}
+
+/// Chat log at `$XDG_STATE_HOME/muthur/chat.jsonl`, or a temp file (no
+/// persistence across runs) when that cannot be opened.
+fn open_chat_log() -> anyhow::Result<crate::chatlog::ChatLog> {
+    let path = dirs::state_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("muthur/chat.jsonl");
+    match crate::chatlog::ChatLog::open(path) {
+        Ok(l) => Ok(l),
+        Err(e) => {
+            tracing::error!("chat log unavailable, history will not persist: {e:#}");
+            crate::chatlog::ChatLog::open(std::env::temp_dir().join(format!("muthur-chat-{}.jsonl", std::process::id())))
+        }
+    }
+}
+
+fn build_muthur(cfg: &Config, ship: &str, tx: UnboundedSender<Event>) -> anyhow::Result<crate::muthur::MuthurTab> {
+    use crate::llm::{LlmError, StreamEvent, client::LlmClient};
+    use crate::muthur::{Abort, MuthurDeps, MuthurTab};
+    let log = open_chat_log()?;
+    let spawn: Box<dyn FnMut(u64, crate::llm::ChatRequest) -> Abort> = match LlmClient::new(cfg.muthur.clone()) {
+        Ok(client) => {
+            let client = std::sync::Arc::new(client);
+            Box::new(move |id, req| {
+                let h = client.spawn(id, req, tx.clone());
+                Box::new(move || h.abort())
+            })
+        }
+        Err(e) => {
+            tracing::error!("llm client unavailable: {e:#}");
+            Box::new(move |req_id, _| {
+                let _ = tx.send(Event::Llm { req_id, ev: StreamEvent::Error(LlmError::NoCarrier) });
+                Box::new(|| {})
+            })
+        }
+    };
+    let year_offset = cfg.chrome.year_offset;
+    let deps = MuthurDeps {
+        spawn,
+        now: Box::new(std::time::Instant::now),
+        ship_time: Box::new(move || crate::app::chrome::format_date(chrono::Local::now().naive_local(), year_offset)),
+        timestamp: Box::new(|| chrono::Local::now().to_rfc3339()),
+    };
+    Ok(MuthurTab::new(cfg.muthur.clone(), ship, log, deps))
 }
 
 /// Run the TUI on the configured link until quit or hangup.
@@ -246,10 +293,11 @@ pub fn run(cfg: &Config, strict: bool) -> anyhow::Result<()> {
             let _ = tx.send(Event::MetricsOffline(format!("{e:#}").to_uppercase()));
         }
     }
-    let mut app = App::assemble(chrome, UtilityTab::new(), shell);
+    let muthur = build_muthur(cfg, &chrome.ship_name, tx.clone())?;
+    let mut app = App::assemble(chrome, UtilityTab::new(), muthur, shell);
     tracing::info!(cols, rows, strict, "MU/TH/UR online");
 
-    let rt = tokio::runtime::Builder::new_current_thread().enable_time().build()?;
+    let rt = tokio::runtime::Builder::new_current_thread().enable_time().enable_io().build()?;
     let outq = || {
         let q = link.output_queue().unwrap_or(0);
         if q > 0 {
@@ -450,6 +498,42 @@ mod tests {
         event_loop(&mut app, &mut t, &mut rx, &mut no_pty(), || 0, now).await.unwrap();
         let out = String::from_utf8_lossy(t.backend().writer()).into_owned();
         assert!(out.contains("NOSTROMO"), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn llm_event_reaches_muthur() {
+        use crate::llm::{Stop, StreamEvent};
+        let (_, mut t) = setup();
+        let (m, _dir) = crate::app::tests::fake_muthur();
+        let shell = crate::shell::ShellTab::new(
+            crate::shell::ShellConfig { command: "sh".into(), args: vec!["-c".into(), "sleep 2".into()], scrollback: 10 },
+            crate::scroll::HintSlot::default(),
+            |_| {},
+        );
+        let mut app = App::assemble(
+            ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 },
+            crate::utility::UtilityTab::new(),
+            m,
+            shell,
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut ks = vec![Key::F(2)];
+        ks.extend("HI".chars().map(Key::Char));
+        ks.push(Key::Enter);
+        tx.send(Event::Keys(ks)).unwrap();
+        tx.send(Event::Llm { req_id: 1, ev: StreamEvent::Text("NOMINAL".into()) }).unwrap();
+        tx.send(Event::Llm { req_id: 1, ev: StreamEvent::Done { stop: Stop::End, model: None, raw: None } }).unwrap();
+        let quit = async move {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            tx.send(Event::Keys(vec![Key::Ctrl(']'), Key::Char('q')])).unwrap();
+        };
+        let mut pty = no_pty();
+        let (r, _) = tokio::join!(event_loop(&mut app, &mut t, &mut rx, &mut pty, || 0, now), quit);
+        r.unwrap();
+        let mut p = vt100::Parser::new(std::num::NonZeroU16::new(43).unwrap(), std::num::NonZeroU16::new(80).unwrap(), 0);
+        p.process(t.backend().writer());
+        let screen = p.screen().contents();
+        assert!(screen.contains("NOMINAL"), "{screen}");
     }
 
     #[tokio::test]

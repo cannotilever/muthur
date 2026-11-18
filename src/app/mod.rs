@@ -5,6 +5,7 @@ pub mod tabs;
 
 use crate::input::Key;
 use crate::metrics::Snapshot;
+use crate::muthur::MuthurTab;
 use crate::shell::{PtyEvent, ShellTab};
 use crate::utility::UtilityTab;
 use chrono::NaiveDateTime;
@@ -45,12 +46,22 @@ impl App {
         Self::with_tabs(chrome, TabId::ALL.map(|id| Box::new(PlaceholderTab { id }) as Box<dyn Tab>))
     }
 
-    /// The real Utility and Shell tabs; MU/TH/UR is still a placeholder.
-    pub fn assemble(chrome: ChromeView, utility: UtilityTab, shell: ShellTab) -> Self {
-        Self::with_tabs(
-            chrome,
-            [Box::new(utility), Box::new(PlaceholderTab { id: TabId::Muthur }), Box::new(shell)],
-        )
+    /// The three real tabs.
+    pub fn assemble(chrome: ChromeView, utility: UtilityTab, muthur: MuthurTab, shell: ShellTab) -> Self {
+        Self::with_tabs(chrome, [Box::new(utility), Box::new(muthur), Box::new(shell)])
+    }
+
+    pub fn on_llm(&mut self, req_id: u64, ev: crate::llm::StreamEvent) {
+        self.tabs[TabId::Muthur.index()].on_llm(req_id, ev);
+    }
+
+    /// The fastest redraw cadence any tab asks for; 1 s when all are idle.
+    pub fn tick_interval(&self) -> std::time::Duration {
+        self.tabs
+            .iter()
+            .filter_map(|t| t.tick_interval())
+            .min()
+            .unwrap_or(std::time::Duration::from_secs(1))
     }
 
     pub fn on_metrics(&mut self, s: Snapshot) {
@@ -179,4 +190,4 @@ impl App {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -123,7 +123,8 @@ Single Rust crate, tokio runtime.
 | `tabs::utility` | System monitor (see below). |
 | `tabs::muthur` | Chat UI (see below). |
 | `tabs::shell` | PTY + virtual terminal + translation (see below). |
-| `llm` | OpenAI-compatible client: streaming (SSE), tool-calling loop, conversation store. |
+| `llm` | Streaming LLM client (reqwest + rustls/ring, no aws-lc): Anthropic Messages and OpenAI-compatible protocols, SSE parsing, typed `LlmError`s, idle timeout. Each request runs as a tokio task and sends `Event::Llm` to the loop. Deploy note: Alpine needs the `ca-certificates` package for TLS. |
+| `chatlog` | Append-only JSONL chat history at `$XDG_STATE_HOME/muthur/chat.jsonl` (epochs, context window/trim, purge). |
 | `tools` | Tool registry and safety tiers; audit logging. |
 | `metrics` | `MetricsSource` trait; `LocalSource` for v1. |
 | `splash` | Boot sequence. |

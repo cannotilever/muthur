@@ -116,10 +116,11 @@ impl Cleaner {
             self.line_start = Some(buf);
             return;
         }
-        if let Some(h) = buf.strip_suffix(' ') {
-            if !h.is_empty() && h.chars().all(|c| c == '#') {
-                return;
-            }
+        if let Some(h) = buf.strip_suffix(' ')
+            && !h.is_empty()
+            && h.chars().all(|c| c == '#')
+        {
+            return;
         }
         if matches!(buf.as_str(), "*" | "+" | "-") {
             self.line_start = Some(buf);

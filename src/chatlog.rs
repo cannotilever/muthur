@@ -121,7 +121,7 @@ impl ChatLog {
     fn strip_boundary(&self) -> u64 {
         let mut it = self.records.iter().filter(|r| kind(r) == "epoch");
         let first = it.next().map(seq);
-        match it.last() {
+        match it.next_back() {
             Some(e) => seq(e),
             None => first.map(|_| 0).unwrap_or(0),
         }
@@ -156,12 +156,13 @@ impl ChatLog {
             starts.push(seq(u));
             msgs.push(Message { role: Role::User, content: MessageContent::Text(text(u).into()) });
             let mut content = MessageContent::Text(text(a).into());
-            if provider == Provider::Anthropic && stop != "interrupted" {
-                if let Some(raw) = a.get("raw").and_then(Value::as_array) {
-                    let b = replay_blocks(raw, seq(a) < e_seq);
-                    if !b.is_empty() {
-                        content = MessageContent::Blocks(b);
-                    }
+            if provider == Provider::Anthropic
+                && stop != "interrupted"
+                && let Some(raw) = a.get("raw").and_then(Value::as_array)
+            {
+                let b = replay_blocks(raw, seq(a) < e_seq);
+                if !b.is_empty() {
+                    content = MessageContent::Blocks(b);
                 }
             }
             msgs.push(Message { role: Role::Assistant, content });
