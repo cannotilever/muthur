@@ -97,6 +97,8 @@ pub struct MuthurTab {
     /// Geometry from the last render.
     page: usize,
     max_scroll: usize,
+    /// Transcript line count at the last render, to hold a scrolled-back view.
+    last_total: usize,
     cursor_pos: Option<Position>,
 }
 
@@ -142,6 +144,7 @@ impl MuthurTab {
             started: None,
             page: 1,
             max_scroll: 0,
+            last_total: 0,
             cursor_pos: None,
         }
     }
@@ -366,6 +369,11 @@ impl Tab for MuthurTab {
         let h = usize::from(rows);
         self.page = h.saturating_sub(1).max(1);
         self.max_scroll = lines.len().saturating_sub(h);
+        // Scrolled back: new output must not move the view (pinned views follow it).
+        if self.scroll > 0 && lines.len() > self.last_total {
+            self.scroll += lines.len() - self.last_total;
+        }
+        self.last_total = lines.len();
         self.scroll = self.scroll.min(self.max_scroll);
         let end = lines.len() - self.scroll;
         let start = end.saturating_sub(h);

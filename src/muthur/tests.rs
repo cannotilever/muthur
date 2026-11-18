@@ -381,3 +381,23 @@ fn refusal_and_truncation() {
     let (l, t) = (s.find("LONG").unwrap(), s.find("[TRANSMISSION TRUNCATED]").unwrap());
     assert!(l < t, "{s}");
 }
+
+#[test]
+fn scrolled_back_view_holds_while_output_arrives() {
+    let mut h = harness_with(cfg(), |l| {
+        for i in 0..30 {
+            exchange(l, &format!("Q{i}"), &format!("REPLY {i}"), "end_turn");
+        }
+    });
+    submit(&mut h, "status");
+    screen(&mut h.t, 61, 40);
+    h.t.handle_key(&Key::PageUp);
+    let before = screen(&mut h.t, 61, 40);
+    let n = |r: &str| r.split("[SCROLL -").nth(1).unwrap().split(']').next().unwrap().parse::<usize>().unwrap();
+    let n0 = n(&before[37]);
+    h.t.on_llm(1, StreamEvent::Text("WORD ".repeat(60)));
+    h.tick(10_000);
+    let after = screen(&mut h.t, 61, 40);
+    assert_eq!(before[1..36], after[1..36], "view moved under the reader");
+    assert!(n(&after[37]) > n0, "{} vs {}", after[37], before[37]);
+}
