@@ -59,4 +59,5 @@ on the terminal matching terminfo.
   scheduler waits for the kernel output queue to drain below 256 bytes before
   drawing. On a pty this is always 0 (writes block while XOFF'd instead of
   queueing), so it can only be confirmed on the real port: the run loop logs the
-  queue depth at debug level in `~/.local/state/muthur/muthur.log`.
+  queue depth at debug level in `~/.local/state/muthur/muthur.log` when run
+  with `MUTHUR_DEBUG=1`.

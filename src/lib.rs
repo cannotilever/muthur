@@ -4,5 +4,6 @@ pub mod config;
 pub mod dialect;
 pub mod input;
 pub mod link;
+pub mod run;
 pub mod strict;
 pub mod testcard;

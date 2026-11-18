@@ -59,11 +59,6 @@ enum TestcardMode {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let Some(Command::Testcard(tc)) = cli.command else {
-        println!("MU/TH/UR: M0 build - only 'testcard' is available");
-        return Ok(());
-    };
-
     let mut cfg = config::load(&cli.config.unwrap_or_else(config::default_path))?;
     if let Some(d) = cli.device {
         cfg.link.device = Some(d);
@@ -78,6 +73,9 @@ fn main() -> anyhow::Result<()> {
         cfg.terminal.rows = r;
     }
     let (cols, rows) = (cfg.terminal.cols, cfg.terminal.rows);
+    let Some(Command::Testcard(tc)) = cli.command else {
+        return muthur::run::run(&cfg, cli.strict);
+    };
     if rows < card::MIN_ROWS {
         bail!("--rows must be at least {}", card::MIN_ROWS);
     }

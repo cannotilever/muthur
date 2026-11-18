@@ -204,6 +204,12 @@ impl ReadTimeout for LinkReader {
 nix::ioctl_read_bad!(tiocoutq, nix::libc::TIOCOUTQ, nix::libc::c_int);
 
 impl Link {
+    /// An independent write handle (the renderer's), so `self` stays free for
+    /// `output_queue` and owns the termios restore.
+    pub fn writer(&self) -> io::Result<File> {
+        self.file.try_clone()
+    }
+
     pub fn reader(&self) -> io::Result<LinkReader> {
         Ok(LinkReader { file: self.file.try_clone()? })
     }
