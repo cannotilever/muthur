@@ -1,7 +1,8 @@
 //! Configuration loading (`~/.config/muthur/config.toml`).
 
+use crate::llm::LlmError;
 use anyhow::{Context, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -92,11 +93,95 @@ impl Default for UtilitySection {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Provider {
+    #[default]
+    Anthropic,
+    Openai,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct MuthurSection {
+    pub provider: Provider,
+    /// Endpoint root; `None` picks the provider default (Anthropic only).
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+    pub api_key: Option<String>,
+    pub max_tokens: u32,
+    pub effort: String,
+    pub fallbacks: bool,
+    pub cache_ttl: String,
+    pub context_tokens: usize,
+    pub reveal_cps: u32,
+    pub uppercase: bool,
+    pub system_prompt: Option<String>,
+}
+
+impl Default for MuthurSection {
+    fn default() -> Self {
+        Self {
+            provider: Provider::Anthropic,
+            base_url: None,
+            model: None,
+            api_key: None,
+            max_tokens: 4096,
+            effort: "low".into(),
+            fallbacks: true,
+            cache_ttl: "5m".into(),
+            context_tokens: 200_000,
+            reveal_cps: 50,
+            uppercase: true,
+            system_prompt: None,
+        }
+    }
+}
+
+impl MuthurSection {
+    /// Explicit `base_url` (trailing '/' trimmed), else the Anthropic default; `None` for Openai.
+    pub fn base_url(&self) -> Option<&str> {
+        match &self.base_url {
+            Some(url) => Some(url.trim_end_matches('/')),
+            None => match self.provider {
+                Provider::Anthropic => Some("https://api.anthropic.com"),
+                Provider::Openai => None,
+            },
+        }
+    }
+
+    /// Explicit `model`, else the Anthropic default; `None` for Openai.
+    pub fn model(&self) -> Option<&str> {
+        match &self.model {
+            Some(m) => Some(m.as_str()),
+            None => match self.provider {
+                Provider::Anthropic => Some("claude-sonnet-5-5"),
+                Provider::Openai => None,
+            },
+        }
+    }
+
+    /// Whether the configured provider has what it needs to make a request.
+    pub fn readiness(&self) -> Result<(), LlmError> {
+        match self.provider {
+            Provider::Anthropic => match self.api_key.as_deref() {
+                Some(key) if !key.is_empty() => Ok(()),
+                _ => Err(LlmError::NoAccessCode),
+            },
+            Provider::Openai => match (self.base_url(), self.model()) {
+                (Some(_), Some(_)) => Ok(()),
+                _ => Err(LlmError::NotConfigured),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub shell: ShellSection,
     pub utility: UtilitySection,
+    pub muthur: MuthurSection,
     pub link: LinkConfig,
     pub terminal: TerminalConfig,
     pub chrome: ChromeConfig,
@@ -191,6 +276,33 @@ mod tests {
         let c = load(&p).unwrap();
         assert_eq!(c.utility.interval_secs, 5);
         assert_eq!(c.utility.containers, crate::metrics::local::ContainerRuntime::Podman);
+    }
+
+    #[test]
+    fn muthur_defaults() {
+        let m = MuthurSection::default();
+        assert_eq!(m.provider, Provider::Anthropic);
+        assert_eq!(m.base_url(), Some("https://api.anthropic.com"));
+        assert_eq!(m.model(), Some("claude-sonnet-5-5"));
+        assert_eq!(
+            (m.max_tokens, m.effort.as_str(), m.fallbacks, m.cache_ttl.as_str(), m.context_tokens, m.reveal_cps, m.uppercase),
+            (4096, "low", true, "5m", 200000, 50, true)
+        );
+        assert_eq!(m.readiness(), Err(LlmError::NoAccessCode));
+    }
+
+    #[test]
+    fn muthur_openai_section_parses() {
+        let (_d, p) = write_cfg("[muthur]\nprovider = \"openai\"\nbase_url = \"http://10.0.0.5:8000/\"\nmodel = \"qwen\"\n", 0o600);
+        let c = load(&p).unwrap();
+        assert_eq!(c.muthur.base_url(), Some("http://10.0.0.5:8000"));
+        assert_eq!(c.muthur.readiness(), Ok(()));
+    }
+
+    #[test]
+    fn openai_without_url_is_not_configured() {
+        let m = MuthurSection { provider: Provider::Openai, ..Default::default() };
+        assert_eq!(m.readiness(), Err(LlmError::NotConfigured));
     }
 
     #[test]
