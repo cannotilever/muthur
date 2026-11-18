@@ -18,6 +18,15 @@ struct Cli {
     /// Baud rate for --device; overrides the config.
     #[arg(long, global = true)]
     baud: Option<u32>,
+    /// Screen columns; overrides the config.
+    #[arg(long, global = true)]
+    cols: Option<u16>,
+    /// Screen rows; overrides the config.
+    #[arg(long, global = true)]
+    rows: Option<u16>,
+    /// Check every byte sent against the VT100 allowlist; log violations.
+    #[arg(long, global = true)]
+    strict: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -30,10 +39,6 @@ enum Command {
 
 #[derive(Args)]
 struct TestcardArgs {
-    #[arg(long, default_value_t = 80)]
-    cols: u16,
-    #[arg(long, default_value_t = 43)]
-    rows: u16,
     #[command(subcommand)]
     mode: Option<TestcardMode>,
 }
@@ -66,7 +71,14 @@ fn main() -> anyhow::Result<()> {
     if let Some(b) = cli.baud {
         cfg.link.baud = b;
     }
-    if tc.rows < card::MIN_ROWS {
+    if let Some(c) = cli.cols {
+        cfg.terminal.cols = c;
+    }
+    if let Some(r) = cli.rows {
+        cfg.terminal.rows = r;
+    }
+    let (cols, rows) = (cfg.terminal.cols, cfg.terminal.rows);
+    if rows < card::MIN_ROWS {
         bail!("--rows must be at least {}", card::MIN_ROWS);
     }
 
@@ -78,14 +90,14 @@ fn main() -> anyhow::Result<()> {
 
     match tc.mode {
         None => {
-            link.write_all(&card::card(tc.cols, tc.rows))?;
+            link.write_all(&card::card(cols, rows))?;
             link.flush()?;
             keys::read_key(&mut link, keys::KEY_GAP)?;
             link.write_all(b"\x1b[0m\x1b(B\x1b[r\x1b[2J\x1b[H")?;
         }
         Some(TestcardMode::Flood { lines }) => {
             link.write_all(b"\x1b[0m\x1b(B\x1b[r\x1b[2J\x1b[H")?;
-            link.write_all(&flood::flood(tc.cols, lines))?;
+            link.write_all(&flood::flood(cols, lines))?;
         }
         Some(TestcardMode::Keys { out }) => {
             let mut log = std::fs::File::create(&out).with_context(|| format!("creating {}", out.display()))?;

@@ -4,15 +4,22 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-nix = { version = "0.30", features = ["term", "poll", "fs", "ioctl"] }
+nix = { version = "0.30", features = ["term", "poll", "fs", "ioctl", "hostname"] }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 anyhow = "1"
 dirs = "6"
+ratatui = { version = "0.30", default-features = false, features = ["std", "layout-cache"] }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+chrono = "0.4"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+tracing-appender = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+vt100 = "0.18"
 
 [profile.release]
 lto = true

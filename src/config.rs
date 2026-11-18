@@ -2,6 +2,7 @@
 
 use anyhow::{Context, bail};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -29,10 +30,42 @@ impl Default for LinkConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct TerminalConfig {
+    pub cols: u16,
+    pub rows: u16,
+}
+
+impl Default for TerminalConfig {
+    fn default() -> Self {
+        Self { cols: 80, rows: 43 }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct ChromeConfig {
+    /// Title-bar ship name; `None` means `"USCSS <HOSTNAME>"`.
+    pub ship_name: Option<String>,
+    /// Added to the real year for the in-universe date (2026 + 111 = 2137).
+    pub year_offset: i32,
+}
+
+impl Default for ChromeConfig {
+    fn default() -> Self {
+        Self { ship_name: None, year_offset: 111 }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub link: LinkConfig,
+    pub terminal: TerminalConfig,
+    pub chrome: ChromeConfig,
+    /// Key-name → byte-sequence overrides for the WY-60 keymap.
+    pub keys: BTreeMap<String, String>,
 }
 
 pub fn default_path() -> PathBuf {
@@ -91,6 +124,20 @@ mod tests {
         assert_eq!(c.link.device.as_deref(), Some(Path::new("/dev/wy60")));
         assert_eq!(c.link.flow, FlowControl::RtsCts);
         assert_eq!(c.link.baud, 38400);
+    }
+
+    #[test]
+    fn terminal_and_chrome_defaults() {
+        let c = Config::default();
+        assert_eq!((c.terminal.cols, c.terminal.rows), (80, 43));
+        assert_eq!(c.chrome.year_offset, 111);
+        assert!(c.chrome.ship_name.is_none() && c.keys.is_empty());
+    }
+
+    #[test]
+    fn keys_section_parses_escapes() {
+        let (_d, p) = write_cfg("[keys]\nF1 = \"\\u001b[11~\"\n", 0o600);
+        assert_eq!(load(&p).unwrap().keys["F1"], "\x1b[11~");
     }
 
     #[test]
