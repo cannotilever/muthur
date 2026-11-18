@@ -33,6 +33,7 @@ pub enum Event {
     MetricsOffline(String),
     Hangup,
     Tick,
+    Llm { req_id: u64, ev: crate::llm::StreamEvent },
 }
 
 /// The chrome is laid out for 80×43; smaller screens cannot hold it.
@@ -159,6 +160,7 @@ pub async fn event_loop<W: Write>(
                     dirty = true;
                 }
                 Some(Event::Tick) => dirty = true,
+                Some(Event::Llm { .. }) => {}
                 Some(Event::Hangup) | None => return Ok(()),
             },
             Some(ev) = pty_rx.recv() => {
