@@ -29,7 +29,7 @@ impl LlmClient {
 
     pub fn with_idle(cfg: MuthurSection, idle: Duration) -> anyhow::Result<Self> {
         super::install_crypto_provider();
-        let http = reqwest::Client::builder().connect_timeout(CONNECT_TIMEOUT).build()?;
+        let http = reqwest::Client::builder().connect_timeout(CONNECT_TIMEOUT).redirect(reqwest::redirect::Policy::none()).build()?;
         Ok(Self { http, cfg: Arc::new(cfg), idle })
     }
 
@@ -95,7 +95,12 @@ impl LlmClient {
             let events = match tokio::time::timeout(self.idle, resp.chunk()).await {
                 Err(_) => vec![StreamEvent::Error(LlmError::SignalLost)],
                 Ok(Err(_)) => vec![StreamEvent::Error(LlmError::Transmission)],
-                Ok(Ok(None)) => parser.finish(),
+                Ok(Ok(None)) => {
+                    for ev in parser.finish() {
+                        emit(ev);
+                    }
+                    return;
+                }
                 Ok(Ok(Some(chunk))) => dec.push(&chunk).iter().flat_map(|r| parser.feed(r)).collect(),
             };
             for ev in events {
@@ -146,10 +151,11 @@ mod tests {
         delay: Duration,
         /// Sleep after the first chunk, then stop sending (connection stays open meanwhile).
         stall_after_first: Option<Duration>,
+        extra: String,
     }
 
     fn srv(body: Vec<u8>) -> Srv {
-        Srv { status: "200 OK", body, chunk: 64, delay: Duration::ZERO, stall_after_first: None }
+        Srv { status: "200 OK", body, chunk: 64, delay: Duration::ZERO, stall_after_first: None, extra: String::new() }
     }
 
     /// Serves one connection; returns the base url and the captured request (head + body).
@@ -185,7 +191,7 @@ mod tests {
                 buf.extend_from_slice(&tmp[..n]);
             }
             let _ = ctx.send(buf);
-            let hdr = format!("HTTP/1.1 {}\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n", s.status);
+            let hdr = format!("HTTP/1.1 {}\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n{}\r\n", s.status, s.extra);
             let _ = sock.write_all(hdr.as_bytes()).await;
             for (i, c) in s.body.chunks(s.chunk).enumerate() {
                 let mut out = format!("{:x}\r\n", c.len()).into_bytes();
@@ -280,6 +286,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn redirect_is_not_followed() {
+        let other = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let loc = format!("Location: http://{}/\r\n", other.local_addr().unwrap());
+        let (url, _) = serve(Srv { status: "302 Found", extra: loc, ..srv(Vec::new()) }).await;
+        let c = LlmClient::new(cfg(Provider::Anthropic, &url)).unwrap();
+        assert_eq!(collect(&c).await, vec![StreamEvent::Error(LlmError::Malformed)]);
+        assert!(tokio::time::timeout(Duration::from_millis(200), other.accept()).await.is_err());
+    }
+
+    #[tokio::test]
     async fn refused_connection_is_no_carrier() {
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", l.local_addr().unwrap());
@@ -315,7 +331,9 @@ mod tests {
         let first = tokio::time::timeout(Duration::from_secs(3), rx.recv()).await.unwrap().unwrap();
         assert!(matches!(first, crate::run::Event::Llm { req_id: 7, .. }));
         h.abort();
-        let _ = h.await;
+        let t = std::time::Instant::now();
+        assert!(h.await.unwrap_err().is_cancelled());
+        assert!(t.elapsed() < Duration::from_millis(500));
         while rx.try_recv().is_ok() {}
         assert!(tokio::time::timeout(Duration::from_millis(300), rx.recv()).await.map_or(true, |e| e.is_none()));
     }
