@@ -1,5 +1,6 @@
 pub mod app;
 pub mod backend;
+pub mod chatlog;
 pub mod config;
 pub mod dialect;
 pub mod input;
