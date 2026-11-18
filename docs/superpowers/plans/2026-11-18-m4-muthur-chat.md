@@ -37,9 +37,9 @@ It talks to either a vLLM server (OpenAI chat-completions) or Anthropic's native
   - `anthropic-version: 2023-06-01`;
   - `x-api-key`;
   - `anthropic-beta: server-side-fallback-2026-07-01` only when `fallbacks = true`.
-- **Anthropic body.** `output_config.effort`, plus `"fallbacks": "default"` when enabled. There is no `thinking` field.
+- **Anthropic body.** `output_config.effort`; `"fallbacks": "default"` when enabled; and top-level `"cache_control": {"type": "ephemeral"}` (adding `"ttl": "1h"` when `cache_ttl = "1h"`) on every request. There is no `thinking` field. The default model is `claude-sonnet-5-5`.
 - **Timeouts.** Connect timeout 15 s. Idle timeout 60 s between body chunks. No total timeout and no retries.
-- **Defaults.** `reveal_cps = 50`, `max_tokens = 4096`, `effort = "low"`, `context_tokens = 200000`. The token estimate is `chars / 4`. A trim cuts down to ≤ 50 % of `context_tokens`.
+- **Defaults.** `reveal_cps = 50`, `max_tokens = 4096`, `effort = "low"`, `cache_ttl = "5m"`, `context_tokens = 200000`. The token estimate is `chars / 4`. A trim cuts down to ≤ 50 % of `context_tokens`.
 
 ## Review Focus
 1. **The connection dies mid-reply (some text received, then an error).** The partial text stays on screen and is logged as `stop: "interrupted"`, and the status line shows the error. Test: Task 8 `error_after_partial_keeps_text`.
@@ -101,6 +101,8 @@ pub trait StreamParser: Send {
     fn feed(&mut self, rec: &sse::SseRecord) -> Vec<StreamEvent>;
     /// Body ended. Emits Error(Transmission) if no Done was produced.
     fn finish(&mut self) -> Vec<StreamEvent>;
+    /// One-line token usage for muthur.log, e.g. "in=12 cache_write=0 cache_read=480 out=9"; None if the protocol reports none.
+    fn usage_summary(&self) -> Option<String> { None }
 }
 impl Stop { pub fn log_str(&self) -> &str }  // "end_turn" | "max_tokens" | "tool_use" | "refusal" | other
 impl LlmError { pub fn reason(&self) -> &'static str }
@@ -161,12 +163,12 @@ pub enum Provider { #[default] Anthropic, Openai }
 #[derive(Debug, Clone, PartialEq, Deserialize)] #[serde(default)]
 pub struct MuthurSection {
     pub provider: Provider, pub base_url: Option<String>, pub model: Option<String>, pub api_key: Option<String>,
-    pub max_tokens: u32, pub effort: String, pub fallbacks: bool, pub context_tokens: usize,
+    pub max_tokens: u32, pub effort: String, pub fallbacks: bool, pub cache_ttl: String, pub context_tokens: usize,
     pub reveal_cps: u32, pub uppercase: bool, pub system_prompt: Option<String>,
 }
 impl MuthurSection {
     pub fn base_url(&self) -> Option<&str>;   // explicit, else "https://api.anthropic.com" for Anthropic, None for Openai; trailing '/' trimmed
-    pub fn model(&self) -> Option<&str>;      // explicit, else "claude-opus-5-5" for Anthropic, None for Openai
+    pub fn model(&self) -> Option<&str>;      // explicit, else "claude-sonnet-5-5" for Anthropic, None for Openai
     pub fn readiness(&self) -> Result<(), LlmError>; // Anthropic w/o non-empty api_key → NoAccessCode; Openai w/o base_url or model → NotConfigured
 }
 ```
@@ -174,7 +176,7 @@ Add `pub muthur: MuthurSection` to `Config`. Defaults are given in Global Constr
 
 - [ ] **Step 1: Failing tests**:
 ```rust
-#[test] fn muthur_defaults() { let m = MuthurSection::default(); assert_eq!(m.provider, Provider::Anthropic); assert_eq!(m.base_url(), Some("https://api.anthropic.com")); assert_eq!(m.model(), Some("claude-opus-5-5")); assert_eq!((m.max_tokens, m.effort.as_str(), m.fallbacks, m.context_tokens, m.reveal_cps, m.uppercase), (4096, "low", true, 200000, 50, true)); assert_eq!(m.readiness(), Err(LlmError::NoAccessCode)); }
+#[test] fn muthur_defaults() { let m = MuthurSection::default(); assert_eq!(m.provider, Provider::Anthropic); assert_eq!(m.base_url(), Some("https://api.anthropic.com")); assert_eq!(m.model(), Some("claude-sonnet-5-5")); assert_eq!((m.max_tokens, m.effort.as_str(), m.fallbacks, m.cache_ttl.as_str(), m.context_tokens, m.reveal_cps, m.uppercase), (4096, "low", true, "5m", 200000, 50, true)); assert_eq!(m.readiness(), Err(LlmError::NoAccessCode)); }
 #[test] fn muthur_openai_section_parses() { let (_d, p) = write_cfg("[muthur]\nprovider = \"openai\"\nbase_url = \"http://10.0.0.5:8000/\"\nmodel = \"qwen\"\n", 0o600); let c = load(&p).unwrap(); assert_eq!(c.muthur.base_url(), Some("http://10.0.0.5:8000")); assert_eq!(c.muthur.readiness(), Ok(())); }
 #[test] fn openai_without_url_is_not_configured() { let m = MuthurSection { provider: Provider::Openai, ..Default::default() }; assert_eq!(m.readiness(), Err(LlmError::NotConfigured)); }
 ```
@@ -203,7 +205,7 @@ pub fn replay_blocks(raw: &[serde_json::Value], strip_thinking: bool) -> Vec<ser
 ```
 
 **`request_body`:**
-- The fields are `model`, `max_tokens`, `stream: true`, `system` (a string), `messages` and `output_config: {"effort": cfg.effort}`. When `cfg.fallbacks` is on, add `"fallbacks": "default"`.
+- The fields are `model`, `max_tokens`, `stream: true`, `system` (a string), `messages` and `output_config: {"effort": cfg.effort}`. When `cfg.fallbacks` is on, add `"fallbacks": "default"`. Always add top-level `"cache_control": {"type": "ephemeral"}`; when `cfg.cache_ttl == "1h"`, add `"ttl": "1h"` to it (any other value means the default 5 minutes, sent without `ttl`).
 - How each message is sent:
   - `Text(s)` → `{"role", "content": s}`;
   - `Blocks(v)` → `{"role", "content": v}`.
@@ -227,6 +229,8 @@ pub fn replay_blocks(raw: &[serde_json::Value], strip_thinking: bool) -> Vec<ser
 4. Return what is left. The caller falls back to plain text if the result is empty.
 
 **Fixtures:** each one is a realistic `event: …\ndata: {…}\n\n` stream following the documented Messages streaming format, including `ping`.
+- `anthropic_text.sse`: its `message_start` usage is `{"input_tokens":12,"cache_creation_input_tokens":0,"cache_read_input_tokens":480,"output_tokens":1}`, and its `message_delta` usage is `{"output_tokens":9}`.
+- **Usage.** `Parser` keeps the input and cache fields from `message_start` and `output_tokens` from `message_delta` (the later value wins). `usage_summary()` formats them as `in={} cache_write={} cache_read={} out={}`, with missing fields counted as 0.
 - `anthropic_thinking.sse`: one thinking block (empty `thinking`, with a `signature_delta`), then one text block in two deltas.
 - `anthropic_fallback.sse`: a thinking block, then a `fallback` block, then text, ending with `stop_reason: "end_turn"`.
 
@@ -240,8 +244,10 @@ pub fn replay_blocks(raw: &[serde_json::Value], strip_thinking: bool) -> Vec<ser
 #[test] fn truncated_stream_is_transmission_error() { let mut p = Parser::new(); /* feed message_start + one text delta only */ assert_eq!(p.finish(), vec![StreamEvent::Error(LlmError::Transmission)]); }
 #[test] fn replay_fallback_rule() { let raw = vec![json!({"type":"thinking","thinking":"","signature":"s"}), json!({"type":"fallback"}), json!({"type":"thinking","thinking":"","signature":"t"}), json!({"type":"text","text":"X"})]; assert_eq!(replay_blocks(&raw, false), raw[1..].to_vec()); assert_eq!(replay_blocks(&raw, true), vec![raw[1].clone(), raw[3].clone()]); }
 #[test] fn replay_drops_tool_use() { let raw = vec![json!({"type":"text","text":"A"}), json!({"type":"tool_use","id":"1","name":"m","input":{}})]; assert_eq!(replay_blocks(&raw, false), raw[..1].to_vec()); }
-#[test] fn body_shape() { let cfg = MuthurSection{ api_key: Some("k".into()), ..Default::default() }; let b = request_body(&cfg, &req_with(vec![user("HI")])); assert_eq!(b["model"], "claude-opus-5-5"); assert_eq!(b["stream"], true); assert_eq!(b["output_config"]["effort"], "low"); assert_eq!(b["fallbacks"], "default"); assert!(b.get("thinking").is_none()); assert_eq!(b["messages"][0], json!({"role":"user","content":"HI"})); }
+#[test] fn body_shape() { let cfg = MuthurSection{ api_key: Some("k".into()), ..Default::default() }; let b = request_body(&cfg, &req_with(vec![user("HI")])); assert_eq!(b["model"], "claude-sonnet-5-5"); assert_eq!(b["cache_control"], json!({"type":"ephemeral"})); assert_eq!(b["stream"], true); assert_eq!(b["output_config"]["effort"], "low"); assert_eq!(b["fallbacks"], "default"); assert!(b.get("thinking").is_none()); assert_eq!(b["messages"][0], json!({"role":"user","content":"HI"})); }
 #[test] fn no_fallbacks_no_beta() { let cfg = MuthurSection{ fallbacks: false, api_key: Some("k".into()), ..Default::default() }; assert!(request_body(&cfg, &req_with(vec![])).get("fallbacks").is_none()); assert!(!headers(&cfg).iter().any(|(k,_)| *k == "anthropic-beta")); }
+#[test] fn one_hour_cache_ttl() { let cfg = MuthurSection{ cache_ttl: "1h".into(), api_key: Some("k".into()), ..Default::default() }; assert_eq!(request_body(&cfg, &req_with(vec![]))["cache_control"], json!({"type":"ephemeral","ttl":"1h"})); }
+#[test] fn usage_is_collected() { let mut p = Parser::new(); feed_file(&mut p, "anthropic_text.sse"); assert_eq!(p.usage_summary().as_deref(), Some("in=12 cache_write=0 cache_read=480 out=9")); }
 ```
 - [ ] **Step 2–4:** FAIL → implement → pass.
 - [ ] **Step 5: Commit** `feat: anthropic messages protocol`
@@ -381,6 +387,7 @@ pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
    - read error → `Error(Transmission)`;
    - `None` → `parser.finish()`.
    Every event goes through `emit`. Stop after the first `Done` or `Error`.
+5. After a `Done`, if `parser.usage_summary()` is `Some(u)`, write `tracing::info!(model, usage = %u, "llm turn")`. Token counts are not secret.
 
 `Event::Llm` is added to `run::Event` in this task: `Llm { req_id: u64, ev: StreamEvent }`. The event loop arm for it is a no-op until Task 9.
 
@@ -659,7 +666,7 @@ The reply being revealed is shown from `reveal.visible()` until `caught_up()`; a
   2. Runs `LlmClient::stream` and asserts some non-empty text and a `Done { stop: End }`.
   3. Appends the assistant record and a second user turn, `"REPEAT YOUR LAST ANSWER IN THREE WORDS."`.
   4. Streams again and asserts `Done { stop: End }`. On Anthropic, this proves that replaying the thinking blocks is accepted.
-  5. Prints the received text.
+  5. Prints the received text and `usage_summary()` for each turn. Cache hits are not asserted, because a short conversation can sit below the 512-token minimum.
 
   Make sure it compiles: `cargo test --test llm_live` → 0 run, 2 ignored. **Do not run it with credentials**; the user runs it.
 - [ ] **Step 6: Final verification**:

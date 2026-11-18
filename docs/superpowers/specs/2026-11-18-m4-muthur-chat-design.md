@@ -63,11 +63,12 @@ src/muthur/
 ```toml
 provider       = "anthropic"                  # "anthropic" | "openai"
 base_url       = "https://api.anthropic.com"  # default per provider; openai has no default and must be set
-model          = "claude-opus-5-5"            # default for anthropic; required for openai
+model          = "claude-sonnet-5-5"          # default for anthropic; required for openai
 api_key        = ""                           # required for anthropic; optional for openai (sent as Bearer if set)
 max_tokens     = 4096
 effort         = "low"                        # anthropic only: output_config.effort
 fallbacks      = true                         # anthropic only: server-side refusal fallback
+cache_ttl      = "5m"                         # anthropic only: prompt-cache TTL, "5m" | "1h"
 context_tokens = 200000                       # trim budget, estimated as chars/4
 reveal_cps     = 50
 uppercase      = true
@@ -93,17 +94,18 @@ Body:
 - `model`, `max_tokens`, `stream: true`, `system`;
 - `messages`, from the log;
 - `output_config: {effort}`;
-- `fallbacks: "default"`, when `fallbacks` is on.
+- `fallbacks: "default"`, when `fallbacks` is on;
+- `cache_control: {"type": "ephemeral"}`, plus `"ttl": "1h"` when `cache_ttl = "1h"`. This is top-level automatic prompt caching: the API puts the breakpoint on the last cacheable block and moves it forward as the conversation grows, so each turn reads the earlier history from cache. It depends on the frozen system prompt and on user turns being replayed exactly as stored. Sonnet 5.5's minimum cacheable prefix is 512 tokens, so the first turn or two may not cache.
 
 There is no `thinking` field. Adaptive thinking is the default, and `display` stays at its default of `"omitted"`; thinking is never shown.
 
 Stream events handled:
-- `message_start`: model name and usage;
+- `message_start`: model name and usage (`input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`);
 - `content_block_start`: the block type — `text`, `thinking`, `redacted_thinking`, `tool_use`, `fallback`, or an unknown type that is kept raw;
 - `content_block_delta`: `text_delta` → `Text`; `thinking_delta` and `signature_delta` are accumulated into the raw block; `input_json_delta` is accumulated for `tool_use`;
 - `content_block_stop`;
 - `message_delta`: `stop_reason`;
-- `message_stop`;
+- `message_stop`: `muthur.log` gets one `info` line with the turn's token usage: input, cache write, cache read, output (`output_tokens` comes from `message_delta.usage`). This is how cache hits are checked.
 - `ping`: ignored;
 - `error`: becomes `StreamEvent::Error`.
 
