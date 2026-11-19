@@ -307,3 +307,24 @@ fn renders_inside_a_larger_area_without_panic() {
         }
     }
 }
+
+fn info_date() -> chrono::NaiveDateTime {
+    chrono::NaiveDate::from_ymd_opt(2026, 11, 19).unwrap().and_hms_opt(0, 0, 0).unwrap()
+}
+
+#[test]
+fn info_from_default_config_is_offline_without_key() {
+    let cfg = crate::config::Config::default();
+    let i = SplashInfo::from_config(&cfg, "USCSS X", info_date());
+    assert_eq!(i.year, 2137);
+    assert_eq!(i.link, "38400 BAUD  XON/XOFF");
+    assert!(matches!(i.interface, Interface::Offline(ref r) if r == "NO ACCESS CODE"));
+}
+
+#[test]
+fn info_online_with_key() {
+    let mut cfg = crate::config::Config::default();
+    cfg.muthur.api_key = Some("k".into());
+    let i = SplashInfo::from_config(&cfg, "USCSS X", info_date());
+    assert!(matches!(i.interface, Interface::Online));
+}

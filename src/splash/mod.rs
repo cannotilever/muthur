@@ -39,6 +39,21 @@ pub struct SplashInfo {
     pub interface: Interface,
 }
 
+impl SplashInfo {
+    pub fn from_config(cfg: &crate::config::Config, ship_name: &str, now: chrono::NaiveDateTime) -> Self {
+        use chrono::Datelike;
+        Self {
+            ship_name: ship_name.to_string(),
+            year: now.year() + cfg.chrome.year_offset,
+            link: link_label(cfg.link.baud, cfg.link.flow),
+            interface: match cfg.muthur.readiness() {
+                Ok(()) => Interface::Online,
+                Err(e) => Interface::Offline(e.reason().to_string()),
+            },
+        }
+    }
+}
+
 pub fn link_label(baud: u32, flow: FlowControl) -> String {
     let f = match flow {
         FlowControl::XonXoff => "XON/XOFF",
