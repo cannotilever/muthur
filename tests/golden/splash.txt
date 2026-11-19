@@ -1,0 +1,43 @@
+
+
+
+
+
+
+oooooooooooo;    'looooooooool.    ;odddooooc.    cloooooooool:    .cooooooooooo
+'lxxxxxxxxxxxdc.  ,lddddddddl,  .cdxxxxxxxxxxxo;  .:odddddddo:.  ;oxxxxxxxxxxxd:
+  .:dxxxxxxxxxxxo,  .:dddo:.  ;oxxxxxxxxxxxxxxxxdc.  ,ldddl,  .cdxxxxxxxxxxxl'
+     'lxxxxxxxxxxxdc.  ,,  .cdxxxxxxxxxolxxxxxxxxxxo,  .;.  ,oxxxxxxxxxxxd:.
+       .:dxxxxxxxxxxxo,  ,oxxxxxxxxxxl'  .:dxxxxxxxxxd:. .cdxxxxxxxxxxxl'
+          ,lxxxxxxxxxxxddxxxxxxxxxd:.  ;:.  'lxxxxxxxxxxoxxxxxxxxxxxd:.
+            .:dxxxxxxxxxxxxxxxxxl'  .cddddl,  .:dxxxxxxxxxxxxxxxxxl,
+               ,oxxxxxxxxxxxxd:.  ,lddddddddd:.  ,lxxxxxxxxxxxxd:.
+                 .cllllllllc'    .cccccccccccc;    .:lllllllll,
+                          W E Y L A N D - Y U T A N I
+                             BUILDING BETTER WORLDS
+
+
+
+
+
+
+
+                         MU/TH/UR 6000 - INTERFACE 2137
+
+        SYSTEM CHECK ......................... OK
+        VESSEL ............................... USCSS TEST
+        PROCESSOR ............................ 16 CORES
+        MEMORY ............................... 31.2G
+        UPTIME ............................... 3D 04:12
+        LINK ................................. 38400 BAUD  XON/XOFF
+        SYSTEM UNITS ......................... NOMINAL
+        INTERFACE ............................ [ONLINE]
+
+
+
+
+
+
+
+
+        READY.

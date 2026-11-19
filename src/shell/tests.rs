@@ -141,3 +141,36 @@ fn scrollback_indicator_in_fullscreen() {
     assert!(top.trim_end().ends_with("SCROLLBACK -43"), "{top:?}");
     assert!(buf[(79, 0)].modifier.contains(Modifier::REVERSED));
 }
+
+/// The script reads the 7-byte DA1 reply raw (ESC shown as `E`) or times out.
+const DA_PROBE: &str =
+    "stty raw -echo; printf '\\033[0c'; r=$(timeout --foreground 1 dd bs=1 count=7 2>/dev/null | tr '\\033' E); printf 'GOT[%s]' \"$r\"; sleep 5";
+
+#[test]
+fn answers_primary_device_attributes() {
+    let (mut t, _h, rx) = tab(DA_PROBE);
+    let s = text(&pump(&mut t, &rx, FULL, |s| s.contains("GOT[")));
+    assert!(s.contains("GOT[E[?1;2c]"), "{s}");
+}
+
+#[test]
+fn bare_da_query_is_answered_too() {
+    let (mut t, _h, rx) = tab(&DA_PROBE.replace("[0c", "[c"));
+    let s = text(&pump(&mut t, &rx, FULL, |s| s.contains("GOT[")));
+    assert!(s.contains("GOT[E[?1;2c]"), "{s}");
+}
+
+#[test]
+fn passthrough_leaves_queries_to_the_real_terminal() {
+    let (mut t, _h, rx) = tab(DA_PROBE);
+    t.set_passthrough(true);
+    let s = text(&pump(&mut t, &rx, FULL, |s| s.contains("GOT[")));
+    assert!(s.contains("GOT[]"), "{s}");
+}
+
+#[test]
+fn da_query_is_collected_by_the_parser() {
+    let mut p = new_parser(24, 80, 0);
+    p.process(b"\x1b[0c");
+    assert_eq!(p.callbacks().0, DA1_REPLY);
+}

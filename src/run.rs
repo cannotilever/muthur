@@ -16,7 +16,8 @@ use crate::testcard::keys::KEY_GAP;
 use chrono::NaiveDateTime;
 use ratatui::Terminal;
 use std::io::Write;
-use std::time::Duration;
+use crate::splash::{Splash, SplashInfo};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver, UnboundedSender};
 
 /// Draw only when fewer than this many bytes are still waiting to be sent,
@@ -145,15 +146,29 @@ pub async fn event_loop<W: Write>(
             terminal.draw(|f| app.render(f, clock()))?;
             dirty = false;
             was_passthrough = app.passthrough;
+            if app.take_bell() {
+                let w = terminal.backend_mut().writer_mut();
+                w.write_all(b"\x07")?;
+                w.flush()?;
+            }
+            // The splash can end inside render: quit or clear now, not after
+            // the next wake-up.
+            if app.quit {
+                return Ok(());
+            }
+            if app.redraw {
+                app.redraw = false;
+                terminal.clear()?;
+                dirty = true;
+                continue;
+            }
         }
         tokio::select! {
             // Keys first: ^C and ^] must never wait behind queued output.
             biased;
             ev = rx.recv() => match ev {
                 Some(Event::Keys(keys)) => {
-                    for k in keys {
-                        app.handle_key(k);
-                    }
+                    app.handle_keys(keys);
                     dirty = true;
                 }
                 Some(Event::Metrics(s)) => {
@@ -326,17 +341,24 @@ fn open_audit_log() -> crate::tools::audit::AuditLog {
     }
 }
 
-/// Run the TUI on the configured link until quit or hangup.
-pub fn run(cfg: &Config, strict: bool) -> anyhow::Result<()> {
-    check_geometry(cfg.terminal.cols, cfg.terminal.rows)?;
-    let _log = init_logging()?;
-    install_panic_hook();
+type Term = Terminal<Wy60Backend<Box<dyn Write>, Vt100Dialect>>;
+
+struct Session {
+    link: Link,
+    tx: UnboundedSender<Event>,
+    rx: UnboundedReceiver<Event>,
+    terminal: Term,
+    hints: HintSlot,
+}
+
+/// Open the link, start the input thread and build the cleared terminal.
+fn open_session(cfg: &Config, strict: bool) -> anyhow::Result<Session> {
     let link = match cfg.link.device {
         Some(_) => Link::open_device(&cfg.link)?,
         None => Link::stdio(cfg.link.flow)?,
     };
     let keymap = Keymap::wy60_default().with_overrides(&cfg.keys)?;
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     spawn_input(link.reader()?, KeyParser::new(keymap), tx.clone());
 
     let out = link.writer()?;
@@ -346,6 +368,67 @@ pub fn run(cfg: &Config, strict: bool) -> anyhow::Result<()> {
     let hints = HintSlot::default();
     let mut terminal = Terminal::new(Wy60Backend::new(writer, Vt100Dialect, cols, rows).with_hints(hints.clone()))?;
     terminal.clear()?;
+    Ok(Session { link, tx, rx, terminal, hints })
+}
+
+/// Start the local metrics poller, or report telemetry offline.
+fn start_metrics(cfg: &Config, tx: &UnboundedSender<Event>, slot: crate::tools::exec::SnapshotSlot) {
+    match LocalSource::new(cfg.utility.containers, cfg.utility.exclude_fs.clone()) {
+        Ok(src) => {
+            spawn_metrics(Box::new(src), Duration::from_secs(cfg.utility.interval_secs.max(1)), tx.clone(), slot);
+        }
+        Err(e) => {
+            tracing::error!("metrics unavailable: {e:#}");
+            let _ = tx.send(Event::MetricsOffline(format!("{e:#}").to_uppercase()));
+        }
+    }
+}
+
+/// Clear the screen and restore termios (dropping the link).
+fn teardown(mut terminal: Term, link: Link) -> anyhow::Result<()> {
+    let mut bye = Vec::new();
+    Vt100Dialect.clear(&mut bye);
+    let w = terminal.backend_mut().writer_mut();
+    w.write_all(&bye)?;
+    w.flush()?;
+    drop(terminal);
+    drop(link); // restores termios
+    Ok(())
+}
+
+fn splash_for(cfg: &Config, ship: &str) -> Splash {
+    let info = SplashInfo::from_config(cfg, ship, chrono::Local::now().naive_local());
+    Splash::new(info, Instant::now())
+}
+
+/// Play the boot splash once on the configured link, then exit.
+pub fn run_splash(cfg: &Config, strict: bool) -> anyhow::Result<()> {
+    check_geometry(cfg.terminal.cols, cfg.terminal.rows)?;
+    let _log = init_logging()?;
+    install_panic_hook();
+    let Session { link, tx, mut rx, mut terminal, .. } = open_session(cfg, strict)?;
+    let ship = ship_name(cfg);
+    start_metrics(cfg, &tx, crate::tools::exec::SnapshotSlot::default());
+    let chrome = ChromeView { ship_name: ship.clone(), year_offset: cfg.chrome.year_offset };
+    let mut app = App::new(chrome).with_splash(splash_for(cfg, &ship));
+    app.quit_after_splash = true;
+    let (_pty_tx, mut pty_rx) = tokio::sync::mpsc::channel(PTY_QUEUE);
+    let rt = tokio::runtime::Builder::new_current_thread().enable_time().enable_io().build()?;
+    let outq = || link.output_queue().unwrap_or(0);
+    let result = rt.block_on(event_loop(&mut app, &mut terminal, &mut rx, &mut pty_rx, outq, || {
+        chrono::Local::now().naive_local()
+    }));
+    teardown(terminal, link)?;
+    result
+}
+
+/// Run the TUI on the configured link until quit or hangup.
+pub fn run(cfg: &Config, strict: bool) -> anyhow::Result<()> {
+    check_geometry(cfg.terminal.cols, cfg.terminal.rows)?;
+    let _log = init_logging()?;
+    install_panic_hook();
+    let Session { link, tx, mut rx, mut terminal, hints } = open_session(cfg, strict)?;
+    let (cols, rows) = (cfg.terminal.cols, cfg.terminal.rows);
     let shell_cfg = ShellConfig {
         command: cfg.shell.command.clone(),
         args: cfg.shell.args.clone(),
@@ -357,19 +440,15 @@ pub fn run(cfg: &Config, strict: bool) -> anyhow::Result<()> {
     let shell = ShellTab::new(shell_cfg, hints, move |e| {
         let _ = pty_tx.blocking_send(e);
     });
-    let chrome = ChromeView { ship_name: ship_name(cfg), year_offset: cfg.chrome.year_offset };
+    let ship = ship_name(cfg);
+    let chrome = ChromeView { ship_name: ship.clone(), year_offset: cfg.chrome.year_offset };
     let slot = crate::tools::exec::SnapshotSlot::default();
-    match LocalSource::new(cfg.utility.containers, cfg.utility.exclude_fs.clone()) {
-        Ok(src) => {
-            spawn_metrics(Box::new(src), Duration::from_secs(cfg.utility.interval_secs.max(1)), tx.clone(), slot.clone());
-        }
-        Err(e) => {
-            tracing::error!("metrics unavailable: {e:#}");
-            let _ = tx.send(Event::MetricsOffline(format!("{e:#}").to_uppercase()));
-        }
-    }
+    start_metrics(cfg, &tx, slot.clone());
     let muthur = build_muthur(cfg, &chrome.ship_name, tx.clone(), slot)?;
     let mut app = App::assemble(chrome, UtilityTab::new(), muthur, shell);
+    if cfg.chrome.splash {
+        app = app.with_splash(splash_for(cfg, &ship));
+    }
     tracing::info!(cols, rows, strict, "MU/TH/UR online");
 
     let rt = tokio::runtime::Builder::new_current_thread().enable_time().enable_io().build()?;
@@ -384,13 +463,7 @@ pub fn run(cfg: &Config, strict: bool) -> anyhow::Result<()> {
         chrono::Local::now().naive_local()
     }));
 
-    let mut bye = Vec::new();
-    Vt100Dialect.clear(&mut bye);
-    let w = terminal.backend_mut().writer_mut();
-    w.write_all(&bye)?;
-    w.flush()?;
-    drop(terminal);
-    drop(link); // restores termios
+    teardown(terminal, link)?;
     tracing::info!("MU/TH/UR offline");
     result
 }
@@ -443,6 +516,46 @@ mod tests {
         tx.send(Event::Hangup).unwrap();
         let r = tokio::time::timeout(Duration::from_millis(100), event_loop(&mut app, &mut t, &mut rx, &mut no_pty(), || 0, now)).await;
         assert!(r.expect("loop did not exit").is_ok());
+    }
+
+    fn stale_splash() -> crate::splash::Splash {
+        use crate::splash::{Interface, Splash, SplashInfo};
+        let info = SplashInfo { ship_name: "USCSS TEST".into(), year: 2137, link: "38400 BAUD  XON/XOFF".into(), interface: Interface::Online };
+        let mut s = Splash::new(info, std::time::Instant::now() - Duration::from_secs(60));
+        s.on_metrics(&Default::default());
+        s
+    }
+
+    #[tokio::test]
+    async fn natural_splash_finish_clears_once_then_paints_tui() {
+        let (app, mut t) = setup();
+        let mut app = app.with_splash(stale_splash());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let quit = async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            tx.send(Event::Keys(vec![Key::Ctrl(']'), Key::Char('q')])).unwrap();
+        };
+        let mut pty = no_pty();
+        let (r, _) = tokio::join!(event_loop(&mut app, &mut t, &mut rx, &mut pty, || 0, now), quit);
+        r.unwrap();
+        let out = String::from_utf8(t.backend().writer().clone()).unwrap();
+        assert_eq!(out.matches("\x1b[2J").count(), 2, "initial clear + one handover clear");
+        let (clear, chrome) = (out.rfind("\x1b[2J").unwrap(), out.find("17 NOV 2137 14:02").expect("tui painted"));
+        assert!(chrome > clear, "TUI must be painted only after the clear");
+        assert_eq!(out.matches('\x07').count(), 1, "one bell at READY.");
+    }
+
+    #[tokio::test]
+    async fn quit_after_splash_returns_without_drawing_tui() {
+        let (app, mut t) = setup();
+        let mut app = app.with_splash(stale_splash());
+        app.quit_after_splash = true;
+        let (_tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let r = tokio::time::timeout(Duration::from_millis(500), event_loop(&mut app, &mut t, &mut rx, &mut no_pty(), || 0, now)).await;
+        assert!(r.expect("loop did not exit").is_ok());
+        let out = String::from_utf8(t.backend().writer().clone()).unwrap();
+        assert!(!out.contains("17 NOV 2137 14:02"), "placeholder TUI must not be drawn");
+        assert_eq!(out.matches('\x07').count(), 1, "muthur splash still rings before exiting");
     }
 
     #[tokio::test]

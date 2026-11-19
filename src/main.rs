@@ -33,6 +33,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Play the boot splash once and exit (for tuning the logo).
+    Splash,
     /// Hardware probes: attribute card (default), flow-control flood, key echo.
     Testcard(TestcardArgs),
 }
@@ -73,8 +75,10 @@ fn main() -> anyhow::Result<()> {
         cfg.terminal.rows = r;
     }
     let (cols, rows) = (cfg.terminal.cols, cfg.terminal.rows);
-    let Some(Command::Testcard(tc)) = cli.command else {
-        return muthur::run::run(&cfg, cli.strict);
+    let tc = match cli.command {
+        None => return muthur::run::run(&cfg, cli.strict),
+        Some(Command::Splash) => return muthur::run::run_splash(&cfg, cli.strict),
+        Some(Command::Testcard(tc)) => tc,
     };
     if rows < card::MIN_ROWS {
         bail!("--rows must be at least {}", card::MIN_ROWS);

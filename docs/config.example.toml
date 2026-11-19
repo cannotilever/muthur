@@ -29,6 +29,8 @@ rows = 43
 # ship_name = "USCSS NOSTROMO"
 # Added to the real year for the in-universe date (2026 + 111 = 2137).
 year_offset = 111
+# Play the boot splash (logo and system check) on launch. Any key skips it.
+splash = true
 
 # ── SHELL folder (F3) ────────────────────────────────────────────────────────
 [shell]
