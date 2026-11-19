@@ -1,7 +1,7 @@
 //! Append-only JSONL conversation log and message-window rules.
 use crate::config::Provider;
 use crate::llm::anthropic::replay_blocks;
-use crate::llm::{Message, MessageContent, Role};
+use crate::llm::{Message, MessageContent, Role, ToolResult};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -30,6 +30,7 @@ pub struct Assistant {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Exchange {
     pub user: String,
+    pub tools: Vec<ToolResult>,
     pub reply: Option<(String, String)>,
 }
 
@@ -48,6 +49,9 @@ fn seq(r: &Value) -> u64 {
 }
 fn text(r: &Value) -> &str {
     r.get("text").and_then(Value::as_str).unwrap_or("")
+}
+fn stop(r: &Value) -> &str {
+    r.get("stop").and_then(Value::as_str).unwrap_or("")
 }
 
 impl ChatLog {
@@ -112,6 +116,10 @@ impl ChatLog {
         self.write(r).map(|_| ())
     }
 
+    pub fn append_tool(&mut self, results: &[ToolResult], ts: &str) -> std::io::Result<()> {
+        self.write(json!({"kind":"tool","ts":ts,"results":results})).map(|_| ())
+    }
+
     fn append_epoch(&mut self, from: u64, reason: &str, hash: &str) -> std::io::Result<()> {
         self.write(json!({"kind":"epoch","from":from,"reason":reason,"system_hash":hash})).map(|_| ())
     }
@@ -131,45 +139,70 @@ impl ChatLog {
         }
     }
 
+    /// Exchanges: each user record plus the assistant/tool records up to the next user.
+    fn exchanges(&self) -> Vec<Vec<&Value>> {
+        let mut out: Vec<Vec<&Value>> = Vec::new();
+        for r in &self.records {
+            match kind(r) {
+                "user" => out.push(vec![r]),
+                "assistant" | "tool" => {
+                    if let Some(ex) = out.last_mut() {
+                        ex.push(r);
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    fn to_message(provider: Provider, r: &Value, e_seq: u64) -> Message {
+        match kind(r) {
+            "tool" => {
+                let results = r.get("results").cloned().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+                Message { role: Role::User, content: MessageContent::ToolResults(results) }
+            }
+            "assistant" => {
+                let stop = stop(r);
+                let raw = r.get("raw").and_then(Value::as_array);
+                let mut content = MessageContent::Text(text(r).into());
+                match (provider, raw) {
+                    (Provider::Anthropic, Some(raw)) if stop != "interrupted" => {
+                        let b = replay_blocks(raw, seq(r) < e_seq);
+                        if !b.is_empty() {
+                            content = MessageContent::Blocks(b);
+                        }
+                    }
+                    (Provider::Openai, Some(raw)) if stop == "tool_use" => {
+                        content = MessageContent::ToolCalls { text: text(r).into(), calls: raw.clone() };
+                    }
+                    _ => {}
+                }
+                Message { role: Role::Assistant, content }
+            }
+            _ => Message { role: Role::User, content: MessageContent::Text(text(r).into()) },
+        }
+    }
+
+    /// A past exchange is sendable only if it ends in a final assistant record.
+    fn ends_final(ex: &[&Value]) -> bool {
+        ex.last().is_some_and(|r| {
+            kind(r) == "assistant" && !matches!(stop(r), "tool_use" | "error" | "refusal") && !text(r).trim().is_empty()
+        })
+    }
+
     /// Build the window from user seq `from`. Returns (messages, candidate trim starts).
     fn build(&self, provider: Provider, from: u64, e_seq: u64) -> (Vec<Message>, Vec<u64>) {
-        let ua: Vec<&Value> = self.records.iter().filter(|r| matches!(kind(r), "user" | "assistant")).collect();
+        let exs = self.exchanges();
         let mut msgs = Vec::new();
         let mut starts = Vec::new();
-        if ua.last().map(|r| kind(r)) != Some("user") {
-            return (msgs, starts);
-        }
-        let last = ua.len() - 1;
-        for (i, u) in ua.iter().enumerate() {
-            if kind(u) != "user" || seq(u) < from {
+        let Some(last) = exs.len().checked_sub(1) else { return (msgs, starts) };
+        for (i, ex) in exs.iter().enumerate() {
+            if seq(ex[0]) < from || (i != last && !Self::ends_final(ex)) {
                 continue;
             }
-            if i == last {
-                starts.push(seq(u));
-                msgs.push(Message { role: Role::User, content: MessageContent::Text(text(u).into()) });
-                continue;
-            }
-            let a = ua[i + 1];
-            if kind(a) != "assistant" {
-                continue;
-            }
-            let stop = a.get("stop").and_then(Value::as_str).unwrap_or("");
-            if matches!(stop, "error" | "refusal") || text(a).trim().is_empty() {
-                continue;
-            }
-            starts.push(seq(u));
-            msgs.push(Message { role: Role::User, content: MessageContent::Text(text(u).into()) });
-            let mut content = MessageContent::Text(text(a).into());
-            if provider == Provider::Anthropic
-                && stop != "interrupted"
-                && let Some(raw) = a.get("raw").and_then(Value::as_array)
-            {
-                let b = replay_blocks(raw, seq(a) < e_seq);
-                if !b.is_empty() {
-                    content = MessageContent::Blocks(b);
-                }
-            }
-            msgs.push(Message { role: Role::Assistant, content });
+            starts.push(seq(ex[0]));
+            msgs.extend(ex.iter().map(|r| Self::to_message(provider, r, e_seq)));
         }
         (msgs, starts)
     }
@@ -180,15 +213,15 @@ impl ChatLog {
             .map(|m| match &m.content {
                 MessageContent::Text(t) => t.chars().count(),
                 MessageContent::Blocks(b) => b.iter().map(|v| v.to_string().chars().count()).sum(),
-                MessageContent::ToolResults(rs) => rs.iter().map(|r| r.content.chars().count()).sum(),
-                MessageContent::ToolCalls { text, calls } => text.chars().count() + calls.iter().map(|v| v.to_string().chars().count()).sum::<usize>(),
+                MessageContent::ToolResults(rs) => serde_json::to_string(rs).map(|s| s.chars().count()).unwrap_or(0),
+                MessageContent::ToolCalls { text, calls } => json!({"text":text,"calls":calls}).to_string().chars().count(),
             })
             .sum();
         (system.chars().count() + n) / 4
     }
 
-    pub fn window(&mut self, provider: Provider, model: &str, system: &str, budget_tokens: usize) -> std::io::Result<Vec<Message>> {
-        let h = fnv64(&format!("{provider:?}\n{model}\n{system}"));
+    pub fn window(&mut self, provider: Provider, model: &str, system: &str, tools_json: &str, budget_tokens: usize) -> std::io::Result<Vec<Message>> {
+        let h = fnv64(&format!("{provider:?}\n{model}\n{system}\n{tools_json}"));
         let last = self.latest_epoch().map(|e| (e["from"].as_u64().unwrap_or(0), e["system_hash"].as_str().unwrap_or("").to_string()));
         if last.as_ref().map(|l| l.1.as_str()) != Some(h.as_str()) {
             self.append_epoch(last.map(|l| l.0).unwrap_or(0), "system_changed", &h)?;
@@ -213,18 +246,18 @@ impl ChatLog {
     }
 
     pub fn history(&self) -> Vec<Exchange> {
-        let ua: Vec<&Value> = self.records.iter().filter(|r| matches!(kind(r), "user" | "assistant")).collect();
-        let mut out = Vec::new();
-        for (i, u) in ua.iter().enumerate() {
-            if kind(u) != "user" {
-                continue;
-            }
-            let reply = ua.get(i + 1).filter(|a| kind(a) == "assistant").map(|a| {
-                (text(a).to_string(), a.get("stop").and_then(Value::as_str).unwrap_or("").to_string())
-            });
-            out.push(Exchange { user: text(u).into(), reply });
-        }
-        out
+        self.exchanges()
+            .into_iter()
+            .map(|ex| {
+                let tools = ex
+                    .iter()
+                    .filter(|r| kind(r) == "tool")
+                    .flat_map(|r| r.get("results").cloned().and_then(|v| serde_json::from_value::<Vec<ToolResult>>(v).ok()).unwrap_or_default())
+                    .collect();
+                let reply = ex.iter().rev().find(|r| kind(r) == "assistant").map(|a| (text(a).to_string(), stop(a).to_string()));
+                Exchange { user: text(ex[0]).into(), tools, reply }
+            })
+            .collect()
     }
 
     pub fn purge(&mut self) -> std::io::Result<()> {
@@ -268,7 +301,7 @@ mod tests {
         l.append_user("[SHIP TIME X] HI", "t").unwrap();
         l.append_assistant(asst("HELLO", None), "t").unwrap();
         let l2 = ChatLog::open(d.path().join("chat.jsonl")).unwrap();
-        assert_eq!(l2.history(), vec![Exchange { user: "[SHIP TIME X] HI".into(), reply: Some(("HELLO".into(), "end_turn".into())) }]);
+        assert_eq!(l2.history(), vec![Exchange { user: "[SHIP TIME X] HI".into(), tools: vec![], reply: Some(("HELLO".into(), "end_turn".into())) }]);
         assert_eq!(std::fs::metadata(d.path().join("chat.jsonl")).unwrap().permissions().mode() & 0o777, 0o600);
     }
 
@@ -279,7 +312,7 @@ mod tests {
         let raw = thinking_raw("B");
         l.append_assistant(asst("B", Some(raw.clone())), "t").unwrap();
         l.append_user("C", "t").unwrap();
-        let w = l.window(Provider::Anthropic, "m", "SYS", 200000).unwrap();
+        let w = l.window(Provider::Anthropic, "m", "SYS", "", 200000).unwrap();
         assert_eq!(w.len(), 3);
         assert_eq!(w[1].content, MessageContent::Blocks(raw));
         assert_eq!(w[2].content, t("C"));
@@ -299,7 +332,7 @@ mod tests {
     #[test]
     fn failed_pairs_and_orphans_excluded() {
         let (_d, mut l) = failed_log();
-        let w = l.window(Provider::Anthropic, "m", "SYS", 200000).unwrap();
+        let w = l.window(Provider::Anthropic, "m", "SYS", "", 200000).unwrap();
         assert_eq!(w, vec![Message { role: Role::User, content: t("C") }]);
     }
 
@@ -309,7 +342,7 @@ mod tests {
         l.append_user("A", "t").unwrap();
         l.append_assistant(asst("B", Some(thinking_raw("B"))), "t").unwrap();
         l.append_user("C", "t").unwrap();
-        let w = l.window(Provider::Openai, "m", "SYS", 200000).unwrap();
+        let w = l.window(Provider::Openai, "m", "SYS", "", 200000).unwrap();
         assert_eq!(w.len(), 3);
         assert_eq!(w[1].content, t("B"));
     }
@@ -318,14 +351,14 @@ mod tests {
     fn system_change_strips_thinking_once() {
         let (_d, mut l) = log();
         l.append_user("A", "t").unwrap();
-        l.window(Provider::Anthropic, "m", "SYS1", 200000).unwrap();
+        l.window(Provider::Anthropic, "m", "SYS1", "", 200000).unwrap();
         l.append_assistant(asst("B", Some(thinking_raw("B"))), "t").unwrap();
         l.append_user("C", "t").unwrap();
-        let w = l.window(Provider::Anthropic, "m", "SYS2", 200000).unwrap();
+        let w = l.window(Provider::Anthropic, "m", "SYS2", "", 200000).unwrap();
         assert!(!has_thinking(&w[1].content));
         l.append_assistant(asst("D", Some(thinking_raw("D"))), "t").unwrap();
         l.append_user("E", "t").unwrap();
-        let w = l.window(Provider::Anthropic, "m", "SYS2", 200000).unwrap();
+        let w = l.window(Provider::Anthropic, "m", "SYS2", "", 200000).unwrap();
         assert!(!has_thinking(&w[1].content));
         assert!(has_thinking(&w[3].content));
     }
@@ -343,13 +376,13 @@ mod tests {
             l.append_assistant(asst(&big, None), "t").unwrap();
         }
         l.append_user("now", "t").unwrap();
-        let w = l.window(Provider::Anthropic, "m", "SYS", 1000).unwrap();
+        let w = l.window(Provider::Anthropic, "m", "SYS", "", 1000).unwrap();
         assert!(ChatLog::estimate("SYS", &w) <= 500);
         assert_eq!(epochs(&l, "trim"), 1);
         l.append_assistant(asst("ok", None), "t").unwrap();
         l.append_user("next", "t").unwrap();
         let n = l.records.iter().filter(|r| kind(r) == "epoch").count();
-        l.window(Provider::Anthropic, "m", "SYS", 1000).unwrap();
+        l.window(Provider::Anthropic, "m", "SYS", "", 1000).unwrap();
         assert_eq!(l.records.iter().filter(|r| kind(r) == "epoch").count(), n);
     }
 
@@ -383,7 +416,7 @@ mod tests {
         a.stop = "refusal".into();
         l.append_assistant(a, "t").unwrap();
         l.append_user("C", "t").unwrap();
-        let w = l.window(Provider::Anthropic, "m", "SYS", 200000).unwrap();
+        let w = l.window(Provider::Anthropic, "m", "SYS", "", 200000).unwrap();
         assert_eq!(w, vec![Message { role: Role::User, content: t("C") }]);
         assert_eq!(l.history()[0].reply, Some(("PARTIAL".into(), "refusal".into())));
     }
@@ -394,7 +427,7 @@ mod tests {
         l.append_user("A", "t").unwrap();
         l.append_assistant(asst(" \n\t", Some(vec![json!({"type":"text","text":" \n\t"})])), "t").unwrap();
         l.append_user("C", "t").unwrap();
-        let w = l.window(Provider::Anthropic, "m", "SYS", 200000).unwrap();
+        let w = l.window(Provider::Anthropic, "m", "SYS", "", 200000).unwrap();
         assert_eq!(w, vec![Message { role: Role::User, content: t("C") }]);
     }
 
@@ -402,15 +435,15 @@ mod tests {
     fn model_change_starts_epoch_and_strips_thinking_once() {
         let (_d, mut l) = log();
         l.append_user("A", "t").unwrap();
-        l.window(Provider::Anthropic, "m1", "SYS", 200000).unwrap();
+        l.window(Provider::Anthropic, "m1", "SYS", "", 200000).unwrap();
         l.append_assistant(asst("B", Some(thinking_raw("B"))), "t").unwrap();
         l.append_user("C", "t").unwrap();
-        let w = l.window(Provider::Anthropic, "m2", "SYS", 200000).unwrap();
+        let w = l.window(Provider::Anthropic, "m2", "SYS", "", 200000).unwrap();
         assert_eq!(epochs(&l, "system_changed"), 2);
         assert!(!has_thinking(&w[1].content));
         l.append_assistant(asst("D", Some(thinking_raw("D"))), "t").unwrap();
         l.append_user("E", "t").unwrap();
-        let w = l.window(Provider::Anthropic, "m2", "SYS", 200000).unwrap();
+        let w = l.window(Provider::Anthropic, "m2", "SYS", "", 200000).unwrap();
         assert_eq!(epochs(&l, "system_changed"), 2);
         assert!(!has_thinking(&w[1].content));
         assert!(has_thinking(&w[3].content));
@@ -420,8 +453,8 @@ mod tests {
     fn provider_change_starts_epoch() {
         let (_d, mut l) = log();
         l.append_user("A", "t").unwrap();
-        l.window(Provider::Anthropic, "m", "SYS", 200000).unwrap();
-        l.window(Provider::Openai, "m", "SYS", 200000).unwrap();
+        l.window(Provider::Anthropic, "m", "SYS", "", 200000).unwrap();
+        l.window(Provider::Openai, "m", "SYS", "", 200000).unwrap();
         assert_eq!(epochs(&l, "system_changed"), 2);
     }
 
@@ -432,6 +465,152 @@ mod tests {
         l.path = PathBuf::from("/dev/full");
         assert!(l.append_user("B", "t").is_err());
         assert!(l.needs_newline);
+    }
+
+    fn asst_stop(text: &str, stop: &str, raw: Option<Vec<Value>>) -> Assistant {
+        Assistant { stop: stop.into(), ..asst(text, raw) }
+    }
+    fn r1() -> ToolResult {
+        ToolResult { id: "t1".into(), name: "ship_status".into(), content: "ALL NOMINAL".into(), is_error: false, label: "SHIP STATUS".into() }
+    }
+    fn tool_use_raw() -> Vec<Value> {
+        vec![json!({"type":"text","text":"CHECKING"}), json!({"type":"tool_use","id":"t1","name":"ship_status","input":{}})]
+    }
+    fn user(s: &str) -> Message {
+        Message { role: Role::User, content: t(s) }
+    }
+
+    #[test]
+    fn exchange_with_rounds_replays_in_full() {
+        let (_d, mut l) = log();
+        l.append_user("Q", "t").unwrap();
+        l.append_assistant(asst_stop("CHECKING", "tool_use", Some(tool_use_raw())), "t").unwrap();
+        l.append_tool(&[r1()], "t").unwrap();
+        let done_raw = vec![json!({"type":"text","text":"DONE"})];
+        l.append_assistant(asst("DONE", Some(done_raw.clone())), "t").unwrap();
+        l.append_user("Q2", "t").unwrap();
+        let w = l.window(Provider::Anthropic, "m", "SYS", "", 200000).unwrap();
+        assert_eq!(
+            w,
+            vec![
+                user("Q"),
+                Message { role: Role::Assistant, content: MessageContent::Blocks(tool_use_raw()) },
+                Message { role: Role::User, content: MessageContent::ToolResults(vec![r1()]) },
+                Message { role: Role::Assistant, content: MessageContent::Blocks(done_raw) },
+                user("Q2"),
+            ]
+        );
+    }
+
+    #[test]
+    fn past_exchange_ending_in_tool_use_is_excluded() {
+        let (_d, mut l) = log();
+        l.append_user("Q", "t").unwrap();
+        l.append_assistant(asst_stop("CHECKING", "tool_use", Some(tool_use_raw())), "t").unwrap();
+        l.append_user("Q2", "t").unwrap();
+        let w = l.window(Provider::Anthropic, "m", "SYS", "", 200000).unwrap();
+        assert_eq!(w, vec![user("Q2")]);
+    }
+
+    #[test]
+    fn past_exchange_ending_in_tool_round_is_excluded() {
+        let (_d, mut l) = log();
+        l.append_user("Q", "t").unwrap();
+        l.append_assistant(asst_stop("CHECKING", "tool_use", Some(tool_use_raw())), "t").unwrap();
+        let aborted = ToolResult { content: "ABORTED".into(), is_error: true, ..r1() };
+        l.append_tool(&[aborted], "t").unwrap();
+        l.append_assistant(asst_stop("", "interrupted", None), "t").unwrap();
+        l.append_user("Q2", "t").unwrap();
+        let w = l.window(Provider::Anthropic, "m", "SYS", "", 200000).unwrap();
+        assert_eq!(w, vec![user("Q2")]);
+    }
+
+    #[test]
+    fn current_exchange_sent_in_full_ending_with_tool_results() {
+        let (_d, mut l) = log();
+        l.append_user("Q", "t").unwrap();
+        l.append_assistant(asst_stop("CHECKING", "tool_use", Some(tool_use_raw())), "t").unwrap();
+        l.append_tool(&[r1()], "t").unwrap();
+        let w = l.window(Provider::Anthropic, "m", "SYS", "", 200000).unwrap();
+        assert_eq!(w.len(), 3);
+        assert_eq!(w[0], user("Q"));
+        assert_eq!(w[1].content, MessageContent::Blocks(tool_use_raw()));
+        assert_eq!(w.last().unwrap(), &Message { role: Role::User, content: MessageContent::ToolResults(vec![r1()]) });
+    }
+
+    #[test]
+    fn openai_tool_calls_replay() {
+        let (_d, mut l) = log();
+        let call = json!({"id":"t1","type":"function","function":{"name":"ship_status","arguments":"{}"}});
+        l.append_user("Q", "t").unwrap();
+        let a = Assistant { provider: Provider::Openai, ..asst_stop("CHECKING", "tool_use", Some(vec![call.clone()])) };
+        l.append_assistant(a, "t").unwrap();
+        l.append_tool(&[r1()], "t").unwrap();
+        l.append_assistant(Assistant { provider: Provider::Openai, ..asst("DONE", None) }, "t").unwrap();
+        l.append_user("Q2", "t").unwrap();
+        let w = l.window(Provider::Openai, "m", "SYS", "", 200000).unwrap();
+        assert_eq!(w.len(), 5);
+        assert_eq!(w[1], Message { role: Role::Assistant, content: MessageContent::ToolCalls { text: "CHECKING".into(), calls: vec![call] } });
+        assert_eq!(w[2].content, MessageContent::ToolResults(vec![r1()]));
+        assert_eq!(w[3], Message { role: Role::Assistant, content: t("DONE") });
+        assert_eq!(w[4], user("Q2"));
+    }
+
+    #[test]
+    fn tools_change_writes_epoch() {
+        let (_d, mut l) = log();
+        l.append_user("A", "t").unwrap();
+        l.window(Provider::Anthropic, "m", "SYS", "T1", 200000).unwrap();
+        l.append_assistant(asst("B", Some(thinking_raw("B"))), "t").unwrap();
+        l.append_user("C", "t").unwrap();
+        let w = l.window(Provider::Anthropic, "m", "SYS", "T1", 200000).unwrap();
+        assert!(has_thinking(&w[1].content));
+        let w = l.window(Provider::Anthropic, "m", "SYS", "T2", 200000).unwrap();
+        assert_eq!(epochs(&l, "system_changed"), 2);
+        assert!(!has_thinking(&w[1].content));
+        l.window(Provider::Anthropic, "m", "SYS", "T2", 200000).unwrap();
+        assert_eq!(epochs(&l, "system_changed"), 2);
+    }
+
+    #[test]
+    fn trim_keeps_current_exchange_whole() {
+        let (_d, mut l) = log();
+        let big = "x".repeat(400);
+        for _ in 0..10 {
+            l.append_user(&big, "t").unwrap();
+            l.append_assistant(asst_stop(&big, "tool_use", Some(tool_use_raw())), "t").unwrap();
+            l.append_tool(&[ToolResult { content: big.clone(), ..r1() }], "t").unwrap();
+            l.append_assistant(asst(&big, None), "t").unwrap();
+        }
+        l.append_user("now", "t").unwrap();
+        l.append_assistant(asst_stop("CHECKING", "tool_use", Some(tool_use_raw())), "t").unwrap();
+        let huge = ToolResult { content: "y".repeat(800), ..r1() };
+        l.append_tool(std::slice::from_ref(&huge), "t").unwrap();
+        let w = l.window(Provider::Anthropic, "m", "SYS", "", 1600).unwrap();
+        assert_eq!(epochs(&l, "trim"), 1);
+        assert!(w.len() > 3 && w.len() < 43);
+        // Starts at an exchange boundary (a user text message)...
+        assert!(matches!(&w[0], Message { role: Role::User, content: MessageContent::Text(_) }));
+        // ...and every included past exchange is complete (4 messages each).
+        assert_eq!((w.len() - 3) % 4, 0);
+        // The current exchange is intact even though it alone exceeds budget/2.
+        let n = w.len();
+        assert_eq!(w[n - 3], user("now"));
+        assert_eq!(w[n - 2].content, MessageContent::Blocks(tool_use_raw()));
+        assert_eq!(w[n - 1].content, MessageContent::ToolResults(vec![huge]));
+    }
+
+    #[test]
+    fn history_collects_tools() {
+        let (_d, mut l) = log();
+        l.append_user("Q", "t").unwrap();
+        l.append_assistant(asst_stop("CHECKING", "tool_use", Some(tool_use_raw())), "t").unwrap();
+        l.append_tool(&[r1()], "t").unwrap();
+        l.append_assistant(asst("DONE", None), "t").unwrap();
+        let h = l.history();
+        assert_eq!(h.len(), 1);
+        assert_eq!(h[0].tools, vec![r1()]);
+        assert_eq!(h[0].reply, Some(("DONE".into(), "end_turn".into())));
     }
 
     #[test]

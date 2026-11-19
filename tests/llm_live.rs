@@ -14,7 +14,7 @@ const SYSTEM: &str = "You are a terse test responder. Answer in at most ten word
 /// One turn: stream the window, assert text and a clean end, return (text, raw, model).
 async fn turn(client: &LlmClient, cfg: &MuthurSection, log: &mut ChatLog, user: &str) -> Assistant {
     log.append_user(user, "2026-11-18T00:00:00Z").unwrap();
-    let messages = log.window(cfg.provider, cfg.model().unwrap_or_default(), SYSTEM, cfg.context_tokens).unwrap();
+    let messages = log.window(cfg.provider, cfg.model().unwrap_or_default(), SYSTEM, "", cfg.context_tokens).unwrap();
     let mut text = String::new();
     let mut done = None;
     client
