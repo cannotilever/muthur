@@ -37,7 +37,9 @@ pub struct ShellTab {
     hints: HintSlot,
     events: Events,
     pty: Option<Pty>,
-    parser: vt100::Parser,
+    parser: vt100::Parser<Replies>,
+    /// `^] p` is on: the real terminal sees the PTY's queries and answers them.
+    passthrough: bool,
     acs: AcsFilter,
     /// Where the virtual screen was last drawn.
     pane: Rect,
@@ -52,8 +54,26 @@ fn nz(n: u16) -> NonZeroU16 {
     NonZeroU16::new(n.max(1)).unwrap()
 }
 
-fn new_parser(rows: u16, cols: u16, scrollback: usize) -> vt100::Parser {
-    vt100::Parser::new(nz(rows), nz(cols), scrollback)
+/// Primary Device Attributes reply: a VT100 with Advanced Video, which is
+/// what the WY-60's VT100 personality is. fish 4 waits 10 s for this.
+const DA1_REPLY: &[u8] = b"\x1b[?1;2c";
+
+/// Answers terminal queries the shell sends (only DA1 so far). Replies are
+/// collected while parsing and written to the PTY afterwards.
+#[derive(Default)]
+struct Replies(Vec<u8>);
+
+impl vt100::Callbacks for Replies {
+    fn unhandled_csi(&mut self, _: &mut vt100::Screen, i1: Option<u8>, i2: Option<u8>, params: &[&[u16]], c: char) {
+        let default_param = matches!(params, [] | [[0]]);
+        if c == 'c' && i1.is_none() && i2.is_none() && default_param {
+            self.0.extend_from_slice(DA1_REPLY);
+        }
+    }
+}
+
+fn new_parser(rows: u16, cols: u16, scrollback: usize) -> vt100::Parser<Replies> {
+    vt100::Parser::new_with_callbacks(nz(rows), nz(cols), scrollback, Replies::default())
 }
 
 fn is_bright(c: vt100::Color) -> bool {
@@ -92,6 +112,7 @@ impl ShellTab {
             events: Arc::new(events),
             pty: None,
             parser,
+            passthrough: false,
             acs: AcsFilter::new(),
             pane: Rect::default(),
             prev_hashes: Vec::new(),
@@ -105,6 +126,13 @@ impl ShellTab {
     pub fn on_output(&mut self, bytes: &[u8]) {
         let filtered = self.acs.filter(bytes);
         self.parser.process(&filtered);
+        let replies = std::mem::take(&mut self.parser.callbacks_mut().0);
+        if !replies.is_empty()
+            && !self.passthrough
+            && let Some(p) = &mut self.pty
+        {
+            let _ = p.write(&replies);
+        }
         self.activity = true;
     }
 
@@ -295,6 +323,10 @@ impl Tab for ShellTab {
 
     fn supports_passthrough(&self) -> bool {
         true
+    }
+
+    fn set_passthrough(&mut self, on: bool) {
+        self.passthrough = on;
     }
 }
 

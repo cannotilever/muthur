@@ -482,6 +482,7 @@ struct SpyState {
     obscured: Option<bool>,
     metrics: usize,
     activity: bool,
+    passthrough: Vec<bool>,
 }
 struct Spy(Arc<Mutex<SpyState>>);
 impl Tab for Spy {
@@ -497,6 +498,10 @@ impl Tab for Spy {
     }
     fn take_activity(&mut self) -> bool {
         std::mem::take(&mut self.0.lock().unwrap().activity)
+    }
+    fn on_pty(&mut self, _ev: PtyEvent) {}
+    fn set_passthrough(&mut self, on: bool) {
+        self.0.lock().unwrap().passthrough.push(on);
     }
 }
 
@@ -605,4 +610,14 @@ fn no_activity_markers_after_splash() {
 #[test]
 fn no_splash_is_unchanged() {
     assert!(!App::new(chrome()).splash_active());
+}
+
+#[test]
+fn shell_learns_passthrough_before_each_pty_event() {
+    let st = Arc::new(Mutex::new(SpyState::default()));
+    let mut app = spy_app(&st, TabId::Shell.index());
+    app.on_pty(PtyEvent::Output(b"x".to_vec()));
+    app.passthrough = true;
+    app.on_pty(PtyEvent::Output(b"y".to_vec()));
+    assert_eq!(st.lock().unwrap().passthrough, vec![false, true]);
 }

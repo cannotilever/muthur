@@ -53,6 +53,9 @@ pub trait Tab {
     fn supports_passthrough(&self) -> bool {
         false
     }
+    /// Whether the PTY's output is currently going to the wire untranslated
+    /// (Shell only): the real terminal then answers queries itself.
+    fn set_passthrough(&mut self, _on: bool) {}
     /// A new metrics snapshot (Utility only).
     fn on_metrics(&mut self, _s: &crate::metrics::Snapshot) {}
     /// The metrics source is failing (Utility only).

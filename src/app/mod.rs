@@ -115,7 +115,9 @@ impl App {
             self.passthrough = false;
             self.redraw = true;
         }
-        self.tabs[TabId::Shell.index()].on_pty(ev);
+        let shell = &mut self.tabs[TabId::Shell.index()];
+        shell.set_passthrough(self.passthrough);
+        shell.on_pty(ev);
     }
 
     /// The active tab's cursor, unless something is drawn over it.
