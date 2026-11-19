@@ -38,7 +38,7 @@ Consequences:
 udev rule ─► /dev/wy60 (stable symlink to the FTDI adapter)
 serial-getty@wy60 (38400, XON/XOFF, TERM=vt100)
   └─ login
-      └─ fish  (config.fish: if on /dev/wy60 → run `muthur`, NOT exec)
+      └─ fish  (conf.d/muthur.fish: if on /dev/wy60 → run `muthur`, NOT exec)
           └─ muthur
               └─ fish (Shell tab, on a PTY, TERM=vt100)
 ```
@@ -276,7 +276,8 @@ for multi-server monitoring — tools then get a "which host" parameter.
 | **M3** | Utility tab + `LocalSource`. |
 | **M4** | MU/TH/UR chat: streaming, persona, reveal, persistent log. |
 | **M5** | Tools: tier 1, then tier 2 with confirmation. |
-| **M6** | Splash, deploy tooling (udev rule, getty override, fish snippet, `make deploy`), polish. |
+| **M6** | Splash, deploy tooling (udev rule, getty override, fish snippet, make deploy). Spec: docs/superpowers/specs/2026-11-19-m6-splash-deploy-design.md |
+| **M7** | Polish, from operating a deployed build. |
 
 ## Deferred (post-v1)
 
