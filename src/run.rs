@@ -277,8 +277,11 @@ fn build_muthur(cfg: &Config, ship: &str, tx: UnboundedSender<Event>) -> anyhow:
         now: Box::new(std::time::Instant::now),
         ship_time: Box::new(move || crate::app::chrome::format_date(chrono::Local::now().naive_local(), year_offset)),
         timestamp: Box::new(|| chrono::Local::now().to_rfc3339()),
+        run_tool: Box::new(|_, _, _| {}),
     };
-    Ok(MuthurTab::new(cfg.muthur.clone(), ship, log, deps))
+    let tools = crate::tools::ToolDefs::new(&crate::config::ToolsSection { enabled: false, ..cfg.tools.clone() });
+    let audit = crate::tools::audit::AuditLog::offline();
+    Ok(MuthurTab::new(cfg.muthur.clone(), tools, ship, log, audit, deps))
 }
 
 /// Run the TUI on the configured link until quit or hangup.

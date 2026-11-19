@@ -315,8 +315,14 @@ pub(crate) fn fake_muthur() -> (crate::muthur::MuthurTab, tempfile::TempDir) {
         now: Box::new(Instant::now),
         ship_time: Box::new(|| "18 NOV 2137 14:02".into()),
         timestamp: Box::new(|| "2026-11-18T14:02:00Z".into()),
+        run_tool: Box::new(|_, _, _| {}),
     };
-    (MuthurTab::new(cfg, "USCSS TEST", log, deps), dir)
+    let tools = crate::tools::ToolDefs::new(&crate::config::ToolsSection {
+        services: crate::config::ServiceLists { restart: vec!["nginx".into()], ..Default::default() },
+        ..Default::default()
+    });
+    let audit = crate::tools::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap();
+    (MuthurTab::new(cfg, tools, "USCSS TEST", log, audit, deps), dir)
 }
 
 #[test]

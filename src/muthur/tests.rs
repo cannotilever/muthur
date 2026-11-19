@@ -1,24 +1,31 @@
 use super::view::wrap;
 use super::*;
 use crate::chatlog::{Assistant, ChatLog};
-use crate::config::{MuthurSection, Provider};
+use crate::config::{MuthurSection, Provider, ServiceLists, ToolsSection};
 use crate::input::Key;
-use crate::llm::{ChatRequest, LlmError, MessageContent, Stop, StreamEvent};
+use crate::llm::{ChatRequest, LlmError, MessageContent, Stop, StreamEvent, ToolResult};
+use crate::tools::audit::AuditLog;
+use crate::tools::exec::ToolOutcome;
+use crate::tools::{Invocation, ToolDefs, Verb};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
+use serde_json::json;
 use std::time::{Duration, Instant};
 
 type Sent = Rc<RefCell<Vec<(u64, ChatRequest)>>>;
+type Ran = Rc<RefCell<Vec<(u64, String, Invocation)>>>;
 
 struct H {
     t: MuthurTab,
     sent: Sent,
+    ran: Ran,
     aborted: Rc<Cell<bool>>,
     clock: Rc<Cell<Instant>>,
     path: PathBuf,
+    audit_path: PathBuf,
     _dir: tempfile::TempDir,
 }
 
@@ -35,15 +42,26 @@ fn cfg() -> MuthurSection {
     MuthurSection { api_key: Some("sk-test".into()), ..MuthurSection::default() }
 }
 
+fn tools_cfg() -> ToolsSection {
+    ToolsSection { services: ServiceLists { restart: vec!["nginx".into()], ..Default::default() }, ..Default::default() }
+}
+
 fn harness_with(cfg: MuthurSection, prefill: impl FnOnce(&mut ChatLog)) -> H {
+    harness_full(cfg, tools_cfg(), true, prefill)
+}
+
+fn harness_full(cfg: MuthurSection, tools: ToolsSection, audit_online: bool, prefill: impl FnOnce(&mut ChatLog)) -> H {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("muthur/chat.jsonl");
+    let audit_path = dir.path().join("muthur/audit.jsonl");
     let mut log = ChatLog::open(path.clone()).unwrap();
     prefill(&mut log);
+    let audit = if audit_online { AuditLog::open(audit_path.clone()).unwrap() } else { AuditLog::offline() };
     let sent: Sent = Rc::default();
+    let ran: Ran = Rc::default();
     let aborted = Rc::new(Cell::new(false));
     let clock = Rc::new(Cell::new(Instant::now()));
-    let (s, a, c) = (sent.clone(), aborted.clone(), clock.clone());
+    let (s, a, c, r) = (sent.clone(), aborted.clone(), clock.clone(), ran.clone());
     let deps = MuthurDeps {
         spawn: Box::new(move |id, req| {
             s.borrow_mut().push((id, req));
@@ -53,9 +71,10 @@ fn harness_with(cfg: MuthurSection, prefill: impl FnOnce(&mut ChatLog)) -> H {
         now: Box::new(move || c.get()),
         ship_time: Box::new(|| "18 NOV 2137 14:02".into()),
         timestamp: Box::new(|| "2026-11-18T14:02:00Z".into()),
+        run_tool: Box::new(move |req, id, inv| r.borrow_mut().push((req, id, inv))),
     };
-    let t = MuthurTab::new(cfg, "USCSS NOSTROMO", log, deps);
-    H { t, sent, aborted, clock, path, _dir: dir }
+    let t = MuthurTab::new(cfg, ToolDefs::new(&tools), "USCSS NOSTROMO", log, audit, deps);
+    H { t, sent, ran, aborted, clock, path, audit_path, _dir: dir }
 }
 
 fn harness() -> H {
@@ -400,4 +419,245 @@ fn scrolled_back_view_holds_while_output_arrives() {
     let after = screen(&mut h.t, 61, 40);
     assert_eq!(before[1..36], after[1..36], "view moved under the reader");
     assert!(n(&after[37]) > n0, "{} vs {}", after[37], before[37]);
+}
+
+// ---- M5: tool turns ----
+
+fn ok(content: &str) -> ToolOutcome {
+    ToolOutcome { content: content.into(), is_error: false, argv: Some(vec!["systemctl".into()]), exit: Some(json!(0)), ms: 5 }
+}
+
+fn tool_call(id: &str, name: &str, input: serde_json::Value) -> StreamEvent {
+    StreamEvent::ToolCall { id: id.into(), name: name.into(), input }
+}
+
+/// Ends request `req` with a ToolUse stop carrying `calls` (id, name, input).
+fn tool_use(h: &mut H, req: u64, calls: &[(&str, &str, serde_json::Value)]) {
+    let mut raw = Vec::new();
+    for (id, name, input) in calls {
+        h.t.on_llm(req, tool_call(id, name, input.clone()));
+        raw.push(json!({"type":"tool_use","id":id,"name":name,"input":input}));
+    }
+    h.t.on_llm(req, StreamEvent::Done { stop: Stop::ToolUse, model: Some("claude-test".into()), raw: Some(raw) });
+}
+
+fn restart_prompt(h: &mut H) {
+    submit(h, "restart nginx");
+    tool_use(h, 1, &[("c1", "restart_service", json!({"unit": "nginx"}))]);
+}
+
+fn last_results(h: &H) -> Vec<ToolResult> {
+    let s = h.sent.borrow();
+    let MessageContent::ToolResults(r) = &s.last().unwrap().1.messages.last().unwrap().content else {
+        panic!("{:?}", s.last().unwrap().1.messages.last())
+    };
+    r.clone()
+}
+
+fn records(h: &H) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(&h.path).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+}
+
+fn status_row(h: &mut H) -> String {
+    screen(&mut h.t, 80, 40)[37].clone()
+}
+
+#[test]
+fn tool_round_runs_and_respawns() {
+    let mut h = harness();
+    submit(&mut h, "is nginx running");
+    assert!(!h.sent.borrow()[0].1.tools.is_empty());
+    assert!(!h.sent.borrow()[0].1.tool_choice_none);
+    h.t.on_llm(1, StreamEvent::Text("CHECKING.".into()));
+    tool_use(&mut h, 1, &[("c1", "service_status", json!({"unit": "nginx"}))]);
+    assert_eq!(*h.ran.borrow(), vec![(1, "c1".to_string(), Invocation::ServiceStatus { unit: "nginx.service".into() })]);
+    let s = text(&mut h.t);
+    let (c, a) = (s.find("CHECKING.").unwrap(), s.find("ACCESSING: SERVICE STATUS NGINX.SERVICE").unwrap());
+    assert!(c < a, "{s}");
+    assert!(status_row(&mut h).contains("ACCESSING"));
+    assert_eq!(h.t.tick_interval(), Some(Duration::from_millis(100)));
+    h.t.on_tool_done(1, "c1".into(), ok("active"));
+    {
+        let s = h.sent.borrow();
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[1].0, 2);
+        assert!(!s[1].1.tools.is_empty());
+        assert!(!s[1].1.tool_choice_none);
+    }
+    let r = last_results(&h);
+    assert_eq!(r.len(), 1);
+    assert_eq!((r[0].id.as_str(), r[0].content.as_str()), ("c1", "active"));
+    let audit = std::fs::read_to_string(&h.audit_path).unwrap();
+    let lines: Vec<&str> = audit.lines().collect();
+    assert_eq!(lines.len(), 1);
+    let rec: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(rec["decision"], "auto");
+    // The final answer lands after the note.
+    h.t.on_llm(2, StreamEvent::Text("NGINX ACTIVE.".into()));
+    h.t.on_llm(2, done(Stop::End));
+    h.tick(2000);
+    let s = text(&mut h.t);
+    assert!(s.find("ACCESSING: SERVICE").unwrap() < s.find("NGINX ACTIVE.").unwrap(), "{s}");
+    assert!(status_row(&mut h).contains("READY FOR INQUIRY"));
+}
+
+#[test]
+fn override_prompt_confirms_after_arming() {
+    let mut h = harness();
+    restart_prompt(&mut h);
+    assert!(h.t.take_activity());
+    let row = status_row(&mut h);
+    assert!(row.contains("OVERRIDE REQUIRED -- RESTART NGINX.SERVICE -- CONFIRM Y/N"), "{row}");
+    assert!(h.ran.borrow().is_empty());
+    assert_eq!(h.t.tick_interval(), Some(Duration::from_millis(100)));
+    h.tick(1100);
+    h.t.handle_key(&Key::Char('y'));
+    assert_eq!(
+        *h.ran.borrow(),
+        vec![(1, "c1".to_string(), Invocation::Service { verb: Verb::Restart, unit: "nginx.service".into() })]
+    );
+    assert!(text(&mut h.t).contains("ACCESSING: RESTART NGINX.SERVICE"));
+    assert!(status_row(&mut h).contains("ACCESSING"));
+}
+
+#[test]
+fn override_ignores_keys_during_arming() {
+    let mut h = harness();
+    restart_prompt(&mut h);
+    h.tick(200);
+    h.t.handle_key(&Key::Char('y'));
+    assert!(h.ran.borrow().is_empty());
+    assert!(matches!(h.t.state, State::Override { .. }));
+    assert_eq!(h.t.input, "");
+    h.tick(900);
+    h.t.handle_key(&Key::Char('n'));
+    assert!(h.ran.borrow().is_empty());
+    assert!(text(&mut h.t).contains("ACCESS DENIED: RESTART NGINX.SERVICE"));
+    assert_eq!(h.sent.borrow().len(), 2);
+    let r = last_results(&h);
+    assert_eq!(r[0].content, "DENIED BY OPERATOR");
+    assert!(r[0].is_error);
+}
+
+#[test]
+fn override_other_keys_not_typed() {
+    let mut h = harness();
+    restart_prompt(&mut h);
+    h.tick(1100);
+    h.t.handle_key(&Key::Char('x'));
+    assert_eq!(h.t.input, "");
+    assert!(matches!(h.t.state, State::Override { .. }));
+    assert!(status_row(&mut h).contains("OVERRIDE REQUIRED"));
+}
+
+#[test]
+fn ctrl_c_during_override_aborts() {
+    let mut h = harness();
+    restart_prompt(&mut h);
+    h.tick(1100);
+    h.t.handle_key(&Key::Ctrl('c'));
+    assert_eq!(h.t.state, State::Ready);
+    assert!(h.ran.borrow().is_empty());
+    let recs = records(&h);
+    let n = recs.len();
+    assert_eq!(recs[n - 2]["kind"], "tool");
+    assert_eq!(recs[n - 2]["results"][0]["content"], "ABORTED BY OPERATOR");
+    assert_eq!(recs[n - 1]["kind"], "assistant");
+    assert_eq!(recs[n - 1]["stop"], "interrupted");
+    assert!(text(&mut h.t).contains("[INTERRUPTED]"));
+    let audit = std::fs::read_to_string(&h.audit_path).unwrap();
+    assert!(audit.contains("\"aborted\""), "{audit}");
+    submit(&mut h, "again");
+    let s = h.sent.borrow();
+    assert_eq!(s.len(), 2);
+    assert_eq!(s[1].1.messages.len(), 1, "aborted exchange must be left out: {:?}", s[1].1.messages);
+}
+
+#[test]
+fn stale_tool_done_ignored() {
+    let mut h = harness();
+    submit(&mut h, "x");
+    h.t.on_llm(1, StreamEvent::Text("A".into()));
+    h.t.on_llm(1, done(Stop::End));
+    submit(&mut h, "status");
+    tool_use(&mut h, 2, &[("c1", "ship_status", json!({}))]);
+    h.t.on_tool_done(1, "c1".into(), ok("stale"));
+    assert_eq!(h.sent.borrow().len(), 2);
+    assert_eq!(h.t.state, State::Tools);
+    h.t.on_tool_done(2, "c1".into(), ok("fresh"));
+    assert_eq!(h.sent.borrow().len(), 3);
+    assert_eq!(last_results(&h)[0].content, "fresh");
+}
+
+#[test]
+fn round_limit_truncates() {
+    let one = ToolsSection { max_rounds: 1, ..tools_cfg() };
+    let mut h = harness_full(cfg(), one, true, |_| {});
+    submit(&mut h, "status");
+    assert!(!h.sent.borrow()[0].1.tool_choice_none);
+    tool_use(&mut h, 1, &[("c1", "ship_status", json!({}))]);
+    h.t.on_tool_done(1, "c1".into(), ok("ship"));
+    assert!(h.sent.borrow()[1].1.tool_choice_none);
+    // Tool calls anyway, twice: one more forced request, then truncation.
+    tool_use(&mut h, 2, &[("c2", "ship_status", json!({}))]);
+    assert_eq!(h.sent.borrow().len(), 3);
+    assert!(h.sent.borrow()[2].1.tool_choice_none);
+    tool_use(&mut h, 3, &[("c3", "ship_status", json!({}))]);
+    assert_eq!(h.sent.borrow().len(), 3);
+    assert_eq!(h.t.state, State::Ready);
+    h.tick(1000);
+    assert!(text(&mut h.t).trim_end().contains("[TRANSMISSION TRUNCATED]"));
+    // max_rounds 0: the first request is already final.
+    let zero = ToolsSection { max_rounds: 0, ..tools_cfg() };
+    let mut h = harness_full(cfg(), zero, true, |_| {});
+    submit(&mut h, "status");
+    assert!(h.sent.borrow()[0].1.tool_choice_none);
+}
+
+#[test]
+fn audit_offline_flash() {
+    let mut h = harness_full(cfg(), tools_cfg(), false, |_| {});
+    submit(&mut h, "status");
+    tool_use(&mut h, 1, &[("c1", "service_status", json!({"unit": "nginx"}))]);
+    assert_eq!(h.ran.borrow().len(), 1);
+    h.t.on_tool_done(1, "c1".into(), ok("active"));
+    assert_eq!(h.sent.borrow().len(), 2);
+    let row = status_row(&mut h);
+    assert!(row.contains("AUDIT LOG OFFLINE"), "{row}");
+    tool_use(&mut h, 2, &[("c2", "restart_service", json!({"unit": "nginx"}))]);
+    assert!(text(&mut h.t).contains("ACCESS DENIED: RESTART NGINX.SERVICE"));
+    assert!(!matches!(h.t.state, State::Override { .. }));
+    assert_eq!(h.ran.borrow().len(), 1);
+    assert_eq!(h.sent.borrow().len(), 3);
+    assert_eq!(last_results(&h)[0].content, "NOT AUTHORIZED: AUDIT LOG OFFLINE");
+}
+
+#[test]
+fn history_shows_tool_notes() {
+    let mut h = harness_with(cfg(), |l| {
+        l.append_user("[SHIP TIME X] STATUS", "ts").unwrap();
+        let raw = vec![json!({"type":"tool_use","id":"c1","name":"ship_status","input":{}})];
+        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "".into(), stop: "tool_use".into(), raw: Some(raw) };
+        l.append_assistant(a, "ts").unwrap();
+        let r = |id: &str, content: &str, label: &str| ToolResult {
+            id: id.into(),
+            name: "x".into(),
+            content: content.into(),
+            is_error: false,
+            label: label.into(),
+        };
+        l.append_tool(&[r("c1", "ok", "SHIP STATUS"), r("c2", "DENIED BY OPERATOR", "RESTART NGINX.SERVICE")], "ts").unwrap();
+        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "NOMINAL.".into(), stop: "end_turn".into(), raw: None };
+        l.append_assistant(a, "ts").unwrap();
+    });
+    let rows = screen(&mut h.t, 61, 40);
+    let at = |needle: &str| rows.iter().position(|r| r.contains(needle)).unwrap_or_else(|| panic!("{needle}: {rows:#?}"));
+    let (u, n, d, r) = (at("> STATUS"), at("ACCESSING: SHIP STATUS"), at("ACCESS DENIED: RESTART NGINX.SERVICE"), at("NOMINAL."));
+    assert!(u < n && n < d && d < r, "{rows:#?}");
+}
+
+#[test]
+fn persona_mentions_tools() {
+    assert!(PERSONA.contains("operator override"));
+    assert!(!PERSONA.contains("do not yet have access"));
 }

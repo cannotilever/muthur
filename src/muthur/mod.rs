@@ -1,13 +1,17 @@
 //! MU/TH/UR: the LLM chat tab.
 pub mod text;
 pub mod reveal;
+mod turn;
 pub mod view;
 
 use crate::app::tabs::Tab;
 use crate::chatlog::{Assistant, ChatLog};
 use crate::config::MuthurSection;
 use crate::input::Key;
-use crate::llm::{ChatRequest, LlmError, Stop, StreamEvent};
+use crate::agent::{Call, Turn};
+use crate::llm::{ChatRequest, LlmError, StreamEvent};
+use crate::tools::audit::AuditLog;
+use crate::tools::{Invocation, ToolDefs};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
@@ -23,7 +27,8 @@ Use plain text only: no markdown, no headings, no bold, no code blocks. If a lis
 No greetings, pleasantries, apologies or filler.
 If you cannot or will not do something, reply "UNABLE TO COMPLY." followed by a short reason.
 If you do not know, reply "DATA INSUFFICIENT." Never invent readings.
-You do not yet have access to the ship's sensors or systems. Do not claim to have checked anything on the ship."#;
+You can query the ship's systems with your tools. Use them instead of guessing.
+Actions that change the ship require operator override and may be denied; if denied, say so plainly and do not retry."#;
 
 const NOTE_INTERRUPTED: &str = "[INTERRUPTED]";
 const NOTE_TRUNCATED: &str = "[TRANSMISSION TRUNCATED]";
@@ -58,9 +63,11 @@ pub struct MuthurDeps {
     pub ship_time: Box<dyn Fn() -> String>,
     /// RFC 3339, for the log.
     pub timestamp: Box<dyn Fn() -> String>,
+    /// Start a tool run for request `req_id`; its outcome comes back through `on_tool_done`.
+    pub run_tool: Box<dyn FnMut(u64, String, Invocation)>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum State {
     Ready,
     /// Request sent, no text yet.
@@ -68,6 +75,10 @@ enum State {
     Streaming,
     /// `/PURGE` asked; waiting for Y.
     Confirm,
+    /// Tool results pending.
+    Tools,
+    /// A tier-2 call awaits the operator; keys before `armed_at` are ignored.
+    Override { call_id: String, prompt: String, armed_at: Instant },
 }
 
 pub struct MuthurTab {
@@ -75,6 +86,12 @@ pub struct MuthurTab {
     system: String,
     log: ChatLog,
     deps: MuthurDeps,
+    tools: ToolDefs,
+    audit: AuditLog,
+    /// The agent turn of the inquiry in progress.
+    turn: Option<Turn>,
+    /// Tool calls received in the current stream.
+    calls: Vec<Call>,
     transcript: Vec<Entry>,
     input: String,
     /// Cursor position in `input`, in chars.
@@ -103,10 +120,11 @@ pub struct MuthurTab {
 }
 
 impl MuthurTab {
-    pub fn new(cfg: MuthurSection, ship: &str, log: ChatLog, deps: MuthurDeps) -> Self {
+    pub fn new(cfg: MuthurSection, tools: ToolDefs, ship: &str, log: ChatLog, audit: AuditLog, deps: MuthurDeps) -> Self {
         let mut transcript = Vec::new();
         for ex in log.history() {
             transcript.push(Entry::User(strip_ship_time(&ex.user).to_string()));
+            transcript.extend(ex.tools.iter().map(|r| Entry::Note(turn::tool_note(r))));
             let Some((text, stop)) = ex.reply else { continue };
             if stop == "error" {
                 continue;
@@ -128,6 +146,10 @@ impl MuthurTab {
             cfg,
             log,
             deps,
+            tools,
+            audit,
+            turn: None,
+            calls: Vec::new(),
             transcript,
             input: String::new(),
             cursor: 0,
@@ -149,8 +171,14 @@ impl MuthurTab {
         }
     }
 
+    /// A request is streaming.
     fn busy(&self) -> bool {
         matches!(self.state, State::Waiting | State::Streaming)
+    }
+
+    /// An inquiry is in progress: streaming, running tools or awaiting override.
+    fn in_turn(&self) -> bool {
+        self.busy() || matches!(self.state, State::Tools | State::Override { .. })
     }
 
     fn display(&self, s: &str) -> String {
@@ -159,14 +187,22 @@ impl MuthurTab {
 
     /// Once idle and fully revealed, move the reply (and its notes) into the transcript.
     fn settle(&mut self) {
-        if !self.revealing || self.state != State::Ready || !self.reveal.caught_up() {
+        if self.state != State::Ready || !self.reveal.caught_up() {
             return;
         }
-        let text = self.reveal.visible().trim_end_matches('\n').to_string();
-        if !text.is_empty() {
-            self.transcript.push(Entry::Reply(text));
+        if self.revealing {
+            self.settle_segment();
         }
         self.transcript.extend(self.pending_notes.drain(..).map(Entry::Note));
+    }
+
+    /// Move the whole reply segment in the reveal into the transcript now.
+    fn settle_segment(&mut self) {
+        self.reveal.skip();
+        let text = self.reveal.visible().trim_end_matches('\n').to_string();
+        if !text.trim().is_empty() {
+            self.transcript.push(Entry::Reply(text));
+        }
         self.reveal.reset();
         self.revealing = false;
     }
@@ -219,6 +255,7 @@ impl MuthurTab {
             self.activity = true;
         }
         self.abort = None;
+        self.turn = None;
         self.state = State::Ready;
         self.settle();
     }
@@ -229,7 +266,7 @@ impl MuthurTab {
         if line.is_empty() {
             return;
         }
-        if self.busy() {
+        if self.in_turn() {
             self.status_flash = Some(STAND_BY.into());
             return;
         }
@@ -263,24 +300,38 @@ impl MuthurTab {
         }
         self.transcript.push(Entry::User(line));
         self.clear_input();
+        self.pending_notes.clear();
+        self.turn = Some(Turn::new(self.tools.max_rounds()));
+        self.spawn_request(self.tools.max_rounds() == 0);
+    }
+
+    /// Send the next request of the turn, from the log's message window.
+    fn spawn_request(&mut self, forced_final: bool) {
         self.req_id += 1;
-        let messages = match self.log.window(self.cfg.provider, self.cfg.model().unwrap_or_default(), &self.system, "", self.cfg.context_tokens) {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::error!("chat log: cannot build message window: {e}");
-                self.status_flash = Some(unable(LlmError::Transmission.reason()));
-                return;
-            }
-        };
-        let req = ChatRequest { system: self.system.clone(), messages, tools: vec![], tool_choice_none: false };
-        self.abort = Some((self.deps.spawn)(self.req_id, req));
-        self.state = State::Waiting;
-        self.started = Some((self.deps.now)());
         self.reveal.reset();
         self.cleaner = Cleaner::new();
         self.partial_raw.clear();
-        self.pending_notes.clear();
+        self.calls.clear();
         self.revealing = true;
+        let model = self.cfg.model().unwrap_or_default().to_string();
+        let messages = match self.log.window(self.cfg.provider, &model, &self.system, &self.tools.json(), self.cfg.context_tokens) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::error!("chat log: cannot build message window: {e}");
+                self.state = State::Waiting;
+                self.end_early(Some(LlmError::Transmission));
+                return;
+            }
+        };
+        let req = ChatRequest {
+            system: self.system.clone(),
+            messages,
+            tools: self.tools.specs().to_vec(),
+            tool_choice_none: forced_final,
+        };
+        self.abort = Some((self.deps.spawn)(self.req_id, req));
+        self.state = State::Waiting;
+        self.started = Some((self.deps.now)());
     }
 
     fn clear_input(&mut self) {
@@ -328,13 +379,17 @@ impl MuthurTab {
         if self.state == State::Confirm {
             return ("CONFIRM Y/N".into(), true);
         }
+        if let State::Override { prompt, .. } = &self.state {
+            return (ascii_safe(&format!("OVERRIDE REQUIRED — {prompt} — CONFIRM Y/N")), true);
+        }
         if let Some(f) = &self.status_flash {
             return (ascii_safe(f), true);
         }
         let s = match self.state {
-            State::Waiting => {
+            State::Waiting | State::Tools => {
                 let secs = self.started.map_or(0, |t| now.saturating_duration_since(t).as_secs());
-                format!("PROCESSING{}", ".".repeat(1 + (secs % 3) as usize))
+                let word = if self.state == State::Tools { "ACCESSING" } else { "PROCESSING" };
+                format!("{word}{}", ".".repeat(1 + (secs % 3) as usize))
             }
             State::Streaming => "RECEIVING".into(),
             _ => "READY FOR INQUIRY".into(),
@@ -414,6 +469,10 @@ impl Tab for MuthurTab {
             self.confirm_key(key);
             return;
         }
+        if matches!(self.state, State::Override { .. }) {
+            self.override_key(key);
+            return;
+        }
         match key {
             Key::Char(c) if !c.is_control() => self.insert(*c),
             Key::Backspace => {
@@ -427,11 +486,8 @@ impl Tab for MuthurTab {
             Key::Right => self.cursor = (self.cursor + 1).min(self.input.chars().count()),
             Key::Ctrl('u') => self.clear_input(),
             Key::Ctrl('c') => {
-                if self.busy() {
-                    if let Some(abort) = self.abort.take() {
-                        abort();
-                    }
-                    self.end_early(None);
+                if self.in_turn() {
+                    self.interrupt();
                 }
             }
             Key::PageUp => self.scroll = (self.scroll + self.page).min(self.max_scroll),
@@ -466,27 +522,22 @@ impl Tab for MuthurTab {
                 self.reveal.push(&s, (self.deps.now)());
                 self.state = State::Streaming;
             }
-            StreamEvent::ToolCall { .. } => {}
-            StreamEvent::Done { stop, model, raw } => {
-                self.flush_cleaner();
-                let a = self.assistant(model, stop.log_str(), raw);
-                self.log_assistant(a);
-                match stop {
-                    Stop::Refusal => self.status_flash = Some(unable(LlmError::Restricted.reason())),
-                    Stop::MaxTokens => self.pending_notes.push(NOTE_TRUNCATED.into()),
-                    _ => {}
-                }
-                self.abort = None;
-                self.state = State::Ready;
-                self.activity = true;
-                self.settle();
+            StreamEvent::ToolCall { id, name, input } => self.calls.push(Call { id, name, input }),
+            StreamEvent::Done { stop, model, raw } => self.stream_done(stop, model, raw),
+            StreamEvent::Error(e) => {
+                self.abort_turn();
+                self.end_early(Some(e));
             }
-            StreamEvent::Error(e) => self.end_early(Some(e)),
         }
     }
 
+    fn on_tool_done(&mut self, req_id: u64, call_id: String, o: crate::tools::exec::ToolOutcome) {
+        self.tool_done(req_id, &call_id, o);
+    }
+
     fn tick_interval(&self) -> Option<Duration> {
-        (!self.reveal.caught_up() || self.state == State::Waiting).then_some(TICK)
+        let animating = matches!(self.state, State::Waiting | State::Tools | State::Override { .. });
+        (!self.reveal.caught_up() || animating).then_some(TICK)
     }
 }
 

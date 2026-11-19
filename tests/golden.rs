@@ -13,8 +13,9 @@ type Clock = std::rc::Rc<std::cell::Cell<std::time::Instant>>;
 
 fn muthur_tab(path: &std::path::Path, prefill: Option<(&str, &str)>) -> (muthur::muthur::MuthurTab, Clock) {
     use muthur::chatlog::{Assistant, ChatLog};
-    use muthur::config::{MuthurSection, Provider};
+    use muthur::config::{MuthurSection, Provider, ServiceLists, ToolsSection};
     use muthur::muthur::{MuthurDeps, MuthurTab};
+    use muthur::tools::{ToolDefs, audit::AuditLog};
     let mut log = ChatLog::open(path.to_path_buf()).unwrap();
     if let Some((q, a)) = prefill {
         log.append_user(q, "ts").unwrap();
@@ -28,9 +29,15 @@ fn muthur_tab(path: &std::path::Path, prefill: Option<(&str, &str)>) -> (muthur:
         now: Box::new(move || c.get()),
         ship_time: Box::new(|| "17 NOV 2137 14:02".into()),
         timestamp: Box::new(|| "2026-11-17T14:02:00Z".into()),
+        run_tool: Box::new(|_, _, _| {}),
     };
     let cfg = MuthurSection { api_key: Some("sk-test".into()), ..Default::default() };
-    (MuthurTab::new(cfg, "USCSS TEST", log, deps), clock)
+    let tools = ToolDefs::new(&ToolsSection {
+        services: ServiceLists { restart: vec!["nginx".into()], ..Default::default() },
+        ..Default::default()
+    });
+    let audit = AuditLog::open(path.with_file_name("audit.jsonl")).unwrap();
+    (MuthurTab::new(cfg, tools, "USCSS TEST", log, audit, deps), clock)
 }
 
 fn scene(name: &str, keys: &[Key]) {

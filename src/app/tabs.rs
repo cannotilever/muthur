@@ -59,6 +59,8 @@ pub trait Tab {
     fn on_metrics_offline(&mut self, _why: &str) {}
     /// A streamed LLM event for request `_req_id` (MU/TH/UR only).
     fn on_llm(&mut self, _req_id: u64, _ev: crate::llm::StreamEvent) {}
+    /// The outcome of tool call `_call_id` started for request `_req_id` (MU/TH/UR only).
+    fn on_tool_done(&mut self, _req_id: u64, _call_id: String, _o: crate::tools::exec::ToolOutcome) {}
     /// How often the tab wants a redraw while animating; `None` when idle.
     fn tick_interval(&self) -> Option<Duration> {
         None
