@@ -215,7 +215,11 @@ validated before they reach an argument list.
 - **Tier 1** is read-only and runs automatically (5 s timeout).
 - **Tier 2** runs only after the operator answers `OVERRIDE REQUIRED -- <ACTION> -- CONFIRM Y/N`, shown in
   reverse video on the status row. Y/N/Esc are ignored until one second after
-  the prompt is first drawn (the arming delay), so a keystroke typed before it
+  the prompt is known to be on screen (the arming delay): the clock starts on
+  the second uncovered render showing it (draws wait for the output queue to
+  drain, so the first frame has then reached the wire), and it is reset while
+  the tab is hidden or covered by the help overlay, a message overlay or the
+  prefix strip (`Tab::set_obscured`). A keystroke typed before the prompt
   appeared cannot approve it; Ctrl-C always aborts. Tier-2 commands run via
   `sudo -n` or `doas -n` (`elevate`) with a 30 s timeout. `docs/sudoers.example`
   has the matching sudoers / doas rules, one per verb and unit.

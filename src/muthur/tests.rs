@@ -441,9 +441,11 @@ fn tool_use(h: &mut H, req: u64, calls: &[(&str, &str, serde_json::Value)]) {
     h.t.on_llm(req, StreamEvent::Done { stop: Stop::ToolUse, model: Some("claude-test".into()), raw: Some(raw) });
 }
 
-/// Raises the restart override prompt and renders it once (which starts arming).
+/// Raises the restart override prompt and renders it twice: the first render
+/// draws it, the second (the first frame has reached the wire) starts arming.
 fn restart_prompt(h: &mut H) {
     raise_restart(h);
+    screen(&mut h.t, 80, 40);
     screen(&mut h.t, 80, 40);
 }
 
@@ -669,20 +671,72 @@ fn persona_mentions_tools() {
 }
 
 #[test]
-fn override_arms_from_first_render() {
+fn override_arms_from_second_render() {
     let mut h = harness();
     raise_restart(&mut h);
     // In the background: no render for a long while, then the operator looks.
     h.tick(5000);
     h.t.handle_key(&Key::Char('y'));
     assert!(h.ran.borrow().is_empty(), "unseen prompt must not be armed");
+    // Drawn once: the frame may still be queued for the wire, so not armed yet.
     assert!(status_row(&mut h).contains("OVERRIDE REQUIRED"));
+    h.tick(5000);
     h.t.handle_key(&Key::Char('y'));
-    assert!(h.ran.borrow().is_empty(), "keys right after first render are ignored");
+    assert!(h.ran.borrow().is_empty(), "a prompt rendered only once must not be armed");
+    // The second render starts the arming delay.
+    screen(&mut h.t, 80, 40);
+    h.t.handle_key(&Key::Char('y'));
+    assert!(h.ran.borrow().is_empty(), "keys right after the second render are ignored");
+    h.tick(900);
+    h.t.handle_key(&Key::Char('y'));
+    assert!(h.ran.borrow().is_empty());
     assert!(matches!(h.t.state, State::Override { .. }));
+    h.tick(200);
+    h.t.handle_key(&Key::Char('y'));
+    assert_eq!(h.ran.borrow().len(), 1);
+}
+
+#[test]
+fn override_disarmed_while_obscured() {
+    // Raised under an overlay: rendering under it never arms.
+    let mut h = harness();
+    raise_restart(&mut h);
+    h.t.set_obscured(true);
+    for _ in 0..5 {
+        screen(&mut h.t, 80, 40);
+        h.tick(1000);
+    }
+    h.t.handle_key(&Key::Char('y'));
+    assert!(h.ran.borrow().is_empty(), "a prompt under an overlay must not arm");
+    // Uncovered: one render draws it, the next starts the delay.
+    h.t.set_obscured(false);
+    screen(&mut h.t, 80, 40);
+    h.tick(2000);
+    h.t.handle_key(&Key::Char('y'));
+    assert!(h.ran.borrow().is_empty());
+    screen(&mut h.t, 80, 40);
+    h.t.handle_key(&Key::Char('y'));
+    assert!(h.ran.borrow().is_empty());
     h.tick(1100);
     h.t.handle_key(&Key::Char('y'));
     assert_eq!(h.ran.borrow().len(), 1);
+
+    // Already armed, then covered: arming starts over once uncovered.
+    let mut h = harness();
+    restart_prompt(&mut h);
+    h.tick(1100);
+    h.t.set_obscured(true);
+    screen(&mut h.t, 80, 40);
+    h.t.handle_key(&Key::Char('y'));
+    assert!(h.ran.borrow().is_empty(), "covered prompt is disarmed");
+    h.t.set_obscured(false);
+    screen(&mut h.t, 80, 40);
+    screen(&mut h.t, 80, 40);
+    h.t.handle_key(&Key::Char('y'));
+    assert!(h.ran.borrow().is_empty(), "re-armed from scratch");
+    h.tick(1100);
+    h.t.handle_key(&Key::Char('n'));
+    assert!(text(&mut h.t).contains("ACCESS DENIED: RESTART NGINX.SERVICE"));
 }
 
 #[test]

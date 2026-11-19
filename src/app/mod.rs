@@ -167,6 +167,11 @@ impl App {
                 self.activity[i] = true;
             }
         }
+        // Hidden or covered tabs must not treat this frame as seen (override arming).
+        let covered = self.overlay.is_some() || self.prefix;
+        for (i, tab) in self.tabs.iter_mut().enumerate() {
+            tab.set_obscured(i != active || covered);
+        }
         let buf = frame.buffer_mut();
         if self.fullscreen[active] {
             self.tabs[active].render(area, buf);

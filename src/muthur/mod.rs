@@ -77,9 +77,12 @@ enum State {
     Confirm,
     /// Tool results pending.
     Tools,
-    /// A tier-2 call awaits the operator. `armed_at` is set when the prompt is
-    /// first drawn; Y/N/Esc before then (or before it is drawn) are ignored.
-    Override { call_id: String, prompt: String, armed_at: Option<Instant> },
+    /// A tier-2 call awaits the operator. `drawn` is set by the first render
+    /// that shows the prompt uncovered; `armed_at` by the next one (frames are
+    /// only drawn once the previous one has drained to the wire, so the second
+    /// render means the first reached the screen). Y/N/Esc before `armed_at`
+    /// are ignored; covering the tab resets both.
+    Override { call_id: String, prompt: String, drawn: bool, armed_at: Option<Instant> },
 }
 
 pub struct MuthurTab {
@@ -120,6 +123,8 @@ pub struct MuthurTab {
     /// Transcript line count at the last render, to hold a scrolled-back view.
     last_total: usize,
     cursor_pos: Option<Position>,
+    /// Hidden or drawn over (see `Tab::set_obscured`).
+    obscured: bool,
 }
 
 impl MuthurTab {
@@ -172,6 +177,7 @@ impl MuthurTab {
             max_scroll: 0,
             last_total: 0,
             cursor_pos: None,
+            obscured: false,
         }
     }
 
@@ -446,8 +452,14 @@ impl Tab for MuthurTab {
         let (status, reverse) = self.status_text(now);
         let style = if reverse { Style::default().add_modifier(Modifier::REVERSED) } else { Style::default() };
         put(buf, x, status_y, w, &status, style);
-        if let State::Override { armed_at: armed @ None, .. } = &mut self.state {
-            *armed = Some(now + turn::ARMING);
+        if let State::Override { drawn, armed_at, .. } = &mut self.state
+            && !self.obscured
+        {
+            if !*drawn {
+                *drawn = true;
+            } else if armed_at.is_none() {
+                *armed_at = Some(now + turn::ARMING);
+            }
         }
         if self.scroll > 0 {
             let marker = format!("[SCROLL -{}]", self.scroll);
@@ -540,6 +552,14 @@ impl Tab for MuthurTab {
 
     fn on_tool_done(&mut self, req_id: u64, call_id: String, o: crate::tools::exec::ToolOutcome) {
         self.tool_done(req_id, &call_id, o);
+    }
+
+    fn set_obscured(&mut self, obscured: bool) {
+        self.obscured = obscured;
+        if obscured && let State::Override { drawn, armed_at, .. } = &mut self.state {
+            *drawn = false;
+            *armed_at = None;
+        }
     }
 
     fn tick_interval(&self) -> Option<Duration> {

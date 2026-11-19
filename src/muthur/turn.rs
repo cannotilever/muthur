@@ -7,7 +7,7 @@ use crate::llm::{LlmError, Stop, ToolResult};
 use crate::tools::exec::ToolOutcome;
 use std::time::Duration;
 
-/// Y/N/Esc sooner than this after an override prompt is first drawn are ignored.
+/// Y/N/Esc sooner than this after an override prompt is seen (see `State::Override`) are ignored.
 pub(super) const ARMING: Duration = Duration::from_secs(1);
 const AUDIT_OFFLINE: &str = "AUDIT LOG OFFLINE";
 
@@ -64,7 +64,7 @@ impl MuthurTab {
             self.interrupt();
             return;
         }
-        // Unarmed until drawn, then for ARMING after that.
+        // Unarmed until seen, then for ARMING after that.
         if armed_at.is_none_or(|t| (self.deps.now)() < t) {
             return;
         }
@@ -127,8 +127,8 @@ impl MuthurTab {
                     }
                 }
                 Effect::Confirm { call_id, prompt } => {
-                    // Armed from the first render, so a prompt raised in the background still gets its delay.
-                    self.state = State::Override { call_id, prompt, armed_at: None };
+                    // Armed only from renders, so a prompt raised in the background still gets its delay.
+                    self.state = State::Override { call_id, prompt, drawn: false, armed_at: None };
                     self.activity = true;
                 }
                 Effect::Note(s) => {

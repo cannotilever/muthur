@@ -249,7 +249,7 @@ These replace M4's pair rules.
 ### Override prompt
 
 - **Status row**, in reverse video: `OVERRIDE REQUIRED -- RESTART NGINX.SERVICE -- CONFIRM Y/N`, passed through `ascii_safe`.
-- **Arming delay:** keys received less than **1 s** after the prompt first renders are ignored.
+- **Arming delay:** Y/N/Esc are ignored until **1 s** after the prompt is known to be on screen. Frames are drawn only once the output queue has drained below its threshold, and the prompt ticks at 100 ms, so the clock starts on the **second** render that shows the prompt (the first frame has reached the wire). Renders while the tab is obscured do not count: `App::render` calls `Tab::set_obscured` on every tab before drawing (true for hidden folders and when the help overlay, a message overlay or the prefix strip is drawn), and an obscured MU/TH/UR tab resets the arming, which starts over once it is uncovered.
 - **Keys once armed:**
   - `Y`/`y` confirms;
   - `N`/`n`/`Esc` denies;
