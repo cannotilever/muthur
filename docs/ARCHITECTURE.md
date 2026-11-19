@@ -126,7 +126,8 @@ Single Rust crate, tokio runtime.
 | `tabs::shell` | PTY + virtual terminal + translation (see below). |
 | `llm` | Streaming LLM client (reqwest + rustls/ring, no aws-lc): Anthropic Messages and OpenAI-compatible protocols, SSE parsing, typed `LlmError`s, idle timeout. Each request runs as a tokio task and sends `Event::Llm` to the loop. Deploy note: Alpine needs the `ca-certificates` package for TLS. |
 | `chatlog` | Append-only JSONL chat history at `$XDG_STATE_HOME/muthur/chat.jsonl` (epochs, context window/trim, purge). |
-| `tools` | Tool registry and safety tiers; audit logging. |
+| `tools` | Tool registry and safety tiers (`mod`), fixed-argv execution with timeouts (`exec`, `runner`), JSONL audit log (`audit`). |
+| `agent` | Pure tool-turn state machine: round cap, tier-2 confirmation queue, aborts; emits effects the MU/TH/UR tab carries out. |
 | `metrics` | `MetricsSource` trait; `LocalSource` for v1. |
 | `splash` | Boot sequence. |
 | `testcard` | `muthur testcard` subcommand: attribute / line-drawing probe and key-echo mode. |
@@ -182,6 +183,8 @@ All keys live in the `[muthur]` table of the config file (which must be
 
 - **vLLM:** set `context_tokens` to about 0.75 × the server's
   `max_model_len` (the chars/4 estimate is rough and the reply needs room).
+- **vLLM tools:** tool calling needs the server started with
+  `--enable-auto-tool-choice --tool-call-parser <parser>` (parser depends on the model).
 - **Chat log:** `~/.local/state/muthur/chat.jsonl`, mode `0600`, append-only
   JSONL. If it cannot be opened, a fresh temporary log is created in
   `$XDG_RUNTIME_DIR` (or the temp dir) and history does not persist.
@@ -195,15 +198,36 @@ All keys live in the `[muthur]` table of the config file (which must be
 
 ### Tools & safety
 
-The tool-calling loop is designed in from day one even before tools exist.
+MU/TH/UR can call tools in a bounded loop (`[tools].max_rounds`, default 8; at
+the cap the model is asked for a final answer with tools disabled). Tools are
+fixed argv commands; arbitrary shell execution never exists, and unit names are
+validated before they reach an argument list.
 
-- **Tier 1 — read-only, auto-run**: metrics snapshot, `systemctl status`,
-  journal tail, disk usage, etc.
-- **Tier 2 — named actions from a config allowlist**, executed only after an
-  on-screen `OVERRIDE REQUIRED — CONFIRM Y/N`
-  (e.g. `restart_service(name ∈ allowlist)`).
-- **Never** arbitrary shell execution.
-- Every tool call written to the audit log.
+| Tool | Tier | Does |
+|---|---|---|
+| `ship_status` | 1 | latest metrics snapshot (uptime, load, CPU, memory, disks, network, top processes, failed units, containers) |
+| `service_status` | 1 | `systemctl status` for one unit |
+| `journal` | 1 | last N journal lines for one unit (N capped by `journal_max_lines`) |
+| `list_units` | 1 | units in state running / failed / inactive |
+| `listening_ports` | 1 | listening sockets and their processes |
+| `restart_service`, `start_service`, `stop_service` | 2 | the verb on a unit from the `[tools.services]` allowlist; offered to the model only when its list is non-empty |
+
+- **Tier 1** is read-only and runs automatically (5 s timeout).
+- **Tier 2** runs only after the operator answers `OVERRIDE REQUIRED -- <ACTION> -- CONFIRM Y/N`, shown in
+  reverse video on the status row. Y/N/Esc are ignored until one second after
+  the prompt is first drawn (the arming delay), so a keystroke typed before it
+  appeared cannot approve it; Ctrl-C always aborts. Tier-2 commands run via
+  `sudo -n` or `doas -n` (`elevate`) with a 30 s timeout. `docs/sudoers.example`
+  has the matching sudoers / doas rules, one per verb and unit.
+- **Audit log:** every call, run or refused, is appended to
+  `$XDG_STATE_HOME/muthur/audit.jsonl` (`~/.local/state/muthur/audit.jsonl`)
+  as it completes. If the log cannot be opened or written, tier-2 calls are
+  refused (`AUDIT LOG OFFLINE`).
+- **`[tools]` keys:** `enabled` (true), `max_rounds` (8), `elevate`
+  (`"sudo"` or `"doas"`), `journal_max_lines` (50), and `[tools.services]`
+  `restart` / `start` / `stop` lists. See `docs/config.example.toml`.
+- Tool turns are recorded in the chat log, so history redisplays them as
+  `ACCESSING: ...` notes and later requests replay them to the model.
 
 ### Utility tab
 

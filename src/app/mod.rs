@@ -55,6 +55,10 @@ impl App {
         self.tabs[TabId::Muthur.index()].on_llm(req_id, ev);
     }
 
+    pub fn on_tool_done(&mut self, req_id: u64, call_id: String, outcome: crate::tools::exec::ToolOutcome) {
+        self.tabs[TabId::Muthur.index()].on_tool_done(req_id, call_id, outcome);
+    }
+
     /// The active tab's redraw cadence; 1 s when it is idle.
     pub fn tick_interval(&self) -> std::time::Duration {
         // Hidden tabs only advance when rendered, so their animation must not

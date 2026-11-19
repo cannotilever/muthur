@@ -34,6 +34,7 @@ pub enum Event {
     Hangup,
     Tick,
     Llm { req_id: u64, ev: crate::llm::StreamEvent },
+    ToolDone { req_id: u64, call_id: String, outcome: crate::tools::exec::ToolOutcome },
 }
 
 /// The chrome is laid out for 80×43; smaller screens cannot hold it.
@@ -53,6 +54,7 @@ pub fn spawn_metrics(
     mut source: Box<dyn MetricsSource + Send>,
     interval: Duration,
     tx: UnboundedSender<Event>,
+    slot: crate::tools::exec::SnapshotSlot,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut errors = 0;
@@ -60,6 +62,9 @@ pub fn spawn_metrics(
             let sent = match source.snapshot() {
                 Ok(s) => {
                     errors = 0;
+                    if let Ok(mut g) = slot.lock() {
+                        *g = Some(s.clone());
+                    }
                     tx.send(Event::Metrics(Box::new(s)))
                 }
                 Err(e) => {
@@ -164,6 +169,10 @@ pub async fn event_loop<W: Write>(
                     app.on_llm(req_id, ev);
                     dirty = true;
                 }
+                Some(Event::ToolDone { req_id, call_id, outcome }) => {
+                    app.on_tool_done(req_id, call_id, outcome);
+                    dirty = true;
+                }
                 Some(Event::Hangup) | None => return Ok(()),
             },
             Some(ev) = pty_rx.recv() => {
@@ -251,10 +260,16 @@ fn open_chat_log() -> anyhow::Result<crate::chatlog::ChatLog> {
     }
 }
 
-fn build_muthur(cfg: &Config, ship: &str, tx: UnboundedSender<Event>) -> anyhow::Result<crate::muthur::MuthurTab> {
+fn build_muthur(
+    cfg: &Config,
+    ship: &str,
+    tx: UnboundedSender<Event>,
+    slot: crate::tools::exec::SnapshotSlot,
+) -> anyhow::Result<crate::muthur::MuthurTab> {
     use crate::llm::{LlmError, StreamEvent, client::LlmClient};
     use crate::muthur::{Abort, MuthurDeps, MuthurTab};
     let log = open_chat_log()?;
+    let tool_tx = tx.clone();
     let spawn: Box<dyn FnMut(u64, crate::llm::ChatRequest) -> Abort> = match LlmClient::new(cfg.muthur.clone()) {
         Ok(client) => {
             let client = std::sync::Arc::new(client);
@@ -272,16 +287,43 @@ fn build_muthur(cfg: &Config, ship: &str, tx: UnboundedSender<Event>) -> anyhow:
         }
     };
     let year_offset = cfg.chrome.year_offset;
+    let tools = crate::tools::ToolDefs::new(&cfg.tools);
+    let ctx = crate::tools::exec::ExecCtx {
+        runner: std::sync::Arc::new(crate::tools::runner::SystemRunner),
+        snapshot: slot,
+        elevate: tools.elevate(),
+    };
     let deps = MuthurDeps {
         spawn,
         now: Box::new(std::time::Instant::now),
         ship_time: Box::new(move || crate::app::chrome::format_date(chrono::Local::now().naive_local(), year_offset)),
         timestamp: Box::new(|| chrono::Local::now().to_rfc3339()),
-        run_tool: Box::new(|_, _, _| {}),
+        run_tool: Box::new(move |req_id, call_id, inv| {
+            let ctx = ctx.clone();
+            let tx = tool_tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let outcome = crate::tools::exec::execute(&inv, &ctx);
+                let _ = tx.send(Event::ToolDone { req_id, call_id, outcome });
+            });
+        }),
     };
-    let tools = crate::tools::ToolDefs::new(&crate::config::ToolsSection { enabled: false, ..cfg.tools.clone() });
-    let audit = crate::tools::audit::AuditLog::offline();
+    let audit = open_audit_log();
     Ok(MuthurTab::new(cfg.muthur.clone(), tools, ship, log, audit, deps))
+}
+
+fn open_audit_log() -> crate::tools::audit::AuditLog {
+    use crate::tools::audit::AuditLog;
+    let Some(dir) = dirs::state_dir() else {
+        tracing::error!("no state directory; audit log offline, tier-2 tools disabled");
+        return AuditLog::offline();
+    };
+    match AuditLog::open(dir.join("muthur/audit.jsonl")) {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::error!("audit log unavailable: {e:#}");
+            AuditLog::offline()
+        }
+    }
 }
 
 /// Run the TUI on the configured link until quit or hangup.
@@ -316,16 +358,17 @@ pub fn run(cfg: &Config, strict: bool) -> anyhow::Result<()> {
         let _ = pty_tx.blocking_send(e);
     });
     let chrome = ChromeView { ship_name: ship_name(cfg), year_offset: cfg.chrome.year_offset };
+    let slot = crate::tools::exec::SnapshotSlot::default();
     match LocalSource::new(cfg.utility.containers, cfg.utility.exclude_fs.clone()) {
         Ok(src) => {
-            spawn_metrics(Box::new(src), Duration::from_secs(cfg.utility.interval_secs.max(1)), tx.clone());
+            spawn_metrics(Box::new(src), Duration::from_secs(cfg.utility.interval_secs.max(1)), tx.clone(), slot.clone());
         }
         Err(e) => {
             tracing::error!("metrics unavailable: {e:#}");
             let _ = tx.send(Event::MetricsOffline(format!("{e:#}").to_uppercase()));
         }
     }
-    let muthur = build_muthur(cfg, &chrome.ship_name, tx.clone())?;
+    let muthur = build_muthur(cfg, &chrome.ship_name, tx.clone(), slot)?;
     let mut app = App::assemble(chrome, UtilityTab::new(), muthur, shell);
     tracing::info!(cols, rows, strict, "MU/TH/UR online");
 
@@ -476,7 +519,7 @@ mod tests {
     #[test]
     fn collector_sends_snapshots() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        spawn_metrics(Box::new(FakeSource { calls: 0, fail_every_other: false }), Duration::from_millis(10), tx);
+        spawn_metrics(Box::new(FakeSource { calls: 0, fail_every_other: false }), Duration::from_millis(10), tx, Default::default());
         assert_eq!(next_metrics(&mut rx).unwrap().host, "HOST1");
         assert_eq!(next_metrics(&mut rx).unwrap().host, "HOST2");
     }
@@ -484,7 +527,7 @@ mod tests {
     #[test]
     fn collector_survives_errors() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        spawn_metrics(Box::new(FakeSource { calls: 0, fail_every_other: true }), Duration::from_millis(10), tx);
+        spawn_metrics(Box::new(FakeSource { calls: 0, fail_every_other: true }), Duration::from_millis(10), tx, Default::default());
         assert_eq!(next_metrics(&mut rx).unwrap().host, "HOST2");
     }
 
@@ -498,7 +541,7 @@ mod tests {
     #[test]
     fn collector_reports_offline_after_repeated_errors() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        spawn_metrics(Box::new(BrokenSource), Duration::from_millis(5), tx);
+        spawn_metrics(Box::new(BrokenSource), Duration::from_millis(5), tx, Default::default());
         let deadline = std::time::Instant::now() + Duration::from_secs(1);
         loop {
             match rx.try_recv() {
@@ -566,6 +609,66 @@ mod tests {
         p.process(t.backend().writer());
         let screen = p.screen().contents();
         assert!(screen.contains("NOMINAL"), "{screen}");
+    }
+
+    #[test]
+    fn collector_fills_snapshot_slot() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let slot = crate::tools::exec::SnapshotSlot::default();
+        spawn_metrics(Box::new(FakeSource { calls: 0, fail_every_other: false }), Duration::from_millis(10), tx, slot.clone());
+        next_metrics(&mut rx).unwrap();
+        assert_eq!(slot.lock().unwrap().as_ref().unwrap().host, "HOST1");
+    }
+
+    #[tokio::test]
+    async fn tool_done_event_reaches_muthur() {
+        use crate::llm::{Stop, StreamEvent};
+        use crate::muthur::{MuthurDeps, MuthurTab};
+        use crate::tools::exec::ToolOutcome;
+        let (_, mut t) = setup();
+        let dir = tempfile::tempdir().unwrap();
+        let log = crate::chatlog::ChatLog::open(dir.path().join("chat.jsonl")).unwrap();
+        let cfg = crate::config::MuthurSection { api_key: Some("sk-test".into()), ..Default::default() };
+        let spawned = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let sp = spawned.clone();
+        let deps = MuthurDeps {
+            spawn: Box::new(move |_, _| {
+                sp.set(sp.get() + 1);
+                Box::new(|| {})
+            }),
+            now: Box::new(std::time::Instant::now),
+            ship_time: Box::new(|| "18 NOV 2137 14:02".into()),
+            timestamp: Box::new(|| "2026-11-18T14:02:00Z".into()),
+            run_tool: Box::new(|_, _, _| {}),
+        };
+        let tools = crate::tools::ToolDefs::new(&Default::default());
+        let audit = crate::tools::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap();
+        let m = MuthurTab::new(cfg, tools, "USCSS TEST", log, audit, deps);
+        let shell = crate::shell::ShellTab::new(
+            crate::shell::ShellConfig { command: "sh".into(), args: vec!["-c".into(), "sleep 2".into()], scrollback: 10 },
+            crate::scroll::HintSlot::default(),
+            |_| {},
+        );
+        let mut app = App::assemble(
+            ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 },
+            crate::utility::UtilityTab::new(),
+            m,
+            shell,
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut ks = vec![Key::F(2)];
+        ks.extend("HI".chars().map(Key::Char));
+        ks.push(Key::Enter);
+        tx.send(Event::Keys(ks)).unwrap();
+        let input = serde_json::json!({});
+        tx.send(Event::Llm { req_id: 1, ev: StreamEvent::ToolCall { id: "c1".into(), name: "ship_status".into(), input: input.clone() } }).unwrap();
+        let raw = vec![serde_json::json!({"type":"tool_use","id":"c1","name":"ship_status","input":input})];
+        tx.send(Event::Llm { req_id: 1, ev: StreamEvent::Done { stop: Stop::ToolUse, model: None, raw: Some(raw) } }).unwrap();
+        let outcome = ToolOutcome { content: "UP 3D".into(), is_error: false, argv: None, exit: None, ms: 1 };
+        tx.send(Event::ToolDone { req_id: 1, call_id: "c1".into(), outcome }).unwrap();
+        tx.send(Event::Keys(vec![Key::Ctrl(']'), Key::Char('q')])).unwrap();
+        event_loop(&mut app, &mut t, &mut rx, &mut no_pty(), || 0, now).await.unwrap();
+        assert_eq!(spawned.get(), 2, "tool result did not trigger a second request");
     }
 
     #[tokio::test]

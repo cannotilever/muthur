@@ -227,3 +227,49 @@ fn muthur_windowed() {
     let want = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("missing {path}; run with UPDATE_GOLDEN=1"));
     assert_eq!(text, want);
 }
+
+#[test]
+fn muthur_override() {
+    use muthur::app::PlaceholderTab;
+    use muthur::llm::{Stop, StreamEvent};
+    let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 17).unwrap().and_hms_opt(14, 2, 0).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let (tab, _clock) = muthur_tab(&dir.path().join("chat.jsonl"), None);
+    let mut app = App::with_tabs(
+        ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 },
+        [
+            Box::new(PlaceholderTab { id: muthur::app::TabId::Utility }),
+            Box::new(tab),
+            Box::new(PlaceholderTab { id: muthur::app::TabId::Shell }),
+        ],
+    );
+    app.handle_key(Key::F(2));
+    for c in "RESTART NGINX".chars() {
+        app.handle_key(Key::Char(c));
+    }
+    app.handle_key(Key::Enter);
+    let input = serde_json::json!({"unit": "nginx"});
+    app.on_llm(1, StreamEvent::ToolCall { id: "c1".into(), name: "restart_service".into(), input: input.clone() });
+    let raw = vec![serde_json::json!({"type":"tool_use","id":"c1","name":"restart_service","input":input})];
+    app.on_llm(1, StreamEvent::Done { stop: Stop::ToolUse, model: Some("m".into()), raw: Some(raw) });
+    let mut t = Terminal::new(Wy60Backend::new(StrictWriter::new(Vec::new(), Vt100Dialect), Vt100Dialect, 80, 43)).unwrap();
+    t.clear().unwrap();
+    t.draw(|f| app.render(f, now)).unwrap();
+    let strict = t.backend().writer();
+    assert!(strict.violations.is_empty(), "{:?}", strict.violations);
+    let mut p = vt100::Parser::new(NonZeroU16::new(43).unwrap(), NonZeroU16::new(80).unwrap(), 0);
+    p.process(&strict.inner);
+    let text = p.screen().contents();
+    let row = text.lines().position(|l| l.contains("OVERRIDE REQUIRED")).expect("no override row") as u16;
+    let line = text.lines().nth(row as usize).unwrap();
+    let col = line.chars().position(|c| c == 'O').unwrap() as u16;
+    assert!(p.screen().cell(row, col).unwrap().inverse(), "override row is not reverse video");
+    assert!(text.contains("> RESTART NGINX"), "{text}");
+    assert!(text.contains("OVERRIDE REQUIRED -- RESTART NGINX.SERVICE -- CONFIRM Y/N"), "{text}");
+    let path = format!("{}/tests/golden/muthur_override.txt", env!("CARGO_MANIFEST_DIR"));
+    if std::env::var("UPDATE_GOLDEN").is_ok() {
+        std::fs::write(&path, &text).unwrap();
+    }
+    let want = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("missing {path}; run with UPDATE_GOLDEN=1"));
+    assert_eq!(text, want);
+}
