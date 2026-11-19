@@ -1,3 +1,264 @@
 //! Boot splash: the Weyland-Yutani logo and system check.
 
 pub mod logo;
+
+use crate::config::FlowControl;
+use crate::metrics::{Snapshot, human_bytes, human_uptime};
+use crate::muthur::reveal::Reveal;
+use logo::{Cell, Logo};
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use std::time::{Duration, Instant};
+
+pub const LOGO_SETTLE: Duration = Duration::from_millis(800);
+pub const CPS: u32 = 400;
+pub const VALUE_PAUSE: Duration = Duration::from_millis(150);
+pub const FACT_WAIT: Duration = Duration::from_millis(1500);
+pub const READY_HOLD: Duration = Duration::from_millis(1000);
+
+const NO_DATA: &str = "NO DATA";
+/// 0-based x of the first boot-line column (column 9).
+const LINE_X: u16 = 8;
+/// 0-based x where dots end (exclusive): column 46.
+const DOTS_END: usize = 46;
+const LOGO_TOP: u16 = 1;
+const LOGO_BAND: usize = 22;
+const HEADER_Y: u16 = 24;
+const LINES_Y: u16 = 26;
+const READY_Y: u16 = 42;
+
+pub enum Interface {
+    Online,
+    Offline(String),
+}
+
+pub struct SplashInfo {
+    pub ship_name: String,
+    pub year: i32,
+    pub link: String,
+    pub interface: Interface,
+}
+
+pub fn link_label(baud: u32, flow: FlowControl) -> String {
+    let f = match flow {
+        FlowControl::XonXoff => "XON/XOFF",
+        FlowControl::RtsCts => "RTS/CTS",
+        FlowControl::None => "NONE",
+    };
+    format!("{baud} BAUD  {f}")
+}
+
+#[derive(Clone, Copy)]
+enum Fact {
+    Processor,
+    Memory,
+    Uptime,
+    Units,
+}
+
+enum Step {
+    Type(String),
+    Pause(Duration),
+    Fact(Fact),
+    Ready,
+}
+
+pub struct Splash {
+    logo: Logo,
+    header: String,
+    steps: Vec<Step>,
+    next: usize,
+    /// Virtual time at which the next step starts.
+    cursor: Instant,
+    last_now: Instant,
+    reveal: Reveal,
+    snapshot: Option<Snapshot>,
+    offline: bool,
+    timed_out: bool,
+    waiting: bool,
+    ready_at: Option<Instant>,
+    done: bool,
+}
+
+fn line_prefix(label: &str) -> String {
+    let dots = DOTS_END.saturating_sub(LINE_X as usize + label.chars().count() + 1);
+    format!("{label} {} ", ".".repeat(dots))
+}
+
+impl Splash {
+    pub fn new(info: SplashInfo, now: Instant) -> Self {
+        Self::with_logo(info, Logo::shipped().clone(), now)
+    }
+
+    pub fn with_logo(info: SplashInfo, logo: Logo, now: Instant) -> Self {
+        let iface = match &info.interface {
+            Interface::Online => "MU/TH/UR [ONLINE]".to_string(),
+            Interface::Offline(r) => format!("MU/TH/UR [OFFLINE: {r}]"),
+        };
+        let mut steps = Vec::new();
+        let mut line = |label: &str, value: Option<String>, fact: Option<Fact>| {
+            steps.push(Step::Type(line_prefix(label)));
+            match (value, fact) {
+                (Some(v), _) => steps.push(Step::Type(format!("{v}\n"))),
+                (None, Some(f)) => steps.push(Step::Fact(f)),
+                (None, None) => unreachable!(),
+            }
+            steps.push(Step::Pause(VALUE_PAUSE));
+        };
+        line("SYSTEM CHECK", Some("OK".into()), None);
+        line("VESSEL", Some(info.ship_name.to_uppercase()), None);
+        line("PROCESSOR", None, Some(Fact::Processor));
+        line("MEMORY", None, Some(Fact::Memory));
+        line("UPTIME", None, Some(Fact::Uptime));
+        line("LINK", Some(info.link.to_uppercase()), None);
+        line("SYSTEM UNITS", None, Some(Fact::Units));
+        line("INTERFACE", Some(iface), None);
+        steps.push(Step::Ready);
+        Self {
+            logo,
+            header: format!("MU/TH/UR 6000 \u{2014} INTERFACE {}", info.year),
+            steps,
+            next: 0,
+            cursor: now + LOGO_SETTLE,
+            last_now: now,
+            reveal: Reveal::new(CPS),
+            snapshot: None,
+            offline: false,
+            timed_out: false,
+            waiting: false,
+            ready_at: None,
+            done: false,
+        }
+    }
+
+    pub fn on_metrics(&mut self, s: &Snapshot) {
+        self.snapshot = Some(s.clone());
+    }
+
+    pub fn on_metrics_offline(&mut self) {
+        self.offline = true;
+    }
+
+    fn fact_value(&self, f: Fact) -> Option<String> {
+        let s = self.snapshot.as_ref()?;
+        Some(match f {
+            Fact::Processor => format!("{} CORES", s.cpu_cores.len()),
+            Fact::Memory => human_bytes(s.mem.total),
+            Fact::Uptime => human_uptime(s.uptime_secs),
+            Fact::Units => match &s.failed_units {
+                None => "NOT MONITORED".into(),
+                Some(u) if u.is_empty() => "NOMINAL".into(),
+                Some(u) => format!("{} FAILED", u.len()),
+            },
+        })
+    }
+
+    /// Run every step that is due at `now`. Returns true if the display changed.
+    pub fn advance(&mut self, now: Instant) -> bool {
+        let prev_now = self.last_now;
+        self.last_now = self.last_now.max(now);
+        let mut changed = false;
+        while self.next < self.steps.len() && now >= self.cursor {
+            match &self.steps[self.next] {
+                Step::Type(t) => {
+                    let n = t.chars().count() as u32;
+                    self.reveal.push(t, self.cursor);
+                    self.cursor += Duration::from_secs_f64(f64::from(n) / f64::from(CPS));
+                }
+                Step::Pause(d) => self.cursor += *d,
+                Step::Fact(f) => {
+                    let f = *f;
+                    let (text, wait_cost) = if let Some(v) = self.fact_value(f) {
+                        if self.waiting {
+                            self.cursor = self.cursor.max(prev_now);
+                        }
+                        (v, Duration::ZERO)
+                    } else if self.offline || self.timed_out {
+                        (NO_DATA.to_string(), Duration::ZERO)
+                    } else if now >= self.cursor + FACT_WAIT {
+                        self.timed_out = true;
+                        (NO_DATA.to_string(), FACT_WAIT)
+                    } else {
+                        self.waiting = true;
+                        break;
+                    };
+                    self.waiting = false;
+                    self.cursor += wait_cost;
+                    let n = text.chars().count() as u32 + 1;
+                    self.reveal.push(&format!("{text}\n"), self.cursor);
+                    self.cursor += Duration::from_secs_f64(f64::from(n) / f64::from(CPS));
+                }
+                Step::Ready => {
+                    self.ready_at = Some(now);
+                }
+            }
+            self.next += 1;
+            changed = true;
+        }
+        if self.reveal.advance(now) {
+            changed = true;
+        }
+        if let Some(r) = self.ready_at
+            && !self.done
+            && now >= r + READY_HOLD
+        {
+            self.done = true;
+            changed = true;
+        }
+        changed
+    }
+
+    pub fn tick_interval(&self) -> Duration {
+        if self.next > 0 && self.ready_at.is_none() {
+            Duration::from_millis(50)
+        } else {
+            Duration::from_millis(100)
+        }
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.done
+    }
+
+    pub fn render(&self, area: Rect, buf: &mut Buffer) {
+        let put = |buf: &mut Buffer, x: i32, y: i32, s: &str| {
+            if y < 0 || y >= i32::from(area.height) {
+                return;
+            }
+            for (i, ch) in s.chars().enumerate() {
+                let cx = x + i as i32;
+                if cx < 0 || cx >= i32::from(area.width) {
+                    continue;
+                }
+                let mut b = [0u8; 4];
+                buf[(area.x + cx as u16, area.y + y as u16)].set_symbol(ch.encode_utf8(&mut b));
+            }
+        };
+        // Logo.
+        let lx = (i32::from(area.width) - self.logo.width() as i32) / 2;
+        let top = i32::from(LOGO_TOP) + (LOGO_BAND.saturating_sub(self.logo.height()) / 2) as i32;
+        for (r, row) in self.logo.rows().iter().enumerate() {
+            for (c, cell) in row.iter().enumerate() {
+                let s = match cell {
+                    Cell::Block => "█".to_string(),
+                    Cell::Char(' ') => continue,
+                    Cell::Char(ch) => ch.to_string(),
+                };
+                put(buf, lx + c as i32, top + r as i32, &s);
+            }
+        }
+        // Header.
+        let hx = (i32::from(area.width) - self.header.chars().count() as i32) / 2;
+        put(buf, hx, i32::from(HEADER_Y), &self.header);
+        // Boot lines.
+        for (i, l) in self.reveal.visible().split('\n').enumerate() {
+            put(buf, i32::from(LINE_X), i32::from(LINES_Y) + i as i32, l);
+        }
+        if self.ready_at.is_some() {
+            put(buf, i32::from(LINE_X), i32::from(READY_Y), "READY.");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;
