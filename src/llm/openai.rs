@@ -22,20 +22,41 @@ pub fn request_body(cfg: &MuthurSection, req: &ChatRequest) -> Value {
             Role::User => "user",
             Role::Assistant => "assistant",
         };
-        let content = match &m.content {
-            MessageContent::Text(s) => s.clone(),
-            MessageContent::Blocks(v) => v.iter().filter_map(|b| b.get("text").and_then(Value::as_str)).collect(),
-            MessageContent::ToolResults(rs) => rs.iter().map(|r| r.content.as_str()).collect::<Vec<_>>().join("\n"),
-            MessageContent::ToolCalls { text, .. } => text.clone(),
-        };
-        messages.push(json!({"role": role, "content": content}));
+        match &m.content {
+            MessageContent::Text(t) => messages.push(json!({"role": role, "content": t})),
+            MessageContent::Blocks(v) => {
+                let t: String = v.iter().filter_map(|b| b.get("text").and_then(Value::as_str)).collect();
+                messages.push(json!({"role": role, "content": t}));
+            }
+            MessageContent::ToolResults(rs) => {
+                for r in rs {
+                    let content = if r.is_error { format!("ERROR: {}", r.content) } else { r.content.clone() };
+                    messages.push(json!({"role": "tool", "tool_call_id": r.id, "content": content}));
+                }
+            }
+            MessageContent::ToolCalls { text, calls } => {
+                let content = if text.trim().is_empty() { Value::Null } else { json!(text) };
+                messages.push(json!({"role": "assistant", "content": content, "tool_calls": calls}));
+            }
+        }
     }
-    json!({
+    let mut body = json!({
         "model": cfg.model().unwrap_or_default(),
         "max_tokens": cfg.max_tokens,
         "stream": true,
         "messages": messages,
-    })
+    });
+    if !req.tools.is_empty() {
+        body["tools"] = req
+            .tools
+            .iter()
+            .map(|t| json!({"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.schema}}))
+            .collect();
+        if req.tool_choice_none {
+            body["tool_choice"] = json!("none");
+        }
+    }
+    body
 }
 
 #[derive(Default)]
@@ -69,14 +90,16 @@ impl StreamParser for Parser {
         let mut out = vec![];
         if data == "[DONE]" {
             self.done = true;
+            let mut raw = vec![];
             for (_, (id, name, args)) in std::mem::take(&mut self.calls) {
+                raw.push(json!({"id": id, "type": "function", "function": {"name": name, "arguments": args}}));
                 let input = if args.trim().is_empty() { json!({}) } else { serde_json::from_str(&args).unwrap_or_else(|_| json!({})) };
                 out.push(StreamEvent::ToolCall { id, name, input });
             }
             out.push(StreamEvent::Done {
                 stop: map_stop(self.finish.as_deref().unwrap_or("stop")),
                 model: self.model.clone(),
-                raw: None,
+                raw: if raw.is_empty() { None } else { Some(raw) },
             });
             return out;
         }
@@ -163,4 +186,33 @@ mod tests {
         for rec in dec.push(s.as_bytes()) { p.feed(&rec); }
         assert_eq!(p.finish(), vec![StreamEvent::Error(LlmError::Transmission)]);
     }
+    fn spec(name: &str) -> crate::llm::ToolSpec { crate::llm::ToolSpec{ name: name.into(), description: "d".into(), schema: json!({"type":"object","properties":{}}) } }
+    fn req_with(messages: Vec<Message>) -> ChatRequest { ChatRequest { system: "SYS".into(), messages, tools: vec![], tool_choice_none: false } }
+    #[test] fn tools_and_choice_in_body() {
+        let mut r = req_with(vec![user("HI")]);
+        assert!(request_body(&cfg(), &r).get("tools").is_none());
+        r.tools = vec![spec("ship_status")];
+        let b = request_body(&cfg(), &r);
+        assert_eq!(b["tools"][0], json!({"type":"function","function":{"name":"ship_status","description":"d","parameters":{"type":"object","properties":{}}}}));
+        assert!(b.get("tool_choice").is_none());
+        r.tool_choice_none = true;
+        assert_eq!(request_body(&cfg(), &r)["tool_choice"], "none");
+    }
+    #[test] fn assistant_tool_calls_and_results() {
+        let c = json!({"id":"call_1","type":"function","function":{"name":"metrics","arguments":"{}"}});
+        let tr = |id: &str, content: &str, e: bool| crate::llm::ToolResult { id: id.into(), name: "metrics".into(), content: content.into(), is_error: e, label: String::new() };
+        let r = req_with(vec![user("HI"),
+            Message { role: Role::Assistant, content: MessageContent::ToolCalls { text: " ".into(), calls: vec![c.clone()] } },
+            Message { role: Role::User, content: MessageContent::ToolResults(vec![tr("call_1", "X", false), tr("call_2", "Y", true)]) }]);
+        let m = &request_body(&cfg(), &r)["messages"];
+        assert_eq!(m[2], json!({"role":"assistant","content":null,"tool_calls":[c]}));
+        assert_eq!(m[3], json!({"role":"tool","tool_call_id":"call_1","content":"X"}));
+        assert_eq!(m[4]["content"], "ERROR: Y");
+        assert_eq!(m[4]["tool_call_id"], "call_2");
+    }
+    #[test] fn done_raw_carries_tool_calls() {
+        let ev = run("openai_tool.sse");
+        assert!(matches!(ev.last(), Some(StreamEvent::Done{raw: Some(r), ..}) if r == &vec![json!({"id":"call_1","type":"function","function":{"name":"metrics","arguments":"{\"host\":\"local\"}"}})]));
+    }
+    #[test] fn plain_text_done_raw_none() { assert!(matches!(run("openai_text.sse").last(), Some(StreamEvent::Done{raw: None, ..}))); }
 }
