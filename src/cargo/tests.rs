@@ -508,3 +508,100 @@ fn background_done_lights_activity() {
     assert!(h.t.take_activity());
     assert!(!h.t.take_activity());
 }
+
+// --- Log view ------------------------------------------------------------
+
+fn numbered(n: usize) -> String {
+    (0..n).map(|i| format!("line{i:03}\n")).collect()
+}
+
+#[test]
+fn logs_open_at_bottom_and_scroll() {
+    let mut h = harness(vec![c("a1", "web", "UP")]);
+    h.key(Key::Char('L'));
+    let (_, argv, timeout, merged) = h.last();
+    assert_eq!((argv, timeout, merged), (v(&["docker", "logs", "--tail", "200", "a1"]), Duration::from_secs(10), true));
+    h.done(exited(0, &numbered(100), ""));
+    let s = h.screen();
+    assert!(s.contains("LOGS - WEB (100 LINES)") && s.contains("line099") && !s.contains("line000"), "{s}");
+    assert!(s.contains("L REFRESH  ESC BACK  SH-F15/16 SCROLL"), "{s}");
+    h.key(Key::PageUp);
+    let s = h.screen();
+    assert!(s.contains("line030") && !s.contains("line099"), "{s}");
+    h.key(Key::Home);
+    assert!(h.screen().contains("line000"));
+    h.key(Key::Down);
+    let s = h.screen();
+    assert!(!s.contains("line000") && s.contains("line001"), "{s}");
+    let a = h.audit();
+    assert_eq!((&a[0]["tool"], &a[0]["decision"], &a[0]["tier"]), (&"cargo_logs".into(), &"auto".into(), &1.into()));
+    assert_eq!(h.n_calls(), 1, "logs do not trigger a ps refresh");
+}
+
+#[test]
+fn logs_keep_case_and_wrap() {
+    let mut h = harness(vec![c("a1", "web", "UP")]);
+    h.key(Key::Char('l'));
+    h.done(exited(0, &format!("MixedCase {}\n", "y".repeat(130)), ""));
+    let buf = render(&mut h.t, WINDOWED);
+    let s = text(&buf);
+    assert!(s.contains("MixedCase yyy"), "{s}");
+    for y in 0..43 {
+        for x in 0..80 {
+            if !WINDOWED.contains((x, y).into()) {
+                assert_eq!(buf[(x, y)].symbol(), " ", "({x},{y})");
+            }
+        }
+    }
+    assert_eq!(s.matches('y').count(), 130, "wrapped, not cut\n{s}");
+}
+
+#[test]
+fn l_refreshes_and_esc_returns_with_selection() {
+    let mut h = harness(vec![c("a1", "web", "UP"), c("b2", "db", "UP")]);
+    h.key(Key::Down);
+    h.key(Key::Char('L'));
+    h.done(exited(0, "one\n", ""));
+    assert!(h.screen().contains("LOGS - DB (1 LINES)"));
+    h.key(Key::Char('L'));
+    assert_eq!(h.argv(), v(&["docker", "logs", "--tail", "200", "b2"]));
+    h.done(exited(0, "one\ntwo\n", ""));
+    assert!(h.screen().contains("LOGS - DB (2 LINES)"));
+    for k in "UuRrDd".chars() {
+        h.key(Key::Char(k));
+    }
+    assert_eq!(h.n_calls(), 2, "no actions from the log view");
+    h.key(Key::Esc);
+    let s = h.screen();
+    assert!(s.contains(">DB") && !s.contains("LOGS -"), "{s}");
+    assert!(!s.contains("FETCHING"), "{s}");
+}
+
+#[test]
+fn stale_log_result_after_esc_is_dropped() {
+    let mut h = harness(vec![c("a1", "web", "UP")]);
+    h.key(Key::Char('L'));
+    h.key(Key::Esc);
+    h.done(exited(0, "x\n", ""));
+    let s = h.screen();
+    assert!(s.contains(">WEB") && !s.contains("LOGS -"), "{s}");
+    h.key(Key::Char('U'));
+    assert_eq!(h.argv(), v(&["docker", "start", "a1"]), "not busy after Esc");
+}
+
+#[test]
+fn logs_failed_stays_on_list() {
+    let mut h = harness(vec![c("a1", "web", "UP")]);
+    h.key(Key::Char('L'));
+    h.done(exited(1, "Error: No such container: a1\n", ""));
+    let s = h.screen();
+    assert!(s.contains("LOGS FAILED: ERROR: NO SUCH CONTAINER: A1") && !s.contains("LOGS -"), "{s}");
+}
+
+#[test]
+fn empty_logs_say_so() {
+    let mut h = harness(vec![c("a1", "web", "UP")]);
+    h.key(Key::Char('L'));
+    h.done(exited(0, "", ""));
+    assert!(h.screen().contains("NO LOG OUTPUT"));
+}

@@ -4,11 +4,13 @@
 //! Fed by the same snapshots as UTILITY; containers not `UP` are listed
 //! first. The arrows move a selection (Shift-F15/F16 a page, Home the top);
 //! the list scrolls to keep it visible. U/R/D act on the selected container
-//! (R and D only after an armed Y). Commands run through the injected
+//! (R and D only after an armed Y); L opens the container's last 200 log
+//! lines full-pane (L again refetches, Esc goes back). Commands run through the injected
 //! `CargoDeps::run` and come back as `on_cargo_done`; every one is audited.
 
 mod action;
 mod list;
+mod logview;
 
 use crate::app::{ARMING, Tab};
 use crate::input::Key;
@@ -20,6 +22,7 @@ use crate::tools::runner::RunOutput;
 use crate::utility::widgets::message_panel;
 use action::{Prompt, Verb, audit_entry, failure};
 use list::{Selection, draw_list};
+use logview::LogView;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
@@ -72,6 +75,8 @@ pub struct CargoTab {
     /// Progress, result or error (reverse) for the message line; cleared by
     /// the next key.
     message: Option<(String, bool)>,
+    /// Open over the list while `Some`.
+    logs: Option<LogView>,
     obscured: bool,
     activity: bool,
 }
@@ -90,6 +95,7 @@ impl CargoTab {
             refresh: None,
             seq: 0,
             message: None,
+            logs: None,
             obscured: false,
             activity: false,
         }
@@ -168,10 +174,6 @@ impl CargoTab {
 
     /// U/R/D/L on the selected container.
     fn request(&mut self, verb: Verb) {
-        // The log view arrives with the next change; until then L does nothing.
-        if verb == Verb::Logs {
-            return;
-        }
         let (Some(_), Some(k)) = (&self.runtime, self.sel.selected(self.list())) else { return };
         if self.action.is_some() {
             self.message = Some(("BUSY".into(), false));
@@ -192,6 +194,29 @@ impl CargoTab {
         (self.deps.run)(seq, argv.clone(), verb.timeout(), verb.merged());
         self.message = Some((format!("{} {} ...", verb.progress(), name.to_uppercase()), false));
         self.action = Some(Pending { seq, verb, id, name, argv });
+    }
+
+    fn logs_key(&mut self, key: &Key) {
+        match key {
+            Key::Esc => {
+                self.logs = None;
+                // Its result, if still coming, is for a view that is gone.
+                if self.action.as_ref().is_some_and(|p| p.verb == Verb::Logs) {
+                    self.action = None;
+                }
+            }
+            Key::Char('l' | 'L') if self.action.is_none() => {
+                if let Some(v) = &self.logs {
+                    let (id, name) = (v.id.clone(), v.name().to_string());
+                    self.start(Verb::Logs, id, name);
+                }
+            }
+            k => {
+                if let Some(v) = &mut self.logs {
+                    v.key(k);
+                }
+            }
+        }
     }
 
     fn prompt_key(&mut self, key: &Key) {
@@ -218,6 +243,19 @@ impl CargoTab {
         self.record_audit(&p, &out, ms);
         if self.obscured {
             self.activity = true;
+        }
+        if p.verb == Verb::Logs {
+            match (failure(p.verb, &out), out) {
+                (None, RunOutput::Exited { stdout, .. }) => {
+                    self.message = None; // the progress line is done with
+                    self.logs = Some(LogView::new(p.id, p.name.to_uppercase(), &stdout));
+                }
+                (why, _) => {
+                    self.logs = None;
+                    self.message = why.map(|w| (w, true));
+                }
+            }
+            return;
         }
         self.message = Some(match failure(p.verb, &out) {
             Some(why) => (why, true),
@@ -246,6 +284,12 @@ impl Tab for CargoTab {
             State::Offline(why) => vec![Line::from("TELEMETRY OFFLINE"), Line::from(why.clone())],
             State::Manifest(None) => vec![Line::from(NO_RUNTIME)],
             State::Manifest(Some(c)) if c.is_empty() => vec![Line::from("HOLD EMPTY")],
+            State::Manifest(Some(_)) if self.logs.is_some() => {
+                if let Some(v) = &mut self.logs {
+                    v.render(area, buf);
+                }
+                return;
+            }
             State::Manifest(Some(c)) => {
                 let over = busy.as_ref().map(|(id, s)| (id.as_str(), s.as_str()));
                 draw_list(&mut self.sel, c, over, (&message, reverse), hint, area, buf);
@@ -269,9 +313,14 @@ impl Tab for CargoTab {
         if self.prompt.is_some() {
             return self.prompt_key(key);
         }
+        if self.logs.is_some() {
+            return self.logs_key(key);
+        }
         self.message = None;
         let State::Manifest(Some(c)) = &self.state else { return };
         match key {
+            // Changed your mind while the logs are coming: drop them.
+            Key::Esc if self.action.as_ref().is_some_and(|p| p.verb == Verb::Logs) => self.action = None,
             Key::Up => self.sel.up(c),
             Key::Down => self.sel.down(c),
             Key::PageUp => self.sel.page_up(c),
