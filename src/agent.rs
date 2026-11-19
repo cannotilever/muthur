@@ -28,6 +28,7 @@ const DENIED: &str = "DENIED BY OPERATOR";
 const ABORTED: &str = "ABORTED BY OPERATOR";
 const AUDIT_OFFLINE: &str = "AUDIT LOG OFFLINE";
 const ROUND_LIMIT: &str = "ROUND LIMIT";
+const DUPLICATE_ID: &str = "duplicate call id";
 
 #[derive(Debug)]
 enum State {
@@ -63,18 +64,21 @@ fn rejected_tier(name: &str) -> u8 {
 
 impl Turn {
     pub fn new(max_rounds: u32) -> Self {
-        Turn { max_rounds, rounds: 0, forced: 0, slots: Vec::new() }
+        // With no rounds allowed, the very first request is already at the cap.
+        Turn { max_rounds, rounds: 0, forced: u8::from(max_rounds == 0), slots: Vec::new() }
     }
 
     pub fn on_done(&mut self, stop: &Stop, calls: Vec<Call>, defs: &ToolDefs, audit_online: bool) -> Vec<Effect> {
-        if *stop != Stop::ToolUse || calls.is_empty() {
-            self.slots.clear();
-            return vec![Effect::Finished { truncated: false }];
-        }
+        // A round still open when a new stream ends is closed out as aborted.
         let mut out = Vec::new();
-        self.slots.clear();
+        self.abort_open(&mut out);
+        if *stop != Stop::ToolUse || calls.is_empty() {
+            out.push(Effect::Finished { truncated: false });
+            return out;
+        }
         let forced = self.forced > 0;
         for call in calls {
+            let duplicate = self.slots.iter().any(|s| s.call.id == call.id);
             let checked = defs.validate(&call.name, &call.input);
             let (label, tier) = match &checked {
                 Ok(inv) => (inv.label(), inv.tier()),
@@ -82,6 +86,9 @@ impl Turn {
             };
             let mut slot = Slot { call, label, tier, state: State::Done, result: None };
             match checked {
+                _ if duplicate => {
+                    slot.resolve_err(Decision::Rejected, format!("NOT AUTHORIZED: {DUPLICATE_ID}"), &mut out)
+                }
                 _ if forced => slot.resolve_err(Decision::Rejected, format!("NOT AUTHORIZED: {ROUND_LIMIT}"), &mut out),
                 Err(reason) => slot.resolve_err(Decision::Rejected, format!("NOT AUTHORIZED: {reason}"), &mut out),
                 Ok(_) if tier == 2 && !audit_online => {
@@ -101,7 +108,7 @@ impl Turn {
     }
 
     pub fn on_tool_done(&mut self, call_id: &str, outcome: ToolOutcome) -> Vec<Effect> {
-        let Some(slot) = self.slots.iter_mut().find(|s| s.call.id == call_id) else { return vec![] };
+        let Some(slot) = self.live_slot(call_id) else { return vec![] };
         let State::Running { confirmed } = slot.state else { return vec![] };
         let decision = if confirmed { Decision::Confirmed } else { Decision::Auto };
         let mut out = vec![Effect::Audit(AuditEntry {
@@ -121,7 +128,7 @@ impl Turn {
     }
 
     pub fn on_confirm(&mut self, call_id: &str, yes: bool) -> Vec<Effect> {
-        let Some(slot) = self.slots.iter_mut().find(|s| s.call.id == call_id) else { return vec![] };
+        let Some(slot) = self.live_slot(call_id) else { return vec![] };
         if !matches!(slot.state, State::Awaiting(_)) {
             return vec![];
         }
@@ -140,17 +147,30 @@ impl Turn {
 
     pub fn abort(&mut self) -> Vec<Effect> {
         let mut out = Vec::new();
-        if !self.slots.is_empty() {
-            for slot in &mut self.slots {
-                if slot.result.is_none() {
-                    slot.resolve(Decision::Aborted, ABORTED.into(), &mut out);
-                }
-            }
-            let results = self.slots.drain(..).filter_map(|s| s.result).collect();
-            out.push(Effect::LogTool(results));
-        }
+        self.abort_open(&mut out);
         out.push(Effect::Finished { truncated: false });
         out
+    }
+
+    /// The unresolved slot for `call_id`. Rejected duplicates are resolved on
+    /// arrival, so only the first call with a given id can match.
+    fn live_slot(&mut self, call_id: &str) -> Option<&mut Slot> {
+        self.slots.iter_mut().find(|s| s.call.id == call_id && !matches!(s.state, State::Done))
+    }
+
+    /// Resolves every unresolved call of the open round as aborted, then logs
+    /// the round. Does nothing when no round is open.
+    fn abort_open(&mut self, out: &mut Vec<Effect>) {
+        if self.slots.is_empty() {
+            return;
+        }
+        for slot in &mut self.slots {
+            if slot.result.is_none() {
+                slot.resolve(Decision::Aborted, ABORTED.into(), out);
+            }
+        }
+        let results = self.slots.drain(..).filter_map(|s| s.result).collect();
+        out.push(Effect::LogTool(results));
     }
 
     pub fn awaiting_confirm(&self) -> Option<(&str, &str)> {
@@ -545,6 +565,109 @@ mod tests {
         assert_eq!(t.on_tool_done("c1", ok("late")), vec![]);
         // With no open round, abort just finishes.
         assert_eq!(Turn::new(8).abort(), vec![Effect::Finished { truncated: false }]);
+    }
+
+    #[test]
+    fn duplicate_tier1_ids_rejected_after_first() {
+        for id in ["c1", ""] {
+            let mut t = Turn::new(8);
+            let e = t.on_done(&Stop::ToolUse, vec![status(id), call(id, "ship_status", json!({}))], &defs(), true);
+            assert_eq!(
+                e,
+                vec![
+                    Effect::Note("ACCESSING: SERVICE STATUS NGINX.SERVICE".into()),
+                    Effect::Run { call_id: id.into(), invocation: Invocation::ServiceStatus { unit: "nginx.service".into() } },
+                    Effect::Note("ACCESS DENIED: SHIP STATUS".into()),
+                    Effect::Audit(AuditEntry {
+                        tool: "ship_status".into(),
+                        args: json!({}),
+                        tier: 1,
+                        decision: Decision::Rejected,
+                        argv: None,
+                        exit: None,
+                        ms: 0,
+                        output: "NOT AUTHORIZED: duplicate call id".into(),
+                    }),
+                ]
+            );
+            let e = t.on_tool_done(id, ok("active"));
+            assert_eq!(audits(&e)[0].decision, Decision::Auto);
+            assert_eq!(
+                e[e.len() - 2],
+                Effect::LogTool(vec![
+                    result(id, "service_status", "active", false, "SERVICE STATUS NGINX.SERVICE"),
+                    result(id, "ship_status", "NOT AUTHORIZED: duplicate call id", true, "SHIP STATUS"),
+                ])
+            );
+            assert_eq!(e[e.len() - 1], Effect::Spawn { forced_final: false });
+        }
+    }
+
+    #[test]
+    fn duplicate_id_does_not_block_tier2() {
+        for id in ["c1", ""] {
+            let mut t = Turn::new(8);
+            let e = t.on_done(&Stop::ToolUse, vec![restart(id), status(id)], &defs(), true);
+            assert!(!e.iter().any(|x| matches!(x, Effect::Run { .. })), "{e:?}");
+            assert_eq!(e[0], Effect::Note("ACCESS DENIED: SERVICE STATUS NGINX.SERVICE".into()));
+            assert_eq!(audits(&e)[0].output, "NOT AUTHORIZED: duplicate call id");
+            assert_eq!(e.last(), Some(&Effect::Confirm { call_id: id.into(), prompt: "RESTART NGINX.SERVICE".into() }));
+            assert_eq!(t.awaiting_confirm(), Some((id, "RESTART NGINX.SERVICE")));
+            assert_eq!(t.on_confirm(id, true)[1], Effect::Run { call_id: id.into(), invocation: restart_inv() });
+            let e = t.on_tool_done(id, ok("restarted"));
+            assert_eq!(audits(&e)[0].decision, Decision::Confirmed);
+            let Effect::LogTool(r) = &e[e.len() - 2] else { panic!("{e:?}") };
+            assert_eq!(r.len(), 2);
+            assert_eq!(r[0].content, "restarted");
+            assert_eq!(r[1].content, "NOT AUTHORIZED: duplicate call id");
+            assert_eq!(e[e.len() - 1], Effect::Spawn { forced_final: false });
+        }
+    }
+
+    #[test]
+    fn new_stream_closes_open_round_as_aborted() {
+        let mut t = Turn::new(8);
+        t.on_done(&Stop::ToolUse, vec![status("c1"), restart("c2")], &defs(), true);
+        let e = t.on_done(&Stop::ToolUse, vec![call("c3", "ship_status", json!({}))], &defs(), true);
+        assert_eq!(audits(&e[..2]).iter().map(|a| a.decision).collect::<Vec<_>>(), [Decision::Aborted; 2]);
+        assert_eq!(
+            e[2],
+            Effect::LogTool(vec![
+                result("c1", "service_status", "ABORTED BY OPERATOR", true, "SERVICE STATUS NGINX.SERVICE"),
+                result("c2", "restart_service", "ABORTED BY OPERATOR", true, "RESTART NGINX.SERVICE"),
+            ])
+        );
+        assert_eq!(
+            e[3..],
+            [Effect::Note("ACCESSING: SHIP STATUS".into()), Effect::Run { call_id: "c3".into(), invocation: Invocation::ShipStatus }]
+        );
+        assert_eq!(t.awaiting_confirm(), None);
+        assert_eq!(t.on_tool_done("c1", ok("late")), vec![]);
+        // A final answer over an open round: logged as aborted, then Finished.
+        let e = t.on_done(&Stop::End, vec![], &defs(), true);
+        assert_eq!(audits(&e).len(), 1);
+        assert_eq!(e[1], Effect::LogTool(vec![result("c3", "ship_status", "ABORTED BY OPERATOR", true, "SHIP STATUS")]));
+        assert_eq!(e[2], Effect::Finished { truncated: false });
+    }
+
+    #[test]
+    fn max_rounds_zero_and_one() {
+        // 0: the first ToolUse already gets the forced-final treatment.
+        let mut t = Turn::new(0);
+        let e = t.on_done(&Stop::ToolUse, vec![status("c1")], &defs(), true);
+        assert!(!e.iter().any(|x| matches!(x, Effect::Run { .. })), "{e:?}");
+        assert_eq!(audits(&e)[0].output, "NOT AUTHORIZED: ROUND LIMIT");
+        assert_eq!(e.last(), Some(&Effect::Spawn { forced_final: true }));
+        let e = t.on_done(&Stop::ToolUse, vec![status("c2")], &defs(), true);
+        assert_eq!(e.last(), Some(&Effect::Finished { truncated: true }));
+        // 1: one real round, then forced.
+        let mut t = Turn::new(1);
+        assert_eq!(tier1_round(&mut t, "c1").last(), Some(&Effect::Spawn { forced_final: true }));
+        let e = t.on_done(&Stop::ToolUse, vec![status("c2")], &defs(), true);
+        assert_eq!(audits(&e)[0].output, "NOT AUTHORIZED: ROUND LIMIT");
+        assert_eq!(e.last(), Some(&Effect::Spawn { forced_final: true }));
+        let e = t.on_done(&Stop::ToolUse, vec![status("c3")], &defs(), true);
+        assert_eq!(e.last(), Some(&Effect::Finished { truncated: true }));
     }
 
     #[test]
