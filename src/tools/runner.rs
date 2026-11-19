@@ -21,6 +21,15 @@ pub enum RunOutput {
 
 pub trait Runner: Send + Sync {
     fn run(&self, argv: &[String], timeout: Duration) -> RunOutput;
+
+    /// `run` with stderr folded into stdout. This default loses the
+    /// interleaving; `SystemRunner` keeps it by sharing one pipe.
+    fn run_merged(&self, argv: &[String], timeout: Duration) -> RunOutput {
+        match self.run(argv, timeout) {
+            RunOutput::Exited { code, stdout, stderr } => RunOutput::Exited { code, stdout: stdout + &stderr, stderr: String::new() },
+            other => other,
+        }
+    }
 }
 
 pub struct SystemRunner;
@@ -39,58 +48,87 @@ const GRACE: Duration = Duration::from_millis(200);
 
 impl Runner for SystemRunner {
     fn run(&self, argv: &[String], timeout: Duration) -> RunOutput {
-        let Some((cmd, args)) = argv.split_first() else {
-            return RunOutput::NotFound;
+        spawn_and_wait(argv, timeout, false)
+    }
+
+    fn run_merged(&self, argv: &[String], timeout: Duration) -> RunOutput {
+        spawn_and_wait(argv, timeout, true)
+    }
+}
+
+fn spawn_failed(cmd: &str, e: std::io::Error) -> RunOutput {
+    if e.kind() != std::io::ErrorKind::NotFound {
+        tracing::warn!(cmd, "tool spawn failed: {e}");
+    }
+    RunOutput::NotFound
+}
+
+/// `merged`: stdout and stderr share one pipe, so their order is kept and
+/// everything comes back as `stdout`.
+fn spawn_and_wait(argv: &[String], timeout: Duration, merged: bool) -> RunOutput {
+    let Some((cmd, args)) = argv.split_first() else {
+        return RunOutput::NotFound;
+    };
+    let mut command = Command::new(cmd);
+    command.args(args).env("LC_ALL", "C").process_group(0).stdin(Stdio::null());
+    let (mut child, out_rx, err_rx) = if merged {
+        let (reader, writer) = match std::io::pipe() {
+            Ok(p) => p,
+            Err(e) => return spawn_failed(cmd, e),
         };
-        let mut child = match Command::new(cmd)
-            .args(args)
-            .env("LC_ALL", "C")
-            .process_group(0)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
+        let writer2 = match writer.try_clone() {
+            Ok(w) => w,
+            Err(e) => return spawn_failed(cmd, e),
+        };
+        command.stdout(Stdio::from(writer)).stderr(Stdio::from(writer2));
+        let spawned = command.spawn();
+        // The Command holds the parent's copies of the write end: drop them,
+        // or the reader never sees EOF.
+        drop(command);
+        let child = match spawned {
             Ok(c) => c,
-            Err(e) => {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    tracing::warn!(cmd, "tool spawn failed: {e}");
-                }
-                return RunOutput::NotFound;
-            }
+            Err(e) => return spawn_failed(cmd, e),
+        };
+        let (tx, err_rx) = mpsc::channel();
+        let _ = tx.send(Vec::new());
+        (child, drain(reader), err_rx)
+    } else {
+        let mut child = match command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+            Ok(c) => c,
+            Err(e) => return spawn_failed(cmd, e),
         };
         let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) else {
             let _ = child.kill();
             let _ = child.wait();
             return RunOutput::NotFound;
         };
-        let (out_rx, err_rx) = (drain(out), drain(err));
-        let deadline = Instant::now() + timeout;
-        let pgid = Pid::from_raw(child.id() as i32);
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(s)) => break Some(s),
-                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
-                _ => {
-                    let _ = killpg(pgid, Signal::SIGKILL);
-                    let _ = child.wait();
-                    break None;
-                }
+        (child, drain(out), drain(err))
+    };
+    let deadline = Instant::now() + timeout;
+    let pgid = Pid::from_raw(child.id() as i32);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break Some(s),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = killpg(pgid, Signal::SIGKILL);
+                let _ = child.wait();
+                break None;
             }
-        };
-        // Stragglers in the group (grandchildren holding the pipes) die too.
-        let _ = killpg(pgid, Signal::SIGKILL);
-        let wait = deadline.saturating_duration_since(Instant::now()) + GRACE;
-        let end = Instant::now() + wait;
-        let collect = |rx: &mpsc::Receiver<Vec<u8>>| rx.recv_timeout(end.saturating_duration_since(Instant::now()));
-        let (o, e) = (collect(&out_rx), collect(&err_rx));
-        match status {
-            Some(s) => {
-                let text = |r: Result<Vec<u8>, _>| String::from_utf8_lossy(&r.unwrap_or_default()).into_owned();
-                RunOutput::Exited { code: s.code().unwrap_or(-1), stdout: text(o), stderr: text(e) }
-            }
-            None => RunOutput::TimedOut,
         }
+    };
+    // Stragglers in the group (grandchildren holding the pipes) die too.
+    let _ = killpg(pgid, Signal::SIGKILL);
+    let wait = deadline.saturating_duration_since(Instant::now()) + GRACE;
+    let end = Instant::now() + wait;
+    let collect = |rx: &mpsc::Receiver<Vec<u8>>| rx.recv_timeout(end.saturating_duration_since(Instant::now()));
+    let (o, e) = (collect(&out_rx), collect(&err_rx));
+    match status {
+        Some(s) => {
+            let text = |r: Result<Vec<u8>, _>| String::from_utf8_lossy(&r.unwrap_or_default()).into_owned();
+            RunOutput::Exited { code: s.code().unwrap_or(-1), stdout: text(o), stderr: text(e) }
+        }
+        None => RunOutput::TimedOut,
     }
 }
 
@@ -100,6 +138,26 @@ mod tests {
 
     fn v(a: &[&str]) -> Vec<String> {
         a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn merged_keeps_order() {
+        assert_eq!(
+            SystemRunner.run_merged(&v(&["sh", "-c", "echo a; echo b >&2; echo c"]), Duration::from_secs(2)),
+            RunOutput::Exited { code: 0, stdout: "a\nb\nc\n".into(), stderr: String::new() }
+        );
+    }
+
+    #[test]
+    fn merged_times_out_and_kills() {
+        let t = Instant::now();
+        assert_eq!(SystemRunner.run_merged(&v(&["sleep", "5"]), Duration::from_millis(200)), RunOutput::TimedOut);
+        assert!(t.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn merged_not_found() {
+        assert_eq!(SystemRunner.run_merged(&v(&["definitely-not-a-binary-muthur"]), Duration::from_secs(1)), RunOutput::NotFound);
     }
 
     #[test]
