@@ -60,7 +60,7 @@ serial-getty@wy60 (38400, XON/XOFF, TERM=vt100)
 1. **Boot splash** — Weyland-Yutani / "MU/TH/UR 6000 — INTERFACE 2037" boot
    text at teletype speed, interleaving real facts (hostname, CPU, RAM, link
    speed). ~3–5 s, skippable with any key.
-2. **TUI** — three tabs: Utility, MU/TH/UR, Shell.
+2. **TUI** — four tabs: MU/TH/UR, Utility, Cargo, Shell.
 3. **Emergency passthrough** (`prefix p`) — the Shell tab's PTY output goes to
    the wire **untranslated**. The virtual terminal keeps being fed in the
    background so leaving passthrough repaints the Shell tab correctly. Input
@@ -78,15 +78,18 @@ Modelled on the Alien: Isolation personal terminal
 │                                                                              │
 │ FOLDERS        ┌───────────────────────────────────────────────────────────┐ │
 │┌────────────┐  │                                                           │ │
+││ MU/TH/UR  *│  │                                                           │ │  * = activity marker
+│└────────────┘  │                                                           │ │
+│┌────────────┐  │                                                           │ │
 ││ UTILITY    │──│                content pane (~60 cols)                    │ │
 │└────────────┘  │                                                           │ │
 │┌────────────┐  │                                                           │ │
-││ MU/TH/UR  *│  │                                                           │ │  * = activity marker
+││ CARGO      │  │                                                           │ │
 │└────────────┘  │                                                           │ │
 │┌────────────┐  │                                                           │ │
 ││ SHELL      │  │                                                           │ │
 │└────────────┘  └───────────────────────────────────────────────────────────┘ │
-│ F1/F2/F3 SELECT ..... ^] f FULLSCREEN ..... PGUP/PGDN SCROLL ..... ^] ? HELP │  footer
+│ F1-F4 SELECT ..... ^] f FULLSCREEN ..... PGUP/PGDN SCROLL ..... ^] ? HELP    │  footer
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -101,7 +104,8 @@ Modelled on the Alien: Isolation personal terminal
 
 ## Keys
 
-- **F1 / F2 / F3** — Utility / MU/TH/UR / Shell.
+- **F1 / F2 / F3 / F4** — MU/TH/UR / Utility / Cargo / Shell (sidebar order;
+  Utility is shown at startup). F4 is therefore not passed to the shell.
 - **Prefix `Ctrl-]`** then:
   - `f` fullscreen toggle · `p` passthrough toggle · `[` scrollback (Shell)
   - `r` force full redraw · `]` send a literal `Ctrl-]` · `?` help
@@ -122,6 +126,7 @@ Single Rust crate, tokio runtime.
 | `input` | Byte stream → key events via configurable keymap; prefix-key state machine. |
 | `app` | Event bus (`Input`, `Tick`, `PtyOutput`, `Llm`, `Metrics`, later `Alert`), chrome rendering, tab focus, per-tab fullscreen, mode transitions. |
 | `tabs::utility` | System monitor (see below). |
+| `tabs::cargo` | Container manifest (see below). |
 | `tabs::muthur` | Chat UI (see below). |
 | `tabs::shell` | PTY + virtual terminal + translation (see below). |
 | `llm` | Streaming LLM client (reqwest + rustls/ring, no aws-lc): Anthropic Messages and OpenAI-compatible protocols, SSE parsing, typed `LlmError`s, idle timeout. Each request runs as a tokio task and sends `Event::Llm` to the loop. Deploy note: Alpine needs the `ca-certificates` package for TLS. |
@@ -249,11 +254,23 @@ Refresh every 2 s, diffs only, game-style boxed panels:
 - Load average, uptime.
 - Failed systemd units (reverse video).
 - Top 5 processes.
-- Containers, only if a runtime (Docker/Podman) is present.
+- Container count (running and stopped), one line, only if a runtime (Docker/Podman) is present;
+  the list itself is in the Cargo tab, so a busy host cannot push the other
+  panels off the screen.
+
+### Cargo tab
+
+The container manifest: `CARGO - N CONTAINERS`, a NAME / STATUS row per
+container, stopped and crashed ones included (`ps --all`; names cut to fit;
+any status other than `UP` in reverse video and sorted to the top, so a
+dead container is never scrolled out of sight).
+Fed by the same snapshots as Utility. A list longer than the pane scrolls:
+Shift-F15/F16 a page, arrows a row, Home to the top; the title shows the
+visible range. Says `NO CONTAINER RUNTIME` or `HOLD EMPTY` otherwise.
 
 ### Metrics
 
-`MetricsSource` trait consumed by both the Utility tab and MU/TH/UR tools.
+`MetricsSource` trait consumed by the Utility and Cargo tabs and MU/TH/UR tools.
 v1: `LocalSource` (`sysinfo`, `/proc`, `systemctl`). Later: `InfluxSource`
 for multi-server monitoring — tools then get a "which host" parameter.
 

@@ -445,7 +445,7 @@ pub fn run(cfg: &Config, strict: bool) -> anyhow::Result<()> {
     let slot = crate::tools::exec::SnapshotSlot::default();
     start_metrics(cfg, &tx, slot.clone());
     let muthur = build_muthur(cfg, &chrome.ship_name, tx.clone(), slot)?;
-    let mut app = App::assemble(chrome, UtilityTab::new(), muthur, shell);
+    let mut app = App::assemble(chrome, muthur, UtilityTab::new(), crate::cargo::CargoTab::new(), shell);
     if cfg.chrome.splash {
         app = app.with_splash(splash_for(cfg, &ship));
     }
@@ -671,14 +671,8 @@ mod tests {
     #[tokio::test]
     async fn metrics_event_reaches_utility() {
         let (_, mut t) = setup();
-        let mut app = crate::app::App::with_tabs(
-            ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 },
-            [
-                Box::new(crate::utility::UtilityTab::new()),
-                Box::new(crate::app::PlaceholderTab { id: crate::app::TabId::Muthur }),
-                Box::new(crate::app::PlaceholderTab { id: crate::app::TabId::Shell }),
-            ],
-        );
+        let mut app = crate::app::App::new(ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 })
+            .with_tab(crate::app::TabId::Utility, Box::new(crate::utility::UtilityTab::new()));
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let snap = crate::metrics::Snapshot { host: "NOSTROMO".into(), cpu_cores: vec![1.0], ..Default::default() };
         tx.send(Event::Metrics(Box::new(snap))).unwrap();
@@ -700,12 +694,13 @@ mod tests {
         );
         let mut app = App::assemble(
             ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 },
-            crate::utility::UtilityTab::new(),
             m,
+            crate::utility::UtilityTab::new(),
+            crate::cargo::CargoTab::new(),
             shell,
         );
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut ks = vec![Key::F(2)];
+        let mut ks = vec![Key::F(1)];
         ks.extend("HI".chars().map(Key::Char));
         ks.push(Key::Enter);
         tx.send(Event::Keys(ks)).unwrap();
@@ -764,12 +759,13 @@ mod tests {
         );
         let mut app = App::assemble(
             ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 },
-            crate::utility::UtilityTab::new(),
             m,
+            crate::utility::UtilityTab::new(),
+            crate::cargo::CargoTab::new(),
             shell,
         );
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut ks = vec![Key::F(2)];
+        let mut ks = vec![Key::F(1)];
         ks.extend("HI".chars().map(Key::Char));
         ks.push(Key::Enter);
         tx.send(Event::Keys(ks)).unwrap();

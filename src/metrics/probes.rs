@@ -90,10 +90,12 @@ mod tests {
     #[test]
     fn parses_containers() {
         assert_eq!(
-            parse_containers("web\tUp 3 hours\ndb\tExited (0) 2 days ago\n"),
+            parse_containers("web\tUp 3 hours\ndb\tExited (0) 2 days ago\nold\tCreated\nbad\tRestarting (1) 5 seconds ago\n"),
             vec![
                 Container { name: "WEB".into(), status: "UP".into() },
-                Container { name: "DB".into(), status: "EXITED".into() }
+                Container { name: "DB".into(), status: "EXITED".into() },
+                Container { name: "OLD".into(), status: "CREATED".into() },
+                Container { name: "BAD".into(), status: "RESTARTING".into() }
             ]
         );
     }

@@ -3,7 +3,7 @@
 
 use crate::input::Key;
 
-/// Bytes to send for `key`, or `None` if the shell never sees it (F1–F3 switch
+/// Bytes to send for `key`, or `None` if the shell never sees it (F1–F4 switch
 /// tabs; shifted F-keys and unknown sequences have no meaning to it).
 /// `app_cursor` is DECCKM, which the running program may have switched on.
 pub fn encode_key(key: &Key, app_cursor: bool) -> Option<Vec<u8>> {
@@ -26,7 +26,6 @@ pub fn encode_key(key: &Key, app_cursor: bool) -> Option<Vec<u8>> {
         Key::DeleteChar => tilde(3),
         Key::InsertKey => tilde(2),
         Key::Pf(n @ 1..=4) => vec![0x1b, b'O', b'P' + n - 1],
-        Key::F(4) => b"\x1bOS".to_vec(),
         // kf5..kf10 from vt100 terminfo; beyond that, xterm codes.
         Key::F(n @ 5..=10) => vec![0x1b, b'O', b"tuvlwx"[*n as usize - 5]],
         Key::F(n @ 11..=16) => tilde([23, 24, 25, 26, 28, 29][*n as usize - 11]),
@@ -60,7 +59,7 @@ mod tests {
             (Key::InsertKey, Some(b"\x1b[2~")),
             (Key::Pf(1), Some(b"\x1bOP")),
             (Key::Pf(3), Some(b"\x1bOR")),
-            (Key::F(4), Some(b"\x1bOS")),
+            (Key::F(4), None),
             (Key::F(5), Some(b"\x1bOt")),
             (Key::F(6), Some(b"\x1bOu")),
             (Key::F(9), Some(b"\x1bOw")),

@@ -3,28 +3,28 @@
  FOLDERS           l UTILITY qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqk
                    x                                                           x
  lqqqqqqqqqqqqqqk  x                                                           x
- x UTILITY      x  x                                                           x
- x              tqqu                                                           x
- x              x  x                                                           x
- mqqqqqqqqqqqqqqj  x                                                           x
-                   x                                                           x
- lqqqqqqqqqqqqqqk  x                                                           x
  x MU/TH/UR     x  x                                                           x
  x              x  x                                                           x
  x              x  x                                                           x
  mqqqqqqqqqqqqqqj  x                                                           x
                    x                                                           x
  lqqqqqqqqqqqqqqk  x                                                           x
- x SHELL        x  x                                                           x
+ x UTILITY      x  x                                                           x
+ x              tqqu                                                           x
+ x              x  x                                                           x
+ mqqqqqqqqqqqqqqj  x                                                           x
+                   x                                                           x
+ lqqqqqqqqqqqqqqk  x                                                           x
+ x CARGO        x  x                                                           x
  x              x  x                                                           x
  x              x  x                                                           x
  mqqqqqqqqqqqqqqj  x                                                           x
                    x                      MODULE OFFLINE                       x
-                   x                   AWAITING INSTALLATION                   x
-                   x                                                           x
-                   x                                                           x
-                   x                                                           x
-                   x                                                           x
+ lqqqqqqqqqqqqqqk  x                   AWAITING INSTALLATION                   x
+ x SHELL        x  x                                                           x
+ x              x  x                                                           x
+ x              x  x                                                           x
+ mqqqqqqqqqqqqqqj  x                                                           x
                    x                                                           x
                    x                                                           x
                    x                                                           x
@@ -40,4 +40,4 @@
                    x                                                           x
                    x                                                           x
                    mqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqj
- F1-F3 SELECT .... ^] F FULLSCREEN .... SH-F15/16 SCROLL .... ^] ? HELP
+ F1-F4 SELECT .... ^] F FULLSCREEN .... SH-F15/16 SCROLL .... ^] ? HELP

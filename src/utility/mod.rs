@@ -10,11 +10,11 @@ use crate::app::Tab;
 use crate::input::Key;
 use crate::metrics::{History, Snapshot, human_bytes, human_rate, human_uptime};
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Paragraph, Widget};
-use widgets::{gauge_line, gauge_line_w, panel, sparkline};
+use ratatui::widgets::Widget;
+use widgets::{gauge_line, gauge_line_w, message_panel, panel, sparkline};
 
 /// Samples kept for the sparklines (2 minutes at the default 2 s interval).
 const HISTORY: usize = 60;
@@ -102,13 +102,11 @@ impl UtilityTab {
             Some(u) if u.is_empty() => lines.push(("ALL SYSTEMS NOMINAL".to_string(), Style::new())),
             Some(u) => lines.extend(u.iter().map(|n| (format!("FAILED {n}"), reverse()))),
         }
+        // One line at most: the list itself lives in the CARGO folder.
         match &s.containers {
             None => {} // no container runtime here: say nothing (spec)
             Some(c) if c.is_empty() => lines.push(("CONTAINERS NONE".to_string(), Style::new())),
-            Some(c) => {
-                lines.push(("CONTAINERS".to_string(), Style::new()));
-                lines.extend(c.iter().map(|c| (format!("{} {}", c.name, c.status), Style::new())));
-            }
+            Some(c) => lines.push((format!("CONTAINERS {} (SEE CARGO)", c.len()), Style::new())),
         }
         lines
     }
@@ -246,12 +244,7 @@ impl Tab for UtilityTab {
             (None, Some(_)) => None,
         };
         if let Some(lines) = message {
-            let block = panel("UTILITY");
-            let inner = block.inner(area);
-            block.render(area, buf);
-            let h = (lines.len() as u16).min(inner.height);
-            let mid = Rect { y: inner.y + inner.height.saturating_sub(h) / 2, height: h, ..inner };
-            Paragraph::new(lines).alignment(Alignment::Center).render(mid, buf);
+            message_panel("UTILITY", lines, area, buf);
             return;
         }
         let Some(s) = &self.snap else { return };
@@ -272,6 +265,10 @@ impl Tab for UtilityTab {
 
     fn on_metrics(&mut self, s: &Snapshot) {
         self.on_snapshot(s.clone());
+    }
+
+    fn on_metrics_offline(&mut self, why: &str) {
+        self.on_offline(why);
     }
 
     fn take_activity(&mut self) -> bool {

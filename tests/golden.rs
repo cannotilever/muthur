@@ -70,8 +70,39 @@ fn windowed_utility() {
 }
 
 #[test]
+fn windowed_cargo() {
+    use muthur::app::TabId;
+    use muthur::cargo::CargoTab;
+    use muthur::metrics::{Container, Snapshot};
+    let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 17).unwrap().and_hms_opt(14, 2, 0).unwrap();
+    let mut app = App::new(ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 })
+        .with_tab(TabId::Cargo, Box::new(CargoTab::new()));
+    let mut containers: Vec<Container> =
+        (0..50).map(|i| Container { name: format!("REFINERY-UNIT-{i:02}"), status: "UP".into() }).collect();
+    containers[3].status = "EXITED".into();
+    containers[7].name = "AN-EXCEPTIONALLY-LONG-CONTAINER-NAME-THAT-WILL-NOT-FIT-IN-THE-PANE".into();
+    app.on_metrics(Snapshot { containers: Some(containers), ..Default::default() });
+    app.handle_key(Key::F(3));
+    let w = StrictWriter::new(Vec::new(), Vt100Dialect);
+    let mut t = Terminal::new(Wy60Backend::new(w, Vt100Dialect, 80, 43)).unwrap();
+    t.clear().unwrap();
+    t.draw(|f| app.render(f, now)).unwrap();
+    let strict = t.backend().writer();
+    assert!(strict.violations.is_empty(), "{:?}", strict.violations);
+    let mut p = vt100::Parser::new(NonZeroU16::new(43).unwrap(), NonZeroU16::new(80).unwrap(), 0);
+    p.process(&strict.inner);
+    let text = p.screen().contents();
+    let path = format!("{}/tests/golden/windowed_cargo.txt", env!("CARGO_MANIFEST_DIR"));
+    if std::env::var("UPDATE_GOLDEN").is_ok() {
+        std::fs::write(&path, &text).unwrap();
+    }
+    let want = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("missing {path}; run with UPDATE_GOLDEN=1"));
+    assert_eq!(text, want);
+}
+
+#[test]
 fn fullscreen_shell() {
-    scene("fullscreen_shell", &[Key::F(3), Key::Ctrl(']'), Key::Char('f')]);
+    scene("fullscreen_shell", &[Key::F(4), Key::Ctrl(']'), Key::Char('f')]);
 }
 
 #[test]
@@ -99,14 +130,15 @@ fn shell_windowed_echo() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = App::assemble(
         ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 },
-        muthur::utility::UtilityTab::new(),
         muthur_tab(&dir.path().join("c.jsonl"), None).0,
+        muthur::utility::UtilityTab::new(),
+        muthur::cargo::CargoTab::new(),
         shell,
     );
     let w = StrictWriter::new(Vec::new(), Vt100Dialect);
     let mut t = Terminal::new(Wy60Backend::new(w, Vt100Dialect, 80, 43).with_hints(hints)).unwrap();
     t.clear().unwrap();
-    app.handle_key(Key::F(3));
+    app.handle_key(Key::F(4));
     let mut p = vt100::Parser::new(NonZeroU16::new(43).unwrap(), NonZeroU16::new(80).unwrap(), 0);
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut sent = 0;
@@ -132,19 +164,13 @@ fn shell_windowed_echo() {
 
 #[test]
 fn utility_fullscreen() {
-    use muthur::app::{PlaceholderTab, TabId};
+    use muthur::app::TabId;
     use muthur::metrics::{Container, Disk, NetRate, Proc, Snapshot, Usage};
     use muthur::utility::UtilityTab;
     const G: u64 = 1 << 30;
     let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 17).unwrap().and_hms_opt(14, 2, 0).unwrap();
-    let mut app = App::with_tabs(
-        ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 },
-        [
-            Box::new(UtilityTab::new()),
-            Box::new(PlaceholderTab { id: TabId::Muthur }),
-            Box::new(PlaceholderTab { id: TabId::Shell }),
-        ],
-    );
+    let mut app = App::new(ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 })
+        .with_tab(TabId::Utility, Box::new(UtilityTab::new()));
     for i in 0..20u64 {
         app.on_metrics(Snapshot {
             host: "NOSTROMO".into(),
@@ -190,19 +216,12 @@ fn utility_fullscreen() {
 #[test]
 fn muthur_windowed() {
     use muthur::llm::StreamEvent;
-    use muthur::app::PlaceholderTab;
     let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 17).unwrap().and_hms_opt(14, 2, 0).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let (tab, clock) = muthur_tab(&dir.path().join("chat.jsonl"), Some(("HI", "GREETINGS.")));
-    let mut app = App::with_tabs(
-        ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 },
-        [
-            Box::new(PlaceholderTab { id: muthur::app::TabId::Utility }),
-            Box::new(tab),
-            Box::new(PlaceholderTab { id: muthur::app::TabId::Shell }),
-        ],
-    );
-    app.handle_key(Key::F(2));
+    let mut app = App::new(ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 })
+        .with_tab(muthur::app::TabId::Muthur, Box::new(tab));
+    app.handle_key(Key::F(1));
     for c in "REACTOR STATUS".chars() {
         app.handle_key(Key::Char(c));
     }
@@ -230,20 +249,13 @@ fn muthur_windowed() {
 
 #[test]
 fn muthur_override() {
-    use muthur::app::PlaceholderTab;
     use muthur::llm::{Stop, StreamEvent};
     let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 17).unwrap().and_hms_opt(14, 2, 0).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let (tab, _clock) = muthur_tab(&dir.path().join("chat.jsonl"), None);
-    let mut app = App::with_tabs(
-        ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 },
-        [
-            Box::new(PlaceholderTab { id: muthur::app::TabId::Utility }),
-            Box::new(tab),
-            Box::new(PlaceholderTab { id: muthur::app::TabId::Shell }),
-        ],
-    );
-    app.handle_key(Key::F(2));
+    let mut app = App::new(ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 })
+        .with_tab(muthur::app::TabId::Muthur, Box::new(tab));
+    app.handle_key(Key::F(1));
     for c in "RESTART NGINX".chars() {
         app.handle_key(Key::Char(c));
     }

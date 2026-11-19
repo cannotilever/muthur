@@ -67,7 +67,7 @@ fn sidebar_lists_folders_and_highlights_active() {
 #[test]
 fn f_keys_switch_tabs() {
     let mut app = App::new(chrome());
-    keys(&mut app, &[Key::F(3)]);
+    keys(&mut app, &[Key::F(4)]);
     assert_eq!(app.active, TabId::Shell);
     let buf = draw(&mut app);
     let label_row = chrome::box_top(TabId::Shell) + 1;
@@ -88,11 +88,11 @@ fn fullscreen_is_per_tab_and_starts_windowed() {
         app.active = id;
         assert!(row(&draw(&mut app), 0).contains("MU/TH/UR 6000"), "{id:?} not windowed");
     }
-    keys(&mut app, &[Key::F(1), Key::Ctrl(']'), Key::Char('f')]);
+    keys(&mut app, &[Key::F(2), Key::Ctrl(']'), Key::Char('f')]);
     assert!(!row(&draw(&mut app), 0).contains("MU/TH/UR 6000"));
-    keys(&mut app, &[Key::F(3)]);
+    keys(&mut app, &[Key::F(4)]);
     assert!(row(&draw(&mut app), 0).contains("MU/TH/UR 6000"));
-    keys(&mut app, &[Key::F(1)]);
+    keys(&mut app, &[Key::F(2)]);
     assert!(!row(&draw(&mut app), 0).contains("MU/TH/UR 6000"));
 }
 
@@ -154,14 +154,7 @@ impl Tab for Cover {
 #[test]
 fn active_tab_told_when_covered() {
     let log = Arc::new(Mutex::new(Vec::new()));
-    let mut app = App::with_tabs(
-        chrome(),
-        [
-            Box::new(Cover(log.clone())),
-            Box::new(PlaceholderTab { id: TabId::Muthur }),
-            Box::new(PlaceholderTab { id: TabId::Shell }),
-        ],
-    );
+    let mut app = App::new(chrome()).with_tab(TabId::Utility, Box::new(Cover(log.clone())));
     let step = |app: &mut App, ks: &[Key]| {
         keys(app, ks);
         draw(app);
@@ -174,20 +167,17 @@ fn active_tab_told_when_covered() {
     assert_eq!(step(&mut app, &[Key::Ctrl(']'), Key::Char('p')]), Some(true), "message overlay");
     assert_eq!(step(&mut app, &[Key::Esc]), Some(false));
     // Hidden behind another folder counts as covered too.
-    assert_eq!(step(&mut app, &[Key::F(2)]), Some(true));
-    assert_eq!(step(&mut app, &[Key::F(1)]), Some(false));
+    assert_eq!(step(&mut app, &[Key::F(1)]), Some(true));
+    assert_eq!(step(&mut app, &[Key::F(2)]), Some(false));
 }
 
 #[test]
 fn override_under_help_overlay_rearms_after_dismissal() {
     use crate::llm::{Stop, StreamEvent};
     let (m, _dir, clock, ran) = fake_muthur_clocked();
-    let mut app = App::with_tabs(
-        chrome(),
-        [Box::new(PlaceholderTab { id: TabId::Utility }), Box::new(m), Box::new(PlaceholderTab { id: TabId::Shell })],
-    );
+    let mut app = App::new(chrome()).with_tab(TabId::Muthur, Box::new(m));
     let tick = |ms: u64| clock.set(clock.get() + Duration::from_millis(ms));
-    keys(&mut app, &[Key::F(2)]);
+    keys(&mut app, &[Key::F(1)]);
     keys(&mut app, &"RESTART NGINX".chars().map(Key::Char).collect::<Vec<_>>());
     keys(&mut app, &[Key::Enter, Key::Ctrl(']'), Key::Char('?')]);
     let input = serde_json::json!({"unit": "nginx"});
@@ -224,15 +214,8 @@ impl Tab for Recorder {
 #[test]
 fn other_keys_go_to_active_tab() {
     let log = Arc::new(Mutex::new(Vec::new()));
-    let mut app = App::with_tabs(
-        chrome(),
-        [
-            Box::new(Recorder(log.clone())),
-            Box::new(PlaceholderTab { id: TabId::Muthur }),
-            Box::new(PlaceholderTab { id: TabId::Shell }),
-        ],
-    );
-    keys(&mut app, &[Key::Char('a'), Key::F(2), Key::Char('b'), Key::F(1), Key::Ctrl(']'), Key::Char(']')]);
+    let mut app = App::new(chrome()).with_tab(TabId::Utility, Box::new(Recorder(log.clone())));
+    keys(&mut app, &[Key::Char('a'), Key::F(1), Key::Char('b'), Key::F(2), Key::Ctrl(']'), Key::Char(']')]);
     assert_eq!(*log.lock().unwrap(), vec![Key::Char('a'), Key::Ctrl(']')]);
 }
 
@@ -261,7 +244,7 @@ fn shell_app(args: &[&str]) -> (App, mpsc::Receiver<PtyEvent>) {
     let shell = ShellTab::new(cfg, HintSlot::default(), move |e| {
         let _ = tx.send(e);
     });
-    (App::assemble(chrome(), crate::utility::UtilityTab::new(), fake_muthur().0, shell), rx)
+    (App::assemble(chrome(), fake_muthur().0, crate::utility::UtilityTab::new(), crate::cargo::CargoTab::new(), shell), rx)
 }
 
 fn screen_text(buf: &Buffer) -> String {
@@ -284,7 +267,7 @@ fn pump(app: &mut App, rx: &mpsc::Receiver<PtyEvent>, done: impl Fn(&str) -> boo
 #[test]
 fn typing_reaches_shell() {
     let (mut app, rx) = shell_app(&[]);
-    keys(&mut app, &[Key::F(3)]);
+    keys(&mut app, &[Key::F(4)]);
     pump(&mut app, &rx, |s| s.contains('$'));
     for c in "echo M\"\"U".chars() {
         app.handle_key(Key::Char(c));
@@ -300,7 +283,7 @@ fn prefix_p_toggles_passthrough_only_on_shell() {
     keys(&mut app, &[Key::Ctrl(']'), Key::Char('p')]);
     assert!(!app.passthrough);
     assert!(screen_text(&draw(&mut app)).contains("NOT AVAILABLE"));
-    keys(&mut app, &[Key::Char('z'), Key::F(3), Key::Ctrl(']'), Key::Char('p')]);
+    keys(&mut app, &[Key::Char('z'), Key::F(4), Key::Ctrl(']'), Key::Char('p')]);
     assert!(app.passthrough);
     assert!(!row(&draw(&mut app), 0).contains("MU/TH/UR 6000"), "shell not forced fullscreen");
     keys(&mut app, &[Key::Ctrl(']'), Key::Char('p')]);
@@ -312,7 +295,7 @@ fn prefix_bracket_enters_scrollback_only_on_shell() {
     let (mut app, rx) = shell_app(&["-c", "seq 1 80; sleep 5"]);
     keys(&mut app, &[Key::Ctrl(']'), Key::Char('[')]);
     assert!(screen_text(&draw(&mut app)).contains("NOT AVAILABLE"));
-    keys(&mut app, &[Key::Char('z'), Key::F(3)]);
+    keys(&mut app, &[Key::Char('z'), Key::F(4)]);
     pump(&mut app, &rx, |s| s.contains("80"));
     keys(&mut app, &[Key::Ctrl(']'), Key::Char('['), Key::PageUp]);
     assert!(screen_text(&draw(&mut app)).contains("SCROLLBACK"));
@@ -321,14 +304,7 @@ fn prefix_bracket_enters_scrollback_only_on_shell() {
 #[test]
 fn double_prefix_sends_literal() {
     let log = Arc::new(Mutex::new(Vec::new()));
-    let mut app = App::with_tabs(
-        chrome(),
-        [
-            Box::new(Recorder(log.clone())),
-            Box::new(PlaceholderTab { id: TabId::Muthur }),
-            Box::new(PlaceholderTab { id: TabId::Shell }),
-        ],
-    );
+    let mut app = App::new(chrome()).with_tab(TabId::Utility, Box::new(Recorder(log.clone())));
     keys(&mut app, &[Key::Ctrl(']'), Key::Ctrl(']')]);
     assert_eq!(*log.lock().unwrap(), vec![Key::Ctrl(']')]);
 }
@@ -336,7 +312,7 @@ fn double_prefix_sends_literal() {
 #[test]
 fn shell_restart_after_exit() {
     let (mut app, rx) = shell_app(&["-c", "echo RUN; exit 0"]);
-    keys(&mut app, &[Key::F(3)]);
+    keys(&mut app, &[Key::F(4)]);
     pump(&mut app, &rx, |s| s.contains("SHELL TERMINATED"));
     app.handle_key(Key::Enter);
     let s = pump(&mut app, &rx, |s| s.contains("RUN") && !s.contains("TERMINATED"));
@@ -347,7 +323,7 @@ fn shell_restart_after_exit() {
 fn cursor_follows_shell() {
     let (mut app, rx) = shell_app(&["-c", "printf ab; sleep 5"]);
     assert_eq!(app.cursor(), None);
-    keys(&mut app, &[Key::F(3)]);
+    keys(&mut app, &[Key::F(4)]);
     pump(&mut app, &rx, |s| s.contains("ab"));
     assert_eq!(app.cursor(), Some(ratatui::layout::Position { x: 22, y: 3 }));
     keys(&mut app, &[Key::Ctrl(']')]);
@@ -357,7 +333,7 @@ fn cursor_follows_shell() {
 #[test]
 fn shell_exit_ends_passthrough() {
     let (mut app, _rx) = shell_app(&["-c", "sleep 5"]);
-    keys(&mut app, &[Key::F(3)]);
+    keys(&mut app, &[Key::F(4)]);
     draw(&mut app);
     keys(&mut app, &[Key::Ctrl(']'), Key::Char('p')]);
     app.on_pty(PtyEvent::Exited);
@@ -367,9 +343,9 @@ fn shell_exit_ends_passthrough() {
 #[test]
 fn f_keys_ignored_in_passthrough() {
     let (mut app, _rx) = shell_app(&["-c", "sleep 5"]);
-    keys(&mut app, &[Key::F(3)]);
+    keys(&mut app, &[Key::F(4)]);
     draw(&mut app);
-    keys(&mut app, &[Key::Ctrl(']'), Key::Char('p'), Key::F(1)]);
+    keys(&mut app, &[Key::Ctrl(']'), Key::Char('p'), Key::F(2)]);
     assert_eq!(app.active, TabId::Shell);
     keys(&mut app, &[Key::Ctrl(']'), Key::Char('p')]);
     assert!(!app.passthrough);
@@ -432,8 +408,8 @@ fn activity_marker_for_background_reply() {
     let shell = ShellTab::new(cfg, HintSlot::default(), move |e| {
         let _ = shell_tx.send(e);
     });
-    let mut app = App::assemble(chrome(), crate::utility::UtilityTab::new(), m, shell);
-    keys(&mut app, &[Key::F(2), Key::Char('H'), Key::Char('I'), Key::Enter, Key::F(1)]);
+    let mut app = App::assemble(chrome(), m, crate::utility::UtilityTab::new(), crate::cargo::CargoTab::new(), shell);
+    keys(&mut app, &[Key::F(1), Key::Char('H'), Key::Char('I'), Key::Enter, Key::F(2)]);
     app.on_llm(1, StreamEvent::Text("OK".into()));
     app.on_llm(1, StreamEvent::Done { stop: Stop::End, model: None, raw: None });
     let buf = draw(&mut app);
@@ -450,12 +426,12 @@ fn hidden_reveal_does_not_drive_tick() {
         HintSlot::default(),
         |_| {},
     );
-    let mut app = App::assemble(chrome(), crate::utility::UtilityTab::new(), m, shell);
-    keys(&mut app, &[Key::F(2), Key::Char('H'), Key::Enter, Key::F(1)]);
+    let mut app = App::assemble(chrome(), m, crate::utility::UtilityTab::new(), crate::cargo::CargoTab::new(), shell);
+    keys(&mut app, &[Key::F(1), Key::Char('H'), Key::Enter, Key::F(2)]);
     app.on_llm(1, StreamEvent::Text("OK".into()));
     app.on_llm(1, StreamEvent::Done { stop: Stop::End, model: None, raw: None });
     assert_eq!(app.tick_interval(), Duration::from_secs(1));
-    app.handle_key(Key::F(2));
+    app.handle_key(Key::F(1));
     assert!(app.tick_interval() < Duration::from_secs(1));
 }
 
@@ -505,10 +481,8 @@ impl Tab for Spy {
     }
 }
 
-fn spy_app(state: &Arc<Mutex<SpyState>>, slot: usize) -> App {
-    let mut tabs: [Box<dyn Tab>; 3] = TabId::ALL.map(|id| Box::new(PlaceholderTab { id }) as Box<dyn Tab>);
-    tabs[slot] = Box::new(Spy(state.clone()));
-    App::with_tabs(chrome(), tabs)
+fn spy_app(state: &Arc<Mutex<SpyState>>, id: TabId) -> App {
+    App::new(chrome()).with_tab(id, Box::new(Spy(state.clone())))
 }
 
 #[test]
@@ -523,7 +497,7 @@ fn splash_draws_instead_of_chrome() {
 #[test]
 fn key_skips_splash_and_is_not_delivered() {
     let st = Arc::new(Mutex::new(SpyState::default()));
-    let mut app = spy_app(&st, 0).with_splash(fresh_splash());
+    let mut app = spy_app(&st, TabId::Utility).with_splash(fresh_splash());
     app.handle_key(Key::Char('x'));
     assert!(!app.splash_active() && app.redraw);
     assert!(st.lock().unwrap().keys.is_empty());
@@ -579,7 +553,7 @@ fn quit_after_splash_quits_on_finish_and_on_skip() {
 #[test]
 fn metrics_reach_splash_and_utility() {
     let st = Arc::new(Mutex::new(SpyState::default()));
-    let mut app = spy_app(&st, 0).with_splash(Splash::new(splash_info(), Instant::now() - Duration::from_millis(2500)));
+    let mut app = spy_app(&st, TabId::Utility).with_splash(Splash::new(splash_info(), Instant::now() - Duration::from_millis(2500)));
     app.on_metrics(Snapshot { cpu_cores: vec![0.0; 16], ..Default::default() });
     assert_eq!(st.lock().unwrap().metrics, 1);
     let buf = draw(&mut app);
@@ -590,7 +564,7 @@ fn metrics_reach_splash_and_utility() {
 #[test]
 fn tabs_are_obscured_during_splash() {
     let st = Arc::new(Mutex::new(SpyState::default()));
-    let mut app = spy_app(&st, 0).with_splash(fresh_splash());
+    let mut app = spy_app(&st, TabId::Utility).with_splash(fresh_splash());
     draw(&mut app);
     assert_eq!(st.lock().unwrap().obscured, Some(true));
 }
@@ -598,7 +572,7 @@ fn tabs_are_obscured_during_splash() {
 #[test]
 fn no_activity_markers_after_splash() {
     let st = Arc::new(Mutex::new(SpyState::default()));
-    let mut app = spy_app(&st, 1).with_splash(fresh_splash());
+    let mut app = spy_app(&st, TabId::Muthur).with_splash(fresh_splash());
     st.lock().unwrap().activity = true;
     draw(&mut app); // splash frame must not consume or light activity
     app.handle_key(Key::Char('x'));
@@ -615,7 +589,7 @@ fn no_splash_is_unchanged() {
 #[test]
 fn shell_learns_passthrough_before_each_pty_event() {
     let st = Arc::new(Mutex::new(SpyState::default()));
-    let mut app = spy_app(&st, TabId::Shell.index());
+    let mut app = spy_app(&st, TabId::Shell);
     app.on_pty(PtyEvent::Output(b"x".to_vec()));
     app.passthrough = true;
     app.on_pty(PtyEvent::Output(b"y".to_vec()));
@@ -637,4 +611,37 @@ fn skipping_before_ready_does_not_ring() {
     keys(&mut app, &[Key::Char('x')]);
     draw(&mut app);
     assert!(!app.take_bell());
+}
+
+#[test]
+fn f_keys_follow_sidebar_order() {
+    assert_eq!(TabId::ALL.map(TabId::label), ["MU/TH/UR", "UTILITY", "CARGO", "SHELL"]);
+    let mut app = App::new(chrome());
+    assert_eq!(app.active, TabId::Utility, "starts on UTILITY");
+    for (n, id) in [(1, TabId::Muthur), (2, TabId::Utility), (3, TabId::Cargo), (4, TabId::Shell)] {
+        keys(&mut app, &[Key::F(n)]);
+        assert_eq!(app.active, id);
+    }
+    let buf = draw(&mut app);
+    assert!(row(&buf, chrome::box_top(TabId::Cargo) + 1).contains("CARGO"));
+    assert!(chrome::box_top(TabId::Shell) + chrome::BOX_H < chrome::FOOTER_ROW);
+}
+
+#[test]
+fn metrics_and_outage_reach_utility_and_cargo() {
+    let u = Arc::new(Mutex::new(SpyState::default()));
+    let c = Arc::new(Mutex::new(SpyState::default()));
+    let mut app = spy_app(&u, TabId::Utility).with_tab(TabId::Cargo, Box::new(Spy(c.clone())));
+    app.on_metrics(Snapshot::default());
+    assert_eq!((u.lock().unwrap().metrics, c.lock().unwrap().metrics), (1, 1));
+
+    let mut app = App::new(chrome())
+        .with_tab(TabId::Utility, Box::new(crate::utility::UtilityTab::new()))
+        .with_tab(TabId::Cargo, Box::new(crate::cargo::CargoTab::new()));
+    app.on_metrics_offline("NO /PROC");
+    for id in [TabId::Utility, TabId::Cargo] {
+        app.active = id;
+        let all = screen_text(&draw(&mut app));
+        assert!(all.contains("TELEMETRY OFFLINE") && all.contains("NO /PROC"), "{id:?}\n{all}");
+    }
 }

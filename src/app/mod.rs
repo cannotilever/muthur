@@ -8,11 +8,12 @@ use crate::metrics::Snapshot;
 use crate::muthur::MuthurTab;
 use crate::shell::{PtyEvent, ShellTab};
 use crate::splash::Splash;
+use crate::cargo::CargoTab;
 use crate::utility::UtilityTab;
 use chrono::NaiveDateTime;
 use ratatui::Frame;
 use ratatui::layout::Position;
-pub use tabs::{PlaceholderTab, Tab, TabId};
+pub use tabs::{PlaceholderTab, TABS, Tab, TabId};
 
 /// What the title bar shows.
 pub struct ChromeView {
@@ -27,7 +28,7 @@ enum Overlay {
 
 pub struct App {
     pub active: TabId,
-    fullscreen: [bool; 3],
+    fullscreen: [bool; TABS],
     prefix: bool,
     overlay: Option<Overlay>,
     show_real_date: bool,
@@ -42,8 +43,8 @@ pub struct App {
     splash: Option<Splash>,
     /// The splash reached `READY.`; the run loop sends BEL.
     bell: bool,
-    tabs: [Box<dyn Tab>; 3],
-    activity: [bool; 3],
+    tabs: [Box<dyn Tab>; TABS],
+    activity: [bool; TABS],
     chrome: ChromeView,
 }
 
@@ -52,9 +53,15 @@ impl App {
         Self::with_tabs(chrome, TabId::ALL.map(|id| Box::new(PlaceholderTab { id }) as Box<dyn Tab>))
     }
 
-    /// The three real tabs.
-    pub fn assemble(chrome: ChromeView, utility: UtilityTab, muthur: MuthurTab, shell: ShellTab) -> Self {
-        Self::with_tabs(chrome, [Box::new(utility), Box::new(muthur), Box::new(shell)])
+    /// The real tabs, in `TabId::ALL` order.
+    pub fn assemble(chrome: ChromeView, muthur: MuthurTab, utility: UtilityTab, cargo: CargoTab, shell: ShellTab) -> Self {
+        Self::with_tabs(chrome, [Box::new(muthur), Box::new(utility), Box::new(cargo), Box::new(shell)])
+    }
+
+    /// Replace one folder's tab (tests: a real tab among placeholders).
+    pub fn with_tab(mut self, id: TabId, tab: Box<dyn Tab>) -> Self {
+        self.tabs[id.index()] = tab;
+        self
     }
 
     pub fn with_splash(mut self, splash: Splash) -> Self {
@@ -77,7 +84,7 @@ impl App {
         for tab in self.tabs.iter_mut() {
             tab.take_activity();
         }
-        self.activity = [false; 3];
+        self.activity = [false; TABS];
         if self.quit_after_splash {
             self.quit = true;
         } else {
@@ -107,14 +114,18 @@ impl App {
         if let Some(sp) = &mut self.splash {
             sp.on_metrics(&s);
         }
-        self.tabs[TabId::Utility.index()].on_metrics(&s);
+        for id in [TabId::Utility, TabId::Cargo] {
+            self.tabs[id.index()].on_metrics(&s);
+        }
     }
 
     pub fn on_metrics_offline(&mut self, why: &str) {
         if let Some(sp) = &mut self.splash {
             sp.on_metrics_offline();
         }
-        self.tabs[TabId::Utility.index()].on_metrics_offline(why);
+        for id in [TabId::Utility, TabId::Cargo] {
+            self.tabs[id.index()].on_metrics_offline(why);
+        }
     }
 
     pub fn on_pty(&mut self, ev: PtyEvent) {
@@ -135,10 +146,10 @@ impl App {
         self.tabs[self.active.index()].cursor()
     }
 
-    pub fn with_tabs(chrome: ChromeView, tabs: [Box<dyn Tab>; 3]) -> Self {
+    pub fn with_tabs(chrome: ChromeView, tabs: [Box<dyn Tab>; TABS]) -> Self {
         Self {
             active: TabId::Utility,
-            fullscreen: [false; 3],
+            fullscreen: [false; TABS],
             prefix: false,
             overlay: None,
             show_real_date: false,
@@ -149,7 +160,7 @@ impl App {
             splash: None,
             bell: false,
             tabs,
-            activity: [false; 3],
+            activity: [false; TABS],
             chrome,
         }
     }
@@ -216,8 +227,8 @@ impl App {
         }
         match key {
             // The screen belongs to the shell in passthrough: no tab switching.
-            Key::F(1..=3) if self.passthrough => {}
-            Key::F(n @ 1..=3) => self.switch(TabId::ALL[n as usize - 1]),
+            Key::F(1..=4) if self.passthrough => {}
+            Key::F(n @ 1..=4) => self.switch(TabId::ALL[n as usize - 1]),
             Key::Ctrl(']') => self.prefix = true,
             k => self.tabs[self.active.index()].handle_key(&k),
         }

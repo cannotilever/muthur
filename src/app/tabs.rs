@@ -1,4 +1,4 @@
-//! Tabs: the three folders of the personal terminal.
+//! Tabs: the four folders of the personal terminal.
 
 use crate::input::Key;
 use crate::shell::PtyEvent;
@@ -11,18 +11,24 @@ use std::time::Duration;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TabId {
-    Utility,
     Muthur,
+    Utility,
+    Cargo,
     Shell,
 }
 
+/// How many folders there are.
+pub const TABS: usize = TabId::ALL.len();
+
 impl TabId {
-    pub const ALL: [TabId; 3] = [TabId::Utility, TabId::Muthur, TabId::Shell];
+    /// Sidebar order, which is also F-key order (F1 first).
+    pub const ALL: [TabId; 4] = [TabId::Muthur, TabId::Utility, TabId::Cargo, TabId::Shell];
 
     pub fn label(self) -> &'static str {
         match self {
-            TabId::Utility => "UTILITY",
             TabId::Muthur => "MU/TH/UR",
+            TabId::Utility => "UTILITY",
+            TabId::Cargo => "CARGO",
             TabId::Shell => "SHELL",
         }
     }
@@ -56,9 +62,9 @@ pub trait Tab {
     /// Whether the PTY's output is currently going to the wire untranslated
     /// (Shell only): the real terminal then answers queries itself.
     fn set_passthrough(&mut self, _on: bool) {}
-    /// A new metrics snapshot (Utility only).
+    /// A new metrics snapshot (Utility and Cargo).
     fn on_metrics(&mut self, _s: &crate::metrics::Snapshot) {}
-    /// The metrics source is failing (Utility only).
+    /// The metrics source is failing (Utility and Cargo).
     fn on_metrics_offline(&mut self, _why: &str) {}
     /// A streamed LLM event for request `_req_id` (MU/TH/UR only).
     fn on_llm(&mut self, _req_id: u64, _ev: crate::llm::StreamEvent) {}

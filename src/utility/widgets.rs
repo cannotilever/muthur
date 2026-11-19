@@ -1,8 +1,10 @@
 //! VT100-safe gauges and sparklines. `█` becomes a reverse-video space on the
 //! wire; the scan-line glyphs `⎽⎼─⎻⎺` are DEC Special Graphics.
 
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Alignment, Rect};
 use ratatui::text::Line;
-use ratatui::widgets::Block;
+use ratatui::widgets::{Block, Paragraph, Widget};
 
 const LEVELS: [char; 5] = ['⎽', '⎼', '─', '⎻', '⎺'];
 const MIN_BAR: usize = 4;
@@ -48,6 +50,16 @@ pub fn sparkline(values: &[f32], max: f32, width: u16) -> String {
 /// A bordered panel titled ` TITLE `.
 pub fn panel(title: &str) -> Block<'static> {
     Block::bordered().title(format!(" {} ", title.to_uppercase()))
+}
+
+/// A panel filling `area` with `lines` centered in it (status messages).
+pub fn message_panel(title: &str, lines: Vec<Line<'static>>, area: Rect, buf: &mut Buffer) {
+    let block = panel(title);
+    let inner = block.inner(area);
+    block.render(area, buf);
+    let h = (lines.len() as u16).min(inner.height);
+    let mid = Rect { y: inner.y + inner.height.saturating_sub(h) / 2, height: h, ..inner };
+    Paragraph::new(lines).alignment(Alignment::Center).render(mid, buf);
 }
 
 #[cfg(test)]

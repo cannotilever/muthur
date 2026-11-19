@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod app;
 pub mod backend;
+pub mod cargo;
 pub mod chatlog;
 pub mod config;
 pub mod dialect;

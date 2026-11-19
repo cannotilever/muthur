@@ -64,8 +64,11 @@ pub struct LocalSource {
     containers: Option<Vec<Container>>,
 }
 
+/// `--all`: stopped and crashed containers are what CARGO must not hide.
+const CONTAINER_ARGS: [&str; 4] = ["ps", "--all", "--format", CONTAINER_FORMAT];
+
 fn containers_from(cmd: &str) -> Option<Vec<Container>> {
-    run_probe(cmd, &["ps", "--format", CONTAINER_FORMAT], PROBE_TIMEOUT).map(|o| parse_containers(&o))
+    run_probe(cmd, &CONTAINER_ARGS, PROBE_TIMEOUT).map(|o| parse_containers(&o))
 }
 
 impl LocalSource {
@@ -185,6 +188,11 @@ impl MetricsSource for LocalSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn container_probe_includes_stopped() {
+        assert!(CONTAINER_ARGS.contains(&"--all"), "{CONTAINER_ARGS:?}");
+    }
 
     #[test]
     fn snapshot_has_basics() {
