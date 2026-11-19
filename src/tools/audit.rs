@@ -45,11 +45,13 @@ struct Record<'a> {
 }
 
 impl AuditLog {
-    /// Creates the parent directory; the file itself is created 0600 on first append.
+    /// Creates the parent directory and opens (creating 0600) the file for
+    /// appending; fails if it cannot, so the caller falls back to `offline()`.
     pub fn open(path: PathBuf) -> anyhow::Result<Self> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
+        std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(&path)?;
         let needs_newline = match std::fs::read(&path) {
             Ok(bytes) => bytes.last().is_some_and(|b| *b != b'\n'),
             Err(_) => false,
@@ -156,6 +158,31 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2);
         assert!(serde_json::from_str::<serde_json::Value>(lines[1]).is_ok());
+    }
+
+    #[test]
+    fn open_fails_when_file_unwritable() {
+        let d = tempfile::tempdir().unwrap();
+        // The path is a directory: it cannot be opened for appending.
+        let p = d.path().join("audit.jsonl");
+        std::fs::create_dir(&p).unwrap();
+        assert!(AuditLog::open(p).is_err());
+        // A read-only existing file.
+        let p = d.path().join("ro.jsonl");
+        std::fs::write(&p, "").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o400)).unwrap();
+        if std::fs::OpenOptions::new().append(true).open(&p).is_err() {
+            // Not root: the permission bits are enforced.
+            assert!(AuditLog::open(p).is_err());
+        }
+    }
+
+    #[test]
+    fn open_creates_file_0600() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("audit.jsonl");
+        AuditLog::open(p.clone()).unwrap();
+        assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! MU/TH/UR tool turns: carrying out `agent::Effect`s and the operator override.
 
 use super::{unable, MuthurTab, State, NOTE_TRUNCATED};
-use crate::agent::Effect;
+use crate::agent::{Effect, ABORTED_ISSUED};
 use crate::input::Key;
 use crate::llm::{LlmError, Stop, ToolResult};
 use crate::tools::exec::ToolOutcome;
@@ -13,6 +13,9 @@ const AUDIT_OFFLINE: &str = "AUDIT LOG OFFLINE";
 
 /// The transcript note redisplayed for a logged tool result.
 pub(super) fn tool_note(r: &ToolResult) -> String {
+    if r.content.starts_with(ABORTED_ISSUED) {
+        return format!("ACCESS INTERRUPTED: {}", r.label);
+    }
     let denied = ["NOT AUTHORIZED", "DENIED", "ABORTED"].iter().any(|p| r.content.starts_with(p));
     format!("{}: {}", if denied { "ACCESS DENIED" } else { "ACCESSING" }, r.label)
 }
@@ -38,8 +41,14 @@ impl MuthurTab {
         self.apply(effects, Some(&stop));
     }
 
-    /// A tool outcome for request `req_id`; stale ones are ignored.
+    /// A tool outcome for request `req_id`. The late outcome of a call aborted
+    /// while running is audited and nothing more; other stale ones are ignored.
     pub(super) fn tool_done(&mut self, req_id: u64, call_id: &str, outcome: ToolOutcome) {
+        if let Some(i) = self.orphans.iter().position(|(r, o)| *r == req_id && o.call_id == call_id) {
+            let (_, orphan) = self.orphans.swap_remove(i);
+            self.record_audit(&orphan.audit(outcome));
+            return;
+        }
         if req_id != self.req_id {
             return;
         }
@@ -73,7 +82,7 @@ impl MuthurTab {
             return;
         };
         self.state = State::Tools;
-        let effects = turn.on_confirm(call_id, yes);
+        let effects = turn.on_confirm(call_id, yes, self.audit.is_online());
         self.apply(effects, None);
     }
 
@@ -89,7 +98,7 @@ impl MuthurTab {
     /// Resolve any open round as aborted (logged and audited); the caller ends the inquiry.
     pub(super) fn abort_turn(&mut self) {
         if let Some(mut turn) = self.turn.take() {
-            let effects = turn.abort().into_iter().filter(|e| !matches!(e, Effect::Finished { .. })).collect();
+            let effects = turn.abort(self.tools.elevate()).into_iter().filter(|e| !matches!(e, Effect::Finished { .. })).collect();
             self.apply(effects, None);
         }
     }
@@ -134,15 +143,19 @@ impl MuthurTab {
                         tracing::error!("chat log: cannot record tool results: {e}");
                     }
                 }
-                Effect::Audit(entry) => {
-                    let ts = (self.deps.timestamp)();
-                    if let Err(e) = self.audit.append(&entry, &ts) {
-                        tracing::error!("audit log: cannot record tool call: {e}");
-                        self.status_flash = Some(AUDIT_OFFLINE.into());
-                    }
-                }
+                Effect::Audit(entry) => self.record_audit(&entry),
+                // Its command is still running; its outcome comes back for this request.
+                Effect::Orphan(o) => self.orphans.push((self.req_id, o)),
                 Effect::Finished { truncated } => self.finish(stop, truncated),
             }
+        }
+    }
+
+    fn record_audit(&mut self, entry: &crate::tools::audit::AuditEntry) {
+        let ts = (self.deps.timestamp)();
+        if let Err(e) = self.audit.append(entry, &ts) {
+            tracing::error!("audit log: cannot record tool call: {e}");
+            self.status_flash = Some(AUDIT_OFFLINE.into());
         }
     }
 

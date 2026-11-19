@@ -3,7 +3,8 @@
 
 use crate::llm::{Stop, ToolResult};
 use crate::tools::audit::{AuditEntry, Decision};
-use crate::tools::exec::ToolOutcome;
+use crate::config::Elevate;
+use crate::tools::exec::{argv_for, ToolOutcome};
 use crate::tools::{Invocation, ToolDefs};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -21,11 +22,42 @@ pub enum Effect {
     Note(String),
     LogTool(Vec<ToolResult>),
     Audit(AuditEntry),
+    /// A running call was aborted; its command cannot be cancelled, so its
+    /// late outcome is still to be audited (see `Orphan::audit`).
+    Orphan(Orphan),
     Finished { truncated: bool },
+}
+
+/// A call aborted while its command was running.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Orphan {
+    pub call_id: String,
+    pub tool: String,
+    pub args: serde_json::Value,
+    pub invocation: Invocation,
+}
+
+impl Orphan {
+    /// The audit record of the orphan's real outcome, once it arrives.
+    pub fn audit(&self, outcome: ToolOutcome) -> AuditEntry {
+        let tier = self.invocation.tier();
+        AuditEntry {
+            tool: self.tool.clone(),
+            args: self.args.clone(),
+            tier,
+            decision: if tier == 2 { Decision::Confirmed } else { Decision::Auto },
+            argv: outcome.argv,
+            exit: outcome.exit,
+            ms: outcome.ms,
+            output: outcome.content,
+        }
+    }
 }
 
 const DENIED: &str = "DENIED BY OPERATOR";
 const ABORTED: &str = "ABORTED BY OPERATOR";
+/// A confirmed tier-2 command was already handed to the system when aborted.
+pub const ABORTED_ISSUED: &str = "ABORTED BY OPERATOR — COMMAND ALREADY ISSUED, OUTCOME UNKNOWN";
 const AUDIT_OFFLINE: &str = "AUDIT LOG OFFLINE";
 const ROUND_LIMIT: &str = "ROUND LIMIT";
 const DUPLICATE_ID: &str = "duplicate call id";
@@ -36,7 +68,7 @@ enum State {
     Queued(Invocation),
     /// Tier 2, the operator is being asked.
     Awaiting(Invocation),
-    Running { confirmed: bool },
+    Running { confirmed: bool, inv: Invocation },
     Done,
 }
 
@@ -71,7 +103,7 @@ impl Turn {
     pub fn on_done(&mut self, stop: &Stop, calls: Vec<Call>, defs: &ToolDefs, audit_online: bool) -> Vec<Effect> {
         // A round still open when a new stream ends is closed out as aborted.
         let mut out = Vec::new();
-        self.abort_open(&mut out);
+        self.abort_open(defs.elevate(), &mut out);
         if *stop != Stop::ToolUse || calls.is_empty() {
             out.push(Effect::Finished { truncated: false });
             return out;
@@ -97,8 +129,8 @@ impl Turn {
                 Ok(inv) if tier == 2 => slot.state = State::Queued(inv),
                 Ok(inv) => {
                     out.push(Effect::Note(format!("ACCESSING: {}", slot.label)));
-                    out.push(Effect::Run { call_id: slot.call.id.clone(), invocation: inv });
-                    slot.state = State::Running { confirmed: false };
+                    out.push(Effect::Run { call_id: slot.call.id.clone(), invocation: inv.clone() });
+                    slot.state = State::Running { confirmed: false, inv };
                 }
             }
             self.slots.push(slot);
@@ -109,7 +141,7 @@ impl Turn {
 
     pub fn on_tool_done(&mut self, call_id: &str, outcome: ToolOutcome) -> Vec<Effect> {
         let Some(slot) = self.live_slot(call_id) else { return vec![] };
-        let State::Running { confirmed } = slot.state else { return vec![] };
+        let State::Running { confirmed, .. } = slot.state else { return vec![] };
         let decision = if confirmed { Decision::Confirmed } else { Decision::Auto };
         let mut out = vec![Effect::Audit(AuditEntry {
             tool: slot.call.name.clone(),
@@ -127,17 +159,21 @@ impl Turn {
         out
     }
 
-    pub fn on_confirm(&mut self, call_id: &str, yes: bool) -> Vec<Effect> {
+    /// The operator's answer. `audit_online` is checked again here: a tier-2
+    /// command never runs unless its audit record can be written.
+    pub fn on_confirm(&mut self, call_id: &str, yes: bool, audit_online: bool) -> Vec<Effect> {
         let Some(slot) = self.live_slot(call_id) else { return vec![] };
         if !matches!(slot.state, State::Awaiting(_)) {
             return vec![];
         }
         let State::Awaiting(inv) = std::mem::replace(&mut slot.state, State::Done) else { unreachable!() };
         let mut out = Vec::new();
-        if yes {
+        if yes && !audit_online {
+            slot.resolve_err(Decision::Rejected, format!("NOT AUTHORIZED: {AUDIT_OFFLINE}"), &mut out);
+        } else if yes {
             out.push(Effect::Note(format!("ACCESSING: {}", slot.label)));
-            out.push(Effect::Run { call_id: slot.call.id.clone(), invocation: inv });
-            slot.state = State::Running { confirmed: true };
+            out.push(Effect::Run { call_id: slot.call.id.clone(), invocation: inv.clone() });
+            slot.state = State::Running { confirmed: true, inv };
         } else {
             slot.resolve_err(Decision::Denied, DENIED.into(), &mut out);
         }
@@ -145,9 +181,10 @@ impl Turn {
         out
     }
 
-    pub fn abort(&mut self) -> Vec<Effect> {
+    /// Ctrl-C. `elevate` names the command line an interrupted tier-2 call was issued with.
+    pub fn abort(&mut self, elevate: Elevate) -> Vec<Effect> {
         let mut out = Vec::new();
-        self.abort_open(&mut out);
+        self.abort_open(elevate, &mut out);
         out.push(Effect::Finished { truncated: false });
         out
     }
@@ -159,14 +196,32 @@ impl Turn {
     }
 
     /// Resolves every unresolved call of the open round as aborted, then logs
-    /// the round. Does nothing when no round is open.
-    fn abort_open(&mut self, out: &mut Vec<Effect>) {
+    /// the round. Does nothing when no round is open. Running calls cannot be
+    /// cancelled: each becomes an `Orphan`, and a confirmed tier-2 one is
+    /// recorded as issued with its outcome unknown.
+    fn abort_open(&mut self, elevate: Elevate, out: &mut Vec<Effect>) {
         if self.slots.is_empty() {
             return;
         }
         for slot in &mut self.slots {
-            if slot.result.is_none() {
-                slot.resolve(Decision::Aborted, ABORTED.into(), out);
+            if slot.result.is_some() {
+                continue;
+            }
+            let running = match std::mem::replace(&mut slot.state, State::Done) {
+                State::Running { confirmed, inv } => Some((confirmed, inv)),
+                _ => None,
+            };
+            match running {
+                Some((true, inv)) => {
+                    out.push(Effect::Note(format!("ACCESS INTERRUPTED: {}", slot.label)));
+                    slot.resolve_with(Decision::Aborted, argv_for(&inv, elevate), ABORTED_ISSUED.into(), out);
+                    out.push(Effect::Orphan(slot.orphan(inv)));
+                }
+                Some((false, inv)) => {
+                    slot.resolve(Decision::Aborted, ABORTED.into(), out);
+                    out.push(Effect::Orphan(slot.orphan(inv)));
+                }
+                None => slot.resolve(Decision::Aborted, ABORTED.into(), out),
             }
         }
         let results = self.slots.drain(..).filter_map(|s| s.result).collect();
@@ -232,14 +287,23 @@ impl Slot {
         }
     }
 
+    fn orphan(&self, invocation: Invocation) -> Orphan {
+        Orphan { call_id: self.call.id.clone(), tool: self.call.name.clone(), args: self.call.input.clone(), invocation }
+    }
+
     /// Resolves with an error result and an audit entry (no outcome attached).
     fn resolve(&mut self, decision: Decision, text: String, out: &mut Vec<Effect>) {
+        self.resolve_with(decision, None, text, out);
+    }
+
+    /// `resolve`, with the argv of a command already issued.
+    fn resolve_with(&mut self, decision: Decision, argv: Option<Vec<String>>, text: String, out: &mut Vec<Effect>) {
         out.push(Effect::Audit(AuditEntry {
             tool: self.call.name.clone(),
             args: self.call.input.clone(),
             tier: self.tier,
             decision,
-            argv: None,
+            argv,
             exit: None,
             ms: 0,
             output: text.clone(),
@@ -258,7 +322,7 @@ impl Slot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ServiceLists, ToolsSection};
+    use crate::config::{Elevate, ServiceLists, ToolsSection};
     use crate::tools::Verb;
     use serde_json::{Value, json};
 
@@ -357,7 +421,7 @@ mod tests {
         assert_eq!(e, vec![Effect::Confirm { call_id: "c1".into(), prompt: "RESTART NGINX.SERVICE".into() }]);
         assert_eq!(t.awaiting_confirm(), Some(("c1", "RESTART NGINX.SERVICE")));
         assert!(!t.tools_running());
-        let e = t.on_confirm("c1", true);
+        let e = t.on_confirm("c1", true, true);
         assert_eq!(
             e,
             vec![
@@ -377,7 +441,7 @@ mod tests {
         // No (second turn).
         let mut t = Turn::new(8);
         t.on_done(&Stop::ToolUse, vec![restart("c1")], &defs(), true);
-        let e = t.on_confirm("c1", false);
+        let e = t.on_confirm("c1", false, true);
         assert_eq!(
             e,
             vec![
@@ -414,8 +478,8 @@ mod tests {
         );
         assert_eq!(t.awaiting_confirm(), Some(("c1", "RESTART NGINX.SERVICE")));
         // Answering for the wrong call does nothing.
-        assert_eq!(t.on_confirm("c3", true), vec![]);
-        let e = t.on_confirm("c1", true);
+        assert_eq!(t.on_confirm("c3", true, true), vec![]);
+        let e = t.on_confirm("c1", true, true);
         assert_eq!(
             e,
             vec![
@@ -431,7 +495,7 @@ mod tests {
         assert!(!e.iter().any(|x| matches!(x, Effect::LogTool(_) | Effect::Spawn { .. })));
         let e = t.on_tool_done("c1", ok("restarted"));
         assert!(!e.iter().any(|x| matches!(x, Effect::LogTool(_) | Effect::Spawn { .. })));
-        let e = t.on_confirm("c3", false);
+        let e = t.on_confirm("c3", false, true);
         let n = e.len();
         assert!(matches!(e[n - 3], Effect::Audit(AuditEntry { decision: Decision::Denied, .. })), "{e:?}");
         let Effect::LogTool(r) = &e[n - 2] else { panic!("{e:?}") };
@@ -548,9 +612,15 @@ mod tests {
             })
         };
         assert_eq!(
-            t.abort(),
+            t.abort(Elevate::Sudo),
             vec![
                 aborted("ship_status", json!({}), 1),
+                Effect::Orphan(Orphan {
+                    call_id: "c1".into(),
+                    tool: "ship_status".into(),
+                    args: json!({}),
+                    invocation: Invocation::ShipStatus,
+                }),
                 aborted("restart_service", json!({"unit": "nginx"}), 2),
                 Effect::LogTool(vec![
                     result("c1", "ship_status", "ABORTED BY OPERATOR", true, "SHIP STATUS"),
@@ -564,7 +634,93 @@ mod tests {
         // The late outcome of the aborted call is ignored.
         assert_eq!(t.on_tool_done("c1", ok("late")), vec![]);
         // With no open round, abort just finishes.
-        assert_eq!(Turn::new(8).abort(), vec![Effect::Finished { truncated: false }]);
+        assert_eq!(Turn::new(8).abort(Elevate::Sudo), vec![Effect::Finished { truncated: false }]);
+    }
+
+    #[test]
+    fn abort_while_confirmed_tier2_runs_is_interrupted_not_denied() {
+        let mut t = Turn::new(8);
+        t.on_done(&Stop::ToolUse, vec![restart("c1")], &defs(), true);
+        t.on_confirm("c1", true, true);
+        assert!(t.tools_running());
+        let e = t.abort(Elevate::Doas);
+        let unknown = "ABORTED BY OPERATOR — COMMAND ALREADY ISSUED, OUTCOME UNKNOWN";
+        let argv: Vec<String> =
+            ["doas", "-n", "/usr/bin/systemctl", "restart", "nginx.service"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            e,
+            vec![
+                Effect::Note("ACCESS INTERRUPTED: RESTART NGINX.SERVICE".into()),
+                Effect::Audit(AuditEntry {
+                    tool: "restart_service".into(),
+                    args: json!({"unit": "nginx"}),
+                    tier: 2,
+                    decision: Decision::Aborted,
+                    argv: Some(argv.clone()),
+                    exit: None,
+                    ms: 0,
+                    output: unknown.into(),
+                }),
+                Effect::Orphan(Orphan {
+                    call_id: "c1".into(),
+                    tool: "restart_service".into(),
+                    args: json!({"unit": "nginx"}),
+                    invocation: restart_inv(),
+                }),
+                Effect::LogTool(vec![result("c1", "restart_service", unknown, true, "RESTART NGINX.SERVICE")]),
+                Effect::Finished { truncated: false },
+            ]
+        );
+        // The late real outcome becomes a second audit entry for the orphan.
+        let Effect::Orphan(o) = &e[2] else { panic!() };
+        let late = ToolOutcome {
+            content: "COMPLETED: RESTART NGINX.SERVICE".into(),
+            is_error: false,
+            argv: Some(argv.clone()),
+            exit: Some(json!(0)),
+            ms: 900,
+        };
+        assert_eq!(
+            o.audit(late),
+            AuditEntry {
+                tool: "restart_service".into(),
+                args: json!({"unit": "nginx"}),
+                tier: 2,
+                decision: Decision::Confirmed,
+                argv: Some(argv),
+                exit: Some(json!(0)),
+                ms: 900,
+                output: "COMPLETED: RESTART NGINX.SERVICE".into(),
+            }
+        );
+        // The turn itself ignores it.
+        assert_eq!(t.on_tool_done("c1", ok("late")), vec![]);
+        // A tier-1 orphan's late outcome is audited as auto.
+        let o = Orphan { call_id: "c2".into(), tool: "ship_status".into(), args: json!({}), invocation: Invocation::ShipStatus };
+        assert_eq!((o.audit(ok("x")).decision, o.audit(ok("x")).tier), (Decision::Auto, 1));
+    }
+
+    #[test]
+    fn audit_offline_at_confirmation_refuses_tier2() {
+        let mut t = Turn::new(8);
+        t.on_done(&Stop::ToolUse, vec![restart("c1")], &defs(), true);
+        assert_eq!(t.awaiting_confirm(), Some(("c1", "RESTART NGINX.SERVICE")));
+        // The audit log went offline while the operator was being asked.
+        let e = t.on_confirm("c1", true, false);
+        assert!(!e.iter().any(|x| matches!(x, Effect::Run { .. })), "{e:?}");
+        assert_eq!(e[0], Effect::Note("ACCESS DENIED: RESTART NGINX.SERVICE".into()));
+        let a = audits(&e);
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].decision, Decision::Rejected);
+        assert_eq!(a[0].output, "NOT AUTHORIZED: AUDIT LOG OFFLINE");
+        let Effect::LogTool(r) = &e[e.len() - 2] else { panic!("{e:?}") };
+        assert_eq!(r[0].content, "NOT AUTHORIZED: AUDIT LOG OFFLINE");
+        assert_eq!(e[e.len() - 1], Effect::Spawn { forced_final: false });
+        assert!(!t.tools_running());
+        // Saying no while offline is still a plain denial.
+        let mut t = Turn::new(8);
+        t.on_done(&Stop::ToolUse, vec![restart("c1")], &defs(), true);
+        assert_eq!(audits(&t.on_confirm("c1", false, false))[0].decision, Decision::Denied);
     }
 
     #[test]
@@ -613,7 +769,7 @@ mod tests {
             assert_eq!(audits(&e)[0].output, "NOT AUTHORIZED: duplicate call id");
             assert_eq!(e.last(), Some(&Effect::Confirm { call_id: id.into(), prompt: "RESTART NGINX.SERVICE".into() }));
             assert_eq!(t.awaiting_confirm(), Some((id, "RESTART NGINX.SERVICE")));
-            assert_eq!(t.on_confirm(id, true)[1], Effect::Run { call_id: id.into(), invocation: restart_inv() });
+            assert_eq!(t.on_confirm(id, true, true)[1], Effect::Run { call_id: id.into(), invocation: restart_inv() });
             let e = t.on_tool_done(id, ok("restarted"));
             assert_eq!(audits(&e)[0].decision, Decision::Confirmed);
             let Effect::LogTool(r) = &e[e.len() - 2] else { panic!("{e:?}") };
@@ -629,7 +785,10 @@ mod tests {
         let mut t = Turn::new(8);
         t.on_done(&Stop::ToolUse, vec![status("c1"), restart("c2")], &defs(), true);
         let e = t.on_done(&Stop::ToolUse, vec![call("c3", "ship_status", json!({}))], &defs(), true);
-        assert_eq!(audits(&e[..2]).iter().map(|a| a.decision).collect::<Vec<_>>(), [Decision::Aborted; 2]);
+        assert_eq!(audits(&e).iter().take(2).map(|a| a.decision).collect::<Vec<_>>(), [Decision::Aborted; 2]);
+        // The running tier-1 call is orphaned; the queued tier-2 call never ran.
+        assert!(matches!(&e[1], Effect::Orphan(o) if o.call_id == "c1"), "{e:?}");
+        let e = &e[1..];
         assert_eq!(
             e[2],
             Effect::LogTool(vec![
@@ -646,8 +805,9 @@ mod tests {
         // A final answer over an open round: logged as aborted, then Finished.
         let e = t.on_done(&Stop::End, vec![], &defs(), true);
         assert_eq!(audits(&e).len(), 1);
-        assert_eq!(e[1], Effect::LogTool(vec![result("c3", "ship_status", "ABORTED BY OPERATOR", true, "SHIP STATUS")]));
-        assert_eq!(e[2], Effect::Finished { truncated: false });
+        assert!(matches!(&e[1], Effect::Orphan(o) if o.call_id == "c3"), "{e:?}");
+        assert_eq!(e[2], Effect::LogTool(vec![result("c3", "ship_status", "ABORTED BY OPERATOR", true, "SHIP STATUS")]));
+        assert_eq!(e[3], Effect::Finished { truncated: false });
     }
 
     #[test]

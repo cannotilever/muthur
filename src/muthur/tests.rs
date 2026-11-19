@@ -735,3 +735,91 @@ fn answer_without_turn_returns_ready() {
     h.t.handle_key(&Key::Char('y'));
     assert_eq!(h.t.state, State::Ready);
 }
+
+fn audit_records(h: &H) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(&h.audit_path).unwrap_or_default().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+}
+
+#[test]
+fn ctrl_c_while_confirmed_restart_runs_is_audited_truthfully() {
+    let mut h = harness();
+    restart_prompt(&mut h);
+    h.tick(1100);
+    h.t.handle_key(&Key::Char('y'));
+    assert_eq!(h.ran.borrow().len(), 1);
+    h.t.handle_key(&Key::Ctrl('c'));
+    assert_eq!(h.t.state, State::Ready);
+    let unknown = "ABORTED BY OPERATOR — COMMAND ALREADY ISSUED, OUTCOME UNKNOWN";
+    let a = audit_records(&h);
+    assert_eq!(a.len(), 1, "{a:?}");
+    assert_eq!(a[0]["decision"], "aborted");
+    assert_eq!(a[0]["argv"], json!(["sudo", "-n", "/usr/bin/systemctl", "restart", "nginx.service"]));
+    assert_eq!(a[0]["output"], unknown);
+    let recs = records(&h);
+    let n = recs.len();
+    assert_eq!(recs[n - 2]["results"][0]["content"], unknown);
+    assert_eq!(recs[n - 1]["stop"], "interrupted");
+    let shown = text(&mut h.t);
+    assert!(shown.contains("ACCESS INTERRUPTED: RESTART NGINX.SERVICE"), "{shown}");
+    assert!(!shown.contains("ACCESS DENIED"), "{shown}");
+    // The command's real outcome arrives later: audited, nothing else.
+    let real = ToolOutcome {
+        content: "COMPLETED: RESTART NGINX.SERVICE".into(),
+        is_error: false,
+        argv: Some(["sudo", "-n", "/usr/bin/systemctl", "restart", "nginx.service"].map(String::from).to_vec()),
+        exit: Some(json!(0)),
+        ms: 850,
+    };
+    let transcript = h.t.transcript.len();
+    h.t.on_tool_done(1, "c1".into(), real.clone());
+    let a = audit_records(&h);
+    assert_eq!(a.len(), 2, "{a:?}");
+    assert_eq!(a[1]["decision"], "confirmed");
+    assert_eq!(a[1]["tool"], "restart_service");
+    assert_eq!(a[1]["tier"], 2);
+    assert_eq!(a[1]["exit"], 0);
+    assert_eq!(a[1]["ms"], 850);
+    assert_eq!(a[1]["argv"], a[0]["argv"]);
+    assert_eq!(a[1]["output"], "COMPLETED: RESTART NGINX.SERVICE");
+    assert_eq!(records(&h).len(), n, "no chat log record for the orphan");
+    assert_eq!(h.t.transcript.len(), transcript);
+    assert_eq!(h.sent.borrow().len(), 1);
+    assert_eq!(h.t.state, State::Ready);
+    // Only once.
+    h.t.on_tool_done(1, "c1".into(), real);
+    assert_eq!(audit_records(&h).len(), 2);
+    // History shows the interrupted note.
+    let r = ToolResult { id: "c1".into(), name: "restart_service".into(), content: unknown.into(), is_error: true, label: "RESTART NGINX.SERVICE".into() };
+    assert_eq!(turn::tool_note(&r), "ACCESS INTERRUPTED: RESTART NGINX.SERVICE");
+}
+
+#[test]
+fn ctrl_c_while_tier1_runs_orphan_audited_as_auto() {
+    let mut h = harness();
+    submit(&mut h, "status");
+    tool_use(&mut h, 1, &[("c1", "service_status", json!({"unit": "nginx"}))]);
+    h.t.handle_key(&Key::Ctrl('c'));
+    let a = audit_records(&h);
+    assert_eq!((a.len(), &a[0]["output"], &a[0]["argv"]), (1, &json!("ABORTED BY OPERATOR"), &json!(null)));
+    let shown = text(&mut h.t);
+    assert!(!shown.contains("ACCESS INTERRUPTED"), "{shown}");
+    h.t.on_tool_done(1, "c1".into(), ok("active"));
+    let a = audit_records(&h);
+    assert_eq!(a.len(), 2);
+    assert_eq!(a[1]["decision"], "auto");
+    assert_eq!(a[1]["output"], "active");
+}
+
+#[test]
+fn audit_offline_between_prompt_and_yes_refuses() {
+    let mut h = harness();
+    restart_prompt(&mut h);
+    // The audit log goes offline while the prompt is up.
+    h.t.audit = AuditLog::offline();
+    h.tick(1100);
+    h.t.handle_key(&Key::Char('y'));
+    assert!(h.ran.borrow().is_empty(), "tier 2 must not run unaudited");
+    assert!(text(&mut h.t).contains("ACCESS DENIED: RESTART NGINX.SERVICE"));
+    assert_eq!(h.sent.borrow().len(), 2);
+    assert_eq!(last_results(&h)[0].content, "NOT AUTHORIZED: AUDIT LOG OFFLINE");
+}

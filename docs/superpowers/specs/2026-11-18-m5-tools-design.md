@@ -118,6 +118,7 @@ Every result goes back to the model as `{content: text, is_error: bool}`.
 | unknown tool, invalid or unlisted argument | `NOT AUTHORIZED: <reason>` (never executed) | true |
 | operator said no | `DENIED BY OPERATOR` | true |
 | Ctrl-C before the call completed | `ABORTED BY OPERATOR` | true |
+| Ctrl-C while a confirmed tier-2 command is running | `ABORTED BY OPERATOR — COMMAND ALREADY ISSUED, OUTCOME UNKNOWN` | true |
 
 ### Runner
 
@@ -140,6 +141,7 @@ pub enum Effect {
     Note(String),                              // transcript line: "ACCESSING: …" / "ACCESS DENIED: …"
     LogTool(Vec<ToolResult>),                  // append the `tool` record (all results of the round)
     Audit(AuditEntry),
+    Orphan(Orphan),                            // a running call was aborted; its outcome is still to be audited
     Finished,
 }
 ```
@@ -148,8 +150,8 @@ pub enum Effect {
 - **Inputs:**
   - `on_done(stop, calls)`: the stream ended; `calls` are the ToolCalls received in it.
   - `on_tool_done(call_id, result)`;
-  - `on_confirm(call_id, bool)`;
-  - `abort()`.
+  - `on_confirm(call_id, bool, audit_online)`: a `yes` while the audit log is offline resolves the call `NOT AUTHORIZED: AUDIT LOG OFFLINE` (decision `rejected`) and never runs it;
+  - `abort(elevate)`.
 - **When a stream ends with `Stop::ToolUse` and at least one call:**
   1. Each call is validated in order.
      - Invalid calls get an immediate `NOT AUTHORIZED` result and an `ACCESS DENIED` note.
@@ -169,6 +171,8 @@ pub enum Effect {
   - This can happen at most once; after that the turn finishes with `[TRANSMISSION TRUNCATED]` semantics.
 - **`abort()`:**
   - every call without a result gets `ABORTED BY OPERATOR`;
+  - except a confirmed tier-2 call whose command is running: it cannot be cancelled (it runs as root, on a blocking thread), so it gets `ABORTED BY OPERATOR — COMMAND ALREADY ISSUED, OUTCOME UNKNOWN`, a `Note("ACCESS INTERRUPTED: …")`, and its `Audit` (decision `aborted`) carries the `argv` that was issued;
+  - every call aborted while running also emits `Orphan`: the tab remembers (request id, call id, invocation, tool, args), and when that call's late outcome arrives it appends a second audit record (decision `confirmed` for tier 2, `auto` for tier 1) with the real `argv`, `exit`, `ms` and `output`. Nothing else happens: no transcript line, no chat-log record;
   - if any call was open, emit `LogTool` and `Audit`;
   - then `Finished`.
   - The tab writes the `interrupted` assistant record exactly as in M4.
@@ -221,11 +225,12 @@ These replace M4's pair rules.
 
 `history()` becomes exchange-aware. `tool` records add a note line per result:
 - `ACCESSING: …` for normal results;
-- `ACCESS DENIED: …` for results whose content starts with `NOT AUTHORIZED`, `DENIED` or `ABORTED`.
+- `ACCESS INTERRUPTED: …` for results whose content starts with `ABORTED BY OPERATOR — COMMAND ALREADY ISSUED`;
+- `ACCESS DENIED: …` for other results whose content starts with `NOT AUTHORIZED`, `DENIED` or `ABORTED`.
 
 ## Audit log
 
-- **File:** `<state_dir>/muthur/audit.jsonl`, created with mode `0600`, append-only. Each record is a single `write_all`, and a torn tail gets a newline first, as in chatlog.
+- **File:** `<state_dir>/muthur/audit.jsonl`, created with mode `0600` when it is opened at startup (an open that fails leaves the log offline), append-only. Each record is a single `write_all`, and a torn tail gets a newline first, as in chatlog.
 - **Fields of one record per call:**
   - `ts`
   - `tool`
@@ -236,8 +241,8 @@ These replace M4's pair rules.
   - `exit` (code, `"timeout"`, `"not_found"` or null)
   - `ms`
   - `output`: the exact capped text sent to the model
-- **When it is written:** before the result is sent back to the model.
-- **If the audit log cannot be written:** the tool result is still delivered, `tracing::error!` is written, and the status line flashes `AUDIT LOG OFFLINE`. Tier-2 calls are **refused** while the audit log is unavailable: they return `NOT AUTHORIZED: AUDIT LOG OFFLINE` without asking the operator.
+- **When it is written:** before the result is sent back to the model. A call aborted while running gets its `aborted` record at the abort and a second record with the real outcome when the command finishes.
+- **If the audit log cannot be written:** the tool result is still delivered, `tracing::error!` is written, and the status line flashes `AUDIT LOG OFFLINE`. Tier-2 calls are **refused** while the audit log is unavailable: they return `NOT AUTHORIZED: AUDIT LOG OFFLINE` without asking the operator. The check is repeated when the operator confirms, so a log that goes offline while the prompt is up still refuses the call.
 
 ## Screen
 

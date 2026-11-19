@@ -220,9 +220,15 @@ validated before they reach an argument list.
   `sudo -n` or `doas -n` (`elevate`) with a 30 s timeout. `docs/sudoers.example`
   has the matching sudoers / doas rules, one per verb and unit.
 - **Audit log:** every call, run or refused, is appended to
-  `$XDG_STATE_HOME/muthur/audit.jsonl` (`~/.local/state/muthur/audit.jsonl`)
-  as it completes. If the log cannot be opened or written, tier-2 calls are
-  refused (`AUDIT LOG OFFLINE`).
+  `$XDG_STATE_HOME/muthur/audit.jsonl` (`~/.local/state/muthur/audit.jsonl`,
+  mode 0600) when it is resolved, before its result goes back to the model.
+  A running command cannot be cancelled, so Ctrl-C during one writes an
+  `aborted` record at once (for a confirmed tier-2 call: with the issued
+  `argv` and `OUTCOME UNKNOWN`, shown as `ACCESS INTERRUPTED`), then a second
+  record (`confirmed` / `auto`) with the real exit and output when the command
+  finishes. If the log cannot be opened at startup or a write fails, tier-2
+  calls are refused (`AUDIT LOG OFFLINE`), including at the moment the
+  operator confirms.
 - **`[tools]` keys:** `enabled` (true), `max_rounds` (8), `elevate`
   (`"sudo"` or `"doas"`), `journal_max_lines` (50), and `[tools.services]`
   `restart` / `start` / `stop` lists. See `docs/config.example.toml`.

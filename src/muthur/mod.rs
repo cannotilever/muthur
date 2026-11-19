@@ -8,7 +8,7 @@ use crate::app::tabs::Tab;
 use crate::chatlog::{Assistant, ChatLog};
 use crate::config::MuthurSection;
 use crate::input::Key;
-use crate::agent::{Call, Turn};
+use crate::agent::{Call, Orphan, Turn};
 use crate::llm::{ChatRequest, LlmError, StreamEvent};
 use crate::tools::audit::AuditLog;
 use crate::tools::{Invocation, ToolDefs};
@@ -93,6 +93,8 @@ pub struct MuthurTab {
     turn: Option<Turn>,
     /// Tool calls received in the current stream.
     calls: Vec<Call>,
+    /// Calls aborted while running, by request id: their outcomes are still audited.
+    orphans: Vec<(u64, Orphan)>,
     transcript: Vec<Entry>,
     input: String,
     /// Cursor position in `input`, in chars.
@@ -151,6 +153,7 @@ impl MuthurTab {
             audit,
             turn: None,
             calls: Vec::new(),
+            orphans: Vec::new(),
             transcript,
             input: String::new(),
             cursor: 0,
