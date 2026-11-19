@@ -273,3 +273,60 @@ fn muthur_override() {
     let want = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("missing {path}; run with UPDATE_GOLDEN=1"));
     assert_eq!(text, want);
 }
+
+fn splash_for_golden() -> muthur::splash::Splash {
+    use muthur::metrics::{Snapshot, Usage};
+    use muthur::splash::{Interface, Splash, SplashInfo};
+    const G: u64 = 1 << 30;
+    let info = SplashInfo {
+        ship_name: "USCSS TEST".into(),
+        year: 2137,
+        link: "38400 BAUD  XON/XOFF".into(),
+        interface: Interface::Online,
+    };
+    let mut s = Splash::new(info, std::time::Instant::now() - std::time::Duration::from_secs(60));
+    s.on_metrics(&Snapshot {
+        host: "NOSTROMO".into(),
+        uptime_secs: 86400 * 3 + 4 * 3600 + 12 * 60,
+        cpu_cores: vec![0.0; 16],
+        mem: Usage { used: 12 * G, total: 31 * G + G / 5 },
+        failed_units: Some(vec![]),
+        ..Default::default()
+    });
+    s
+}
+
+#[test]
+fn splash() {
+    let mut s = splash_for_golden();
+    s.advance(std::time::Instant::now());
+    let w = StrictWriter::new(Vec::new(), Vt100Dialect);
+    let mut t = Terminal::new(Wy60Backend::new(w, Vt100Dialect, 80, 43)).unwrap();
+    t.clear().unwrap();
+    t.draw(|f| s.render(f.area(), f.buffer_mut())).unwrap();
+    let strict = t.backend().writer();
+    assert!(strict.violations.is_empty(), "{:?}", strict.violations);
+    let mut p = vt100::Parser::new(NonZeroU16::new(43).unwrap(), NonZeroU16::new(80).unwrap(), 0);
+    p.process(&strict.inner);
+    let text = p.screen().contents();
+    let path = format!("{}/tests/golden/splash.txt", env!("CARGO_MANIFEST_DIR"));
+    if std::env::var("UPDATE_GOLDEN").is_ok() {
+        std::fs::write(&path, &text).unwrap();
+    }
+    let want = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("missing {path}; run with UPDATE_GOLDEN=1"));
+    assert_eq!(text, want, "splash differs from golden");
+}
+
+#[test]
+fn splash_logo_frame_fits_the_wire_budget() {
+    use muthur::splash::{Interface, Splash, SplashInfo};
+    let info = SplashInfo { ship_name: "USCSS TEST".into(), year: 2137, link: "38400 BAUD  XON/XOFF".into(), interface: Interface::Online };
+    let s = Splash::new(info, std::time::Instant::now());
+    let mut t = Terminal::new(Wy60Backend::new(Vec::new(), Vt100Dialect, 80, 43)).unwrap();
+    t.clear().unwrap();
+    let before = t.backend().writer().len();
+    t.draw(|f| s.render(f.area(), f.buffer_mut())).unwrap();
+    let n = t.backend().writer().len() - before;
+    println!("logo frame bytes: {n}");
+    assert!(n <= 3072, "logo frame is {n} bytes");
+}

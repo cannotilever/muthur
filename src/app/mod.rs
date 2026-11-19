@@ -7,6 +7,7 @@ use crate::input::Key;
 use crate::metrics::Snapshot;
 use crate::muthur::MuthurTab;
 use crate::shell::{PtyEvent, ShellTab};
+use crate::splash::Splash;
 use crate::utility::UtilityTab;
 use chrono::NaiveDateTime;
 use ratatui::Frame;
@@ -36,6 +37,9 @@ pub struct App {
     pub redraw: bool,
     /// `^] p` on the Shell tab: PTY bytes go to the wire untranslated.
     pub passthrough: bool,
+    /// `muthur splash`: quit as soon as the splash ends or is skipped.
+    pub quit_after_splash: bool,
+    splash: Option<Splash>,
     tabs: [Box<dyn Tab>; 3],
     activity: [bool; 3],
     chrome: ChromeView,
@@ -51,6 +55,29 @@ impl App {
         Self::with_tabs(chrome, [Box::new(utility), Box::new(muthur), Box::new(shell)])
     }
 
+    pub fn with_splash(mut self, splash: Splash) -> Self {
+        self.splash = Some(splash);
+        self
+    }
+
+    pub fn splash_active(&self) -> bool {
+        self.splash.is_some()
+    }
+
+    fn end_splash(&mut self) {
+        self.splash = None;
+        // Whatever happened behind the splash is not news.
+        for tab in self.tabs.iter_mut() {
+            tab.take_activity();
+        }
+        self.activity = [false; 3];
+        if self.quit_after_splash {
+            self.quit = true;
+        } else {
+            self.redraw = true;
+        }
+    }
+
     pub fn on_llm(&mut self, req_id: u64, ev: crate::llm::StreamEvent) {
         self.tabs[TabId::Muthur.index()].on_llm(req_id, ev);
     }
@@ -61,16 +88,25 @@ impl App {
 
     /// The active tab's redraw cadence; 1 s when it is idle.
     pub fn tick_interval(&self) -> std::time::Duration {
+        if let Some(s) = &self.splash {
+            return s.tick_interval();
+        }
         // Hidden tabs only advance when rendered, so their animation must not
         // drive the cadence; the 1 s tick still lights their activity marker.
         self.tabs[self.active.index()].tick_interval().unwrap_or(std::time::Duration::from_secs(1))
     }
 
     pub fn on_metrics(&mut self, s: Snapshot) {
+        if let Some(sp) = &mut self.splash {
+            sp.on_metrics(&s);
+        }
         self.tabs[TabId::Utility.index()].on_metrics(&s);
     }
 
     pub fn on_metrics_offline(&mut self, why: &str) {
+        if let Some(sp) = &mut self.splash {
+            sp.on_metrics_offline();
+        }
         self.tabs[TabId::Utility.index()].on_metrics_offline(why);
     }
 
@@ -100,6 +136,8 @@ impl App {
             quit: false,
             redraw: false,
             passthrough: false,
+            quit_after_splash: false,
+            splash: None,
             tabs,
             activity: [false; 3],
             chrome,
@@ -112,6 +150,10 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: Key) {
+        if self.splash.is_some() {
+            self.end_splash();
+            return;
+        }
         if self.overlay.take().is_some() {
             return;
         }
@@ -161,6 +203,17 @@ impl App {
 
     pub fn render(&mut self, frame: &mut Frame, now: NaiveDateTime) {
         let area = frame.area();
+        if let Some(sp) = &mut self.splash {
+            sp.advance(std::time::Instant::now());
+            if !sp.is_done() {
+                for tab in self.tabs.iter_mut() {
+                    tab.set_obscured(true);
+                }
+                sp.render(area, frame.buffer_mut());
+                return;
+            }
+            self.end_splash();
+        }
         let active = self.active.index();
         for (i, tab) in self.tabs.iter_mut().enumerate() {
             if tab.take_activity() && i != active {

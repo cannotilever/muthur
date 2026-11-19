@@ -458,3 +458,131 @@ fn hidden_reveal_does_not_drive_tick() {
     app.handle_key(Key::F(2));
     assert!(app.tick_interval() < Duration::from_secs(1));
 }
+
+// ---- Boot splash ----
+
+use crate::metrics::Snapshot;
+use crate::splash::{Interface, Splash, SplashInfo};
+
+fn splash_info() -> SplashInfo {
+    SplashInfo { ship_name: "USCSS TEST".into(), year: 2137, link: "38400 BAUD  XON/XOFF".into(), interface: Interface::Online }
+}
+fn fresh_splash() -> Splash {
+    Splash::new(splash_info(), Instant::now())
+}
+fn stale_splash() -> Splash {
+    let mut s = Splash::new(splash_info(), Instant::now() - Duration::from_secs(60));
+    s.on_metrics(&Snapshot::default());
+    s
+}
+
+#[derive(Default)]
+struct SpyState {
+    keys: Vec<Key>,
+    obscured: Option<bool>,
+    metrics: usize,
+    activity: bool,
+}
+struct Spy(Arc<Mutex<SpyState>>);
+impl Tab for Spy {
+    fn render(&mut self, _area: Rect, _buf: &mut Buffer) {}
+    fn handle_key(&mut self, key: &Key) {
+        self.0.lock().unwrap().keys.push(key.clone());
+    }
+    fn set_obscured(&mut self, o: bool) {
+        self.0.lock().unwrap().obscured = Some(o);
+    }
+    fn on_metrics(&mut self, _s: &Snapshot) {
+        self.0.lock().unwrap().metrics += 1;
+    }
+    fn take_activity(&mut self) -> bool {
+        std::mem::take(&mut self.0.lock().unwrap().activity)
+    }
+}
+
+fn spy_app(state: &Arc<Mutex<SpyState>>, slot: usize) -> App {
+    let mut tabs: [Box<dyn Tab>; 3] = TabId::ALL.map(|id| Box::new(PlaceholderTab { id }) as Box<dyn Tab>);
+    tabs[slot] = Box::new(Spy(state.clone()));
+    App::with_tabs(chrome(), tabs)
+}
+
+#[test]
+fn splash_draws_instead_of_chrome() {
+    let mut app = App::new(chrome()).with_splash(fresh_splash());
+    let buf = draw(&mut app);
+    assert!(row(&buf, 24).contains("MU/TH/UR 6000"), "{}", row(&buf, 24));
+    assert!(!row(&buf, 0).contains("USCSS TEST"));
+    assert!(app.splash_active());
+}
+
+#[test]
+fn key_skips_splash_and_is_not_delivered() {
+    let st = Arc::new(Mutex::new(SpyState::default()));
+    let mut app = spy_app(&st, 0).with_splash(fresh_splash());
+    app.handle_key(Key::Char('x'));
+    assert!(!app.splash_active() && app.redraw);
+    assert!(st.lock().unwrap().keys.is_empty());
+}
+
+#[test]
+fn ctrl_c_skips_too() {
+    let mut app = App::new(chrome()).with_splash(fresh_splash());
+    app.handle_key(Key::Ctrl('c'));
+    assert!(!app.splash_active() && !app.quit);
+}
+
+#[test]
+fn finished_splash_hands_over_with_redraw() {
+    let mut app = App::new(chrome()).with_splash(stale_splash());
+    let buf = draw(&mut app);
+    assert!(!app.splash_active() && app.redraw);
+    assert!(row(&buf, 0).contains("USCSS TEST"));
+}
+
+#[test]
+fn quit_after_splash_quits_on_finish_and_on_skip() {
+    let mut app = App::new(chrome()).with_splash(stale_splash());
+    app.quit_after_splash = true;
+    draw(&mut app);
+    assert!(app.quit && !app.redraw);
+    let mut app = App::new(chrome()).with_splash(fresh_splash());
+    app.quit_after_splash = true;
+    app.handle_key(Key::Char(' '));
+    assert!(app.quit && !app.redraw);
+}
+
+#[test]
+fn metrics_reach_splash_and_utility() {
+    let st = Arc::new(Mutex::new(SpyState::default()));
+    let mut app = spy_app(&st, 0).with_splash(Splash::new(splash_info(), Instant::now() - Duration::from_millis(2500)));
+    app.on_metrics(Snapshot { cpu_cores: vec![0.0; 16], ..Default::default() });
+    assert_eq!(st.lock().unwrap().metrics, 1);
+    let buf = draw(&mut app);
+    let all: String = (0..43).map(|y| row(&buf, y)).collect();
+    assert!(all.contains("16 CORES"), "{all}");
+}
+
+#[test]
+fn tabs_are_obscured_during_splash() {
+    let st = Arc::new(Mutex::new(SpyState::default()));
+    let mut app = spy_app(&st, 0).with_splash(fresh_splash());
+    draw(&mut app);
+    assert_eq!(st.lock().unwrap().obscured, Some(true));
+}
+
+#[test]
+fn no_activity_markers_after_splash() {
+    let st = Arc::new(Mutex::new(SpyState::default()));
+    let mut app = spy_app(&st, 1).with_splash(fresh_splash());
+    st.lock().unwrap().activity = true;
+    draw(&mut app); // splash frame must not consume or light activity
+    app.handle_key(Key::Char('x'));
+    let buf = draw(&mut app);
+    let top = chrome::box_top(TabId::Muthur);
+    assert_ne!(buf[(chrome::BOX_X + chrome::BOX_W - 2, top + 1)].symbol(), "*");
+}
+
+#[test]
+fn no_splash_is_unchanged() {
+    assert!(!App::new(chrome()).splash_active());
+}
