@@ -76,12 +76,13 @@ fn windowed_cargo() {
     use muthur::metrics::{Container, Snapshot};
     let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 17).unwrap().and_hms_opt(14, 2, 0).unwrap();
     let mut app = App::new(ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 })
-        .with_tab(TabId::Cargo, Box::new(CargoTab::new()));
+        .with_tab(TabId::Cargo, Box::new(CargoTab::detached()));
     let mut containers: Vec<Container> =
-        (0..50).map(|i| Container { id: format!("{i:012x}"), name: format!("refinery-unit-{i:02}"), status: "UP".into(), ..Default::default() }).collect();
+        (0..50).map(|i| Container { id: format!("{i:012x}"), name: format!("refinery-unit-{i:02}"), status: "UP".into(), detail: "Up 3 hours".into() }).collect();
     containers[3].status = "EXITED".into();
+    containers[3].detail = "Exited (137) 2 hours ago".into();
     containers[7].name = "AN-EXCEPTIONALLY-LONG-CONTAINER-NAME-THAT-WILL-NOT-FIT-IN-THE-PANE".into();
-    app.on_metrics(Snapshot { containers: Some(containers), ..Default::default() });
+    app.on_metrics(Snapshot { containers: Some(containers), container_runtime: Some("docker".into()), ..Default::default() });
     app.handle_key(Key::F(3));
     let w = StrictWriter::new(Vec::new(), Vt100Dialect);
     let mut t = Terminal::new(Wy60Backend::new(w, Vt100Dialect, 80, 43)).unwrap();
@@ -132,7 +133,7 @@ fn shell_windowed_echo() {
         ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 },
         muthur_tab(&dir.path().join("c.jsonl"), None).0,
         muthur::utility::UtilityTab::new(),
-        muthur::cargo::CargoTab::new(),
+        muthur::cargo::CargoTab::detached(),
         shell,
     );
     let w = StrictWriter::new(Vec::new(), Vt100Dialect);

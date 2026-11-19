@@ -447,7 +447,7 @@ pub fn run(cfg: &Config, strict: bool) -> anyhow::Result<()> {
     // One audit log for every writer (MU/TH/UR now, CARGO next).
     let audit = crate::tools::audit::shared(open_audit_log());
     let muthur = build_muthur(cfg, &chrome.ship_name, tx.clone(), slot, audit)?;
-    let mut app = App::assemble(chrome, muthur, UtilityTab::new(), crate::cargo::CargoTab::new(), shell);
+    let mut app = App::assemble(chrome, muthur, UtilityTab::new(), crate::cargo::CargoTab::detached(), shell);
     if cfg.chrome.splash {
         app = app.with_splash(splash_for(cfg, &ship));
     }
@@ -698,7 +698,7 @@ mod tests {
             ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 },
             m,
             crate::utility::UtilityTab::new(),
-            crate::cargo::CargoTab::new(),
+            crate::cargo::CargoTab::detached(),
             shell,
         );
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -763,7 +763,7 @@ mod tests {
             ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 },
             m,
             crate::utility::UtilityTab::new(),
-            crate::cargo::CargoTab::new(),
+            crate::cargo::CargoTab::detached(),
             shell,
         );
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();

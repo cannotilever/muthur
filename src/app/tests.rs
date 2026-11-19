@@ -244,7 +244,7 @@ fn shell_app(args: &[&str]) -> (App, mpsc::Receiver<PtyEvent>) {
     let shell = ShellTab::new(cfg, HintSlot::default(), move |e| {
         let _ = tx.send(e);
     });
-    (App::assemble(chrome(), fake_muthur().0, crate::utility::UtilityTab::new(), crate::cargo::CargoTab::new(), shell), rx)
+    (App::assemble(chrome(), fake_muthur().0, crate::utility::UtilityTab::new(), crate::cargo::CargoTab::detached(), shell), rx)
 }
 
 fn screen_text(buf: &Buffer) -> String {
@@ -408,7 +408,7 @@ fn activity_marker_for_background_reply() {
     let shell = ShellTab::new(cfg, HintSlot::default(), move |e| {
         let _ = shell_tx.send(e);
     });
-    let mut app = App::assemble(chrome(), m, crate::utility::UtilityTab::new(), crate::cargo::CargoTab::new(), shell);
+    let mut app = App::assemble(chrome(), m, crate::utility::UtilityTab::new(), crate::cargo::CargoTab::detached(), shell);
     keys(&mut app, &[Key::F(1), Key::Char('H'), Key::Char('I'), Key::Enter, Key::F(2)]);
     app.on_llm(1, StreamEvent::Text("OK".into()));
     app.on_llm(1, StreamEvent::Done { stop: Stop::End, model: None, raw: None });
@@ -426,7 +426,7 @@ fn hidden_reveal_does_not_drive_tick() {
         HintSlot::default(),
         |_| {},
     );
-    let mut app = App::assemble(chrome(), m, crate::utility::UtilityTab::new(), crate::cargo::CargoTab::new(), shell);
+    let mut app = App::assemble(chrome(), m, crate::utility::UtilityTab::new(), crate::cargo::CargoTab::detached(), shell);
     keys(&mut app, &[Key::F(1), Key::Char('H'), Key::Enter, Key::F(2)]);
     app.on_llm(1, StreamEvent::Text("OK".into()));
     app.on_llm(1, StreamEvent::Done { stop: Stop::End, model: None, raw: None });
@@ -637,7 +637,7 @@ fn metrics_and_outage_reach_utility_and_cargo() {
 
     let mut app = App::new(chrome())
         .with_tab(TabId::Utility, Box::new(crate::utility::UtilityTab::new()))
-        .with_tab(TabId::Cargo, Box::new(crate::cargo::CargoTab::new()));
+        .with_tab(TabId::Cargo, Box::new(crate::cargo::CargoTab::detached()));
     app.on_metrics_offline("NO /PROC");
     for id in [TabId::Utility, TabId::Cargo] {
         app.active = id;
