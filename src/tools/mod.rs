@@ -175,7 +175,7 @@ impl ToolDefs {
             specs.push(spec(
                 "journal",
                 "Recent journal lines for one systemd unit.",
-                json!({"unit": unit_free, "lines": {"type":"integer","minimum":1,"maximum":journal_max_lines}}),
+                json!({"unit": unit_free, "lines": {"type":"integer","description":format!("Number of lines, 1 to {journal_max_lines}")}}),
             ));
             specs.push(spec(
                 "list_units",
@@ -319,7 +319,38 @@ mod tests {
         let r = defs_with_restart(&["nginx"]);
         assert_eq!(r.validate("restart_service", &json!({"unit":"nginx","force":true})), Err("unexpected argument force".into()));
         let z = ToolDefs::new(&ToolsSection { journal_max_lines: 0, ..Default::default() });
-        assert_eq!(z.specs()[2].schema["properties"]["lines"]["maximum"], json!(1));
+        assert_eq!(z.specs()[2].schema["properties"]["lines"], json!({"type":"integer","description":"Number of lines, 1 to 1"}));
+    }
+    #[test]
+    fn schemas_use_only_strict_keywords() {
+        // Anthropic strict tool use rejects numeric and string constraints.
+        const ALLOWED: [&str; 10] =
+            ["type", "properties", "required", "additionalProperties", "description", "enum", "const", "anyOf", "allOf", "$ref"];
+        fn walk(v: &Value, path: &str) {
+            let Some(o) = v.as_object() else { return };
+            for (k, child) in o {
+                assert!(ALLOWED.contains(&k.as_str()), "{path}: unsupported keyword {k}");
+                if k == "additionalProperties" {
+                    assert_eq!(child, &json!(false), "{path}");
+                }
+                if k == "properties" {
+                    for (name, p) in child.as_object().unwrap() {
+                        walk(p, &format!("{path}.{name}"));
+                    }
+                } else if matches!(k.as_str(), "anyOf" | "allOf") {
+                    child.as_array().unwrap().iter().for_each(|c| walk(c, path));
+                }
+            }
+        }
+        let d = ToolDefs::new(&ToolsSection {
+            services: ServiceLists { restart: vec!["a".into()], start: vec!["b".into()], stop: vec!["c".into()] },
+            ..Default::default()
+        });
+        assert_eq!(d.specs().len(), 8);
+        for s in d.specs() {
+            walk(&s.schema, &s.name);
+        }
+        assert_eq!(d.specs()[2].schema["properties"]["lines"], json!({"type":"integer","description":"Number of lines, 1 to 50"}));
     }
     #[test] fn cap_cuts_mid_character() { let s = format!("aa{}", "€".repeat(2000)); let c = cap(s); assert!(c.ends_with("\n[TRUNCATED]")); assert!(std::str::from_utf8(c.as_bytes()).is_ok()); assert!(c.len() < 4096 + 12 && c.len() > 4000); assert!(c.starts_with("aa€")); }
     #[test] fn labels() { assert_eq!(Invocation::Service{ verb: Verb::Restart, unit: "nginx.service".into() }.label(), "RESTART NGINX.SERVICE"); assert_eq!(Invocation::Journal{ unit: "a.service".into(), lines: 20 }.label(), "JOURNAL A.SERVICE 20"); }

@@ -85,11 +85,14 @@ fn outcome(
     }
 }
 
-const REFUSALS: [&str; 4] = [
+/// Elevation refusals (sudo, doas), matched lowercase against stderr.
+const REFUSALS: [&str; 6] = [
     "password is required",
     "not allowed",
     "not permitted",
     "not in the sudoers",
+    "authentication required",
+    "authorization required",
 ];
 
 pub fn execute(inv: &Invocation, ctx: &ExecCtx) -> ToolOutcome {
@@ -137,7 +140,10 @@ pub fn execute(inv: &Invocation, ctx: &ExecCtx) -> ToolOutcome {
                     Invocation::Service { verb, unit } => {
                         format!("COMPLETED: {} {unit}", verb.word()).to_uppercase()
                     }
-                    _ => format!("{stdout}{stderr}"),
+                    _ => {
+                        let text = format!("{stdout}{stderr}");
+                        if text.trim().is_empty() { "NO MATCHING ENTRIES".into() } else { text }
+                    }
                 };
                 return outcome(content, false, argv, exit, ms);
             }
@@ -353,6 +359,29 @@ mod tests {
         let o = execute(&restart(), &c);
         assert_eq!(o.content, "COMPLETED: RESTART NGINX.SERVICE");
         assert!(!o.is_error);
+    }
+
+    #[test]
+    fn empty_success_is_no_matching_entries() {
+        for out in ["", "  \n", "\n"] {
+            let (_fr, c) = ctx(exited(0, out, ""));
+            let o = execute(&Invocation::Journal { unit: "nginx.service".into(), lines: 5 }, &c);
+            assert_eq!(o.content, "NO MATCHING ENTRIES");
+            assert!(!o.is_error);
+            assert_eq!(o.exit, Some(json!(0)));
+        }
+        let (_fr, c) = ctx(exited(0, "", "\n"));
+        assert_eq!(execute(&Invocation::ListUnits { state: UnitState::Failed }, &c).content, "NO MATCHING ENTRIES");
+    }
+
+    #[test]
+    fn doas_refusals_are_insufficient_clearance() {
+        for e in ["doas: Authentication required", "doas: authorization required", "doas: AUTHORIZATION REQUIRED"] {
+            let (_fr, c) = ctx(exited(1, "", e));
+            let o = execute(&restart(), &c);
+            assert!(o.is_error);
+            assert_eq!(o.content, format!("INSUFFICIENT CLEARANCE: {e}"));
+        }
     }
 
     #[test]

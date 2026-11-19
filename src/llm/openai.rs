@@ -96,8 +96,10 @@ impl StreamParser for Parser {
                 let input = if args.trim().is_empty() { json!({}) } else { serde_json::from_str(&args).unwrap_or_else(|_| json!({})) };
                 out.push(StreamEvent::ToolCall { id, name, input });
             }
+            // Some servers report "stop" (or nothing) after tool calls; calls mean ToolUse.
+            let stop = if raw.is_empty() { map_stop(self.finish.as_deref().unwrap_or("stop")) } else { Stop::ToolUse };
             out.push(StreamEvent::Done {
-                stop: map_stop(self.finish.as_deref().unwrap_or("stop")),
+                stop,
                 model: self.model.clone(),
                 raw: if raw.is_empty() { None } else { Some(raw) },
             });
@@ -213,6 +215,22 @@ mod tests {
     #[test] fn done_raw_carries_tool_calls() {
         let ev = run("openai_tool.sse");
         assert!(matches!(ev.last(), Some(StreamEvent::Done{raw: Some(r), ..}) if r == &vec![json!({"id":"call_1","type":"function","function":{"name":"metrics","arguments":"{\"host\":\"local\"}"}})]));
+    }
+    #[test] fn tool_calls_with_stop_finish_are_tool_use() {
+        // Some OpenAI-compatible servers end a tool-calling response with finish_reason "stop" (or none).
+        for finish in ["\"stop\"", "null"] {
+            let mut p = Parser::new();
+            let mut dec = SseDecoder::default();
+            let s = format!(
+                "data: {{\"model\":\"qwen\",\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{{\"name\":\"ship_status\",\"arguments\":\"{{}}\"}}}}]}},\"finish_reason\":null}}]}}\n\n\
+                 data: {{\"model\":\"qwen\",\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":{finish}}}]}}\n\n\
+                 data: [DONE]\n\n"
+            );
+            let mut ev = Vec::new();
+            for rec in dec.push(s.as_bytes()) { ev.extend(p.feed(&rec)); }
+            assert!(ev.iter().any(|e| matches!(e, StreamEvent::ToolCall{name, ..} if name == "ship_status")), "{ev:?}");
+            assert!(matches!(ev.last(), Some(StreamEvent::Done{stop: Stop::ToolUse, ..})), "{finish}: {ev:?}");
+        }
     }
     #[test] fn plain_text_done_raw_none() { assert!(matches!(run("openai_text.sse").last(), Some(StreamEvent::Done{raw: None, ..}))); }
 }

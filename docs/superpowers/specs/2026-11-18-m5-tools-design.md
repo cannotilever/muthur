@@ -100,6 +100,7 @@ On success the result is `COMPLETED: <VERB> <UNIT>`. The model checks the outcom
 ### Definitions
 
 - **Schemas.** Every schema has `"additionalProperties": false` and lists every property in `required`. Anthropic tools are sent with `strict: true`.
+- **Strict-safe keywords only.** Anthropic strict tool use rejects numeric and string constraints (`minimum`, `maximum`, `multipleOf`, …). Schemas use only `type`, `properties`, `enum`, `const`, `anyOf`, `allOf`, `$ref`, `required`, `description` and `"additionalProperties": false`. So `journal.lines` is `{"type": "integer", "description": "Number of lines, 1 to N"}` (N = `journal_max_lines`); the range is enforced by validation, not by the schema.
 - **Order.** The definitions are built once at startup, in the fixed order of the tables above. Tier-2 tools whose allowlist is empty are left out.
 - **When tools are disabled.** With `tools.enabled = false`, or when the definition list is empty, requests carry no `tools` field.
 
@@ -110,7 +111,8 @@ Every result goes back to the model as `{content: text, is_error: bool}`.
 | Cause | Text | is_error |
 |---|---|---|
 | binary not found (`systemctl`, `journalctl`, `ss`, `sudo`/`doas`) | `NOT AVAILABLE ON THIS SHIP` | true |
-| elevation refused (exit 1 with "password is required", "not allowed", "not permitted" or "not in the sudoers") | `INSUFFICIENT CLEARANCE: <first stderr line>` | true |
+| elevation refused (exit 1 with "password is required", "not allowed", "not permitted", "not in the sudoers", "authentication required" or "authorization required", case-insensitive) | `INSUFFICIENT CLEARANCE: <first stderr line>` | true |
+| exit 0 with empty (whitespace-only) output, tier 1 | `NO MATCHING ENTRIES` | false |
 | timeout | `NO RESPONSE` | true |
 | other non-zero exit with no stdout | `EXIT <n>: <stderr>` | true |
 | unknown tool, invalid or unlisted argument | `NOT AUTHORIZED: <reason>` (never executed) | true |
@@ -184,6 +186,7 @@ pub enum Effect {
 
 - **Request:** add `tools: [{type: "function", function: {name, description, parameters}}]`, and `tool_choice: "none"` when `forced_final`.
 - **Assistant replay:** an assistant turn with calls is sent as `{role: "assistant", content: <text or null>, tool_calls: [{id, type: "function", function: {name, arguments: <JSON string>}}]}`. The assistant record stores that `tool_calls` array as `raw` (the provider is openai).
+- **Stop:** if the stream carried any tool calls, the stop is `ToolUse` whatever the `finish_reason` (some servers report `stop` or nothing after tool calls).
 - **Tool results:** one `{role: "tool", tool_call_id, content}` message per result, in call order. `is_error` results are prefixed `ERROR: `.
 - **Docs.** `docs/ARCHITECTURE.md` states that vLLM needs `--enable-auto-tool-choice --tool-call-parser <parser>`.
 
