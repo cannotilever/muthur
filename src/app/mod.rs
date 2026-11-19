@@ -149,6 +149,18 @@ impl App {
         self.activity[id.index()] = false;
     }
 
+    /// A batch that arrives during the splash is consumed whole: the first key
+    /// skips it, the rest must not reach the tabs.
+    pub fn handle_keys(&mut self, keys: Vec<Key>) {
+        if self.splash.is_some() {
+            self.end_splash();
+            return;
+        }
+        for k in keys {
+            self.handle_key(k);
+        }
+    }
+
     pub fn handle_key(&mut self, key: Key) {
         if self.splash.is_some() {
             self.end_splash();
@@ -212,7 +224,10 @@ impl App {
                 sp.render(area, frame.buffer_mut());
                 return;
             }
+            // Finished: paint the final frame, hand over on the next one.
+            sp.render(area, frame.buffer_mut());
             self.end_splash();
+            return;
         }
         let active = self.active.index();
         for (i, tab) in self.tabs.iter_mut().enumerate() {

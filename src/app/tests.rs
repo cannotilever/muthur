@@ -536,7 +536,27 @@ fn finished_splash_hands_over_with_redraw() {
     let mut app = App::new(chrome()).with_splash(stale_splash());
     let buf = draw(&mut app);
     assert!(!app.splash_active() && app.redraw);
-    assert!(row(&buf, 0).contains("USCSS TEST"));
+    assert!(!row(&buf, 0).contains("USCSS TEST"), "chrome must not paint over the final splash frame");
+    let all: String = (0..43).map(|y| row(&buf, y)).collect();
+    assert!(all.contains("INTERFACE"), "{all}");
+}
+
+#[test]
+fn key_batch_is_consumed_whole_while_splash_active() {
+    let mut app = App::new(chrome()).with_splash(fresh_splash());
+    app.handle_keys(vec![Key::Char(' '), Key::Ctrl(']')]);
+    assert!(!app.splash_active());
+    assert!(!app.prefix, "rest of the batch must not reach the TUI");
+    app.handle_keys(vec![Key::Ctrl(']')]);
+    assert!(app.prefix);
+}
+
+#[test]
+fn tick_interval_follows_splash() {
+    let mut app = App::new(chrome()).with_splash(fresh_splash());
+    assert!(app.tick_interval() <= Duration::from_millis(100));
+    app.handle_key(Key::Char(' '));
+    assert!(app.tick_interval() > Duration::from_millis(100));
 }
 
 #[test]

@@ -146,15 +146,24 @@ pub async fn event_loop<W: Write>(
             terminal.draw(|f| app.render(f, clock()))?;
             dirty = false;
             was_passthrough = app.passthrough;
+            // The splash can end inside render: quit or clear now, not after
+            // the next wake-up.
+            if app.quit {
+                return Ok(());
+            }
+            if app.redraw {
+                app.redraw = false;
+                terminal.clear()?;
+                dirty = true;
+                continue;
+            }
         }
         tokio::select! {
             // Keys first: ^C and ^] must never wait behind queued output.
             biased;
             ev = rx.recv() => match ev {
                 Some(Event::Keys(keys)) => {
-                    for k in keys {
-                        app.handle_key(k);
-                    }
+                    app.handle_keys(keys);
                     dirty = true;
                 }
                 Some(Event::Metrics(s)) => {
@@ -413,9 +422,8 @@ pub fn run(cfg: &Config, strict: bool) -> anyhow::Result<()> {
     check_geometry(cfg.terminal.cols, cfg.terminal.rows)?;
     let _log = init_logging()?;
     install_panic_hook();
-    let Session { link, tx, mut rx, terminal, hints } = open_session(cfg, strict)?;
+    let Session { link, tx, mut rx, mut terminal, hints } = open_session(cfg, strict)?;
     let (cols, rows) = (cfg.terminal.cols, cfg.terminal.rows);
-    let mut terminal = terminal;
     let shell_cfg = ShellConfig {
         command: cfg.shell.command.clone(),
         args: cfg.shell.args.clone(),
@@ -503,6 +511,44 @@ mod tests {
         tx.send(Event::Hangup).unwrap();
         let r = tokio::time::timeout(Duration::from_millis(100), event_loop(&mut app, &mut t, &mut rx, &mut no_pty(), || 0, now)).await;
         assert!(r.expect("loop did not exit").is_ok());
+    }
+
+    fn stale_splash() -> crate::splash::Splash {
+        use crate::splash::{Interface, Splash, SplashInfo};
+        let info = SplashInfo { ship_name: "USCSS TEST".into(), year: 2137, link: "38400 BAUD  XON/XOFF".into(), interface: Interface::Online };
+        let mut s = Splash::new(info, std::time::Instant::now() - Duration::from_secs(60));
+        s.on_metrics(&Default::default());
+        s
+    }
+
+    #[tokio::test]
+    async fn natural_splash_finish_clears_once_then_paints_tui() {
+        let (app, mut t) = setup();
+        let mut app = app.with_splash(stale_splash());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let quit = async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            tx.send(Event::Keys(vec![Key::Ctrl(']'), Key::Char('q')])).unwrap();
+        };
+        let mut pty = no_pty();
+        let (r, _) = tokio::join!(event_loop(&mut app, &mut t, &mut rx, &mut pty, || 0, now), quit);
+        r.unwrap();
+        let out = String::from_utf8(t.backend().writer().clone()).unwrap();
+        assert_eq!(out.matches("\x1b[2J").count(), 2, "initial clear + one handover clear");
+        let (clear, chrome) = (out.rfind("\x1b[2J").unwrap(), out.find("17 NOV 2137 14:02").expect("tui painted"));
+        assert!(chrome > clear, "TUI must be painted only after the clear");
+    }
+
+    #[tokio::test]
+    async fn quit_after_splash_returns_without_drawing_tui() {
+        let (app, mut t) = setup();
+        let mut app = app.with_splash(stale_splash());
+        app.quit_after_splash = true;
+        let (_tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let r = tokio::time::timeout(Duration::from_millis(500), event_loop(&mut app, &mut t, &mut rx, &mut no_pty(), || 0, now)).await;
+        assert!(r.expect("loop did not exit").is_ok());
+        let out = String::from_utf8(t.backend().writer().clone()).unwrap();
+        assert!(!out.contains("17 NOV 2137 14:02"), "placeholder TUI must not be drawn");
     }
 
     #[tokio::test]

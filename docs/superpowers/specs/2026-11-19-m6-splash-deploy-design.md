@@ -144,10 +144,10 @@ It ignores `splash = false`. Without an LLM key the `INTERFACE` line shows `[OFF
 ### udev — `deploy/udev/99-wy60.rules`
 
 ```
-SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", ATTRS{serial}=="A9E91BA3", SYMLINK+="wy60", TAG+="systemd"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", ATTRS{serial}=="A9E91BA3", SYMLINK+="wy60", TAG+="systemd", ENV{SYSTEMD_WANTS}+="serial-getty@wy60.service"
 ```
 
-`TAG+="systemd"` creates `dev-wy60.device`, so the getty waits for the adapter at boot.
+`TAG+="systemd"` creates `dev-wy60.device`; `SYSTEMD_WANTS` starts the getty when the adapter appears and stops it when it goes, so replug works and boot never waits for an absent adapter. Changed after final review: getty started by udev for replug.
 
 ### getty — `deploy/systemd/serial-getty@wy60.service.d/override.conf`
 
@@ -185,7 +185,7 @@ BIN    := target/$(TARGET)/release/muthur
 |---|---|
 | `build` | `cargo build --release --target $(TARGET)`. |
 | `deploy` | `build`; `ssh` creates `~/.local/bin` and `~/.config/fish/conf.d`; `scp` the binary to `~/.local/bin/muthur.new`; on the host, `mv muthur muthur.old` (if present) then `mv muthur.new muthur`; `scp` `muthur.fish` into `conf.d`. |
-| `install-system` | `scp` the udev rule and the drop-in to a `mktemp -d` directory on the host. Then, over `ssh -t` so sudo can prompt, run with `set -e`: `sudo install -m 644` each file into `/etc/udev/rules.d/` and `/etc/systemd/system/serial-getty@wy60.service.d/`; `udevadm control --reload`; `udevadm trigger`; `systemctl daemon-reload`; disable `serial-getty@ttyUSB0` if enabled; `systemctl enable --now serial-getty@wy60`. Each step echoes its name first. Every step is safe to re-run. |
+| `install-system` | `scp` the udev rule and the drop-in to a `mktemp -d` directory on the host. Then, over `ssh -t` so sudo can prompt, run with `set -e`: `sudo install -m 644` each file into `/etc/udev/rules.d/` and `/etc/systemd/system/serial-getty@wy60.service.d/`; `systemctl daemon-reload`; `udevadm control --reload`; disable `serial-getty@wy60` if enabled (migration); disable `serial-getty@ttyUSB0` if enabled; `udevadm trigger --subsystem-match=tty --action=add`, which starts the getty via `SYSTEMD_WANTS`. Each step echoes its name first. Every step is safe to re-run. |
 | `check-deploy` | `udevadm verify deploy/udev/99-wy60.rules` and `systemd-analyze verify` on the drop-in, run locally. |
 
 The rename in `deploy` is atomic, so a running MUTHUR keeps its old binary instead of failing with "text file busy". Rolling back is `mv muthur.old muthur` on the host.
@@ -197,7 +197,7 @@ A first-time walkthrough covering:
 - `make install-system`, then `make deploy`
 - checking `/dev/wy60` and `systemctl status serial-getty@wy60`
 - rollback
-- recovering from a getty restart loop (`systemctl disable --now serial-getty@wy60` from another session)
+- recovering from a getty restart loop (`systemctl stop serial-getty@wy60` and move the udev rule aside, from another session)
 - installing `docs/sudoers.example` by hand, after reviewing it
 
 ## Error handling

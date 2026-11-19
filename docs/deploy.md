@@ -15,6 +15,8 @@ make install-system   # udev rule + getty drop-in; prompts for sudo on omicron
 make deploy           # builds, uploads the binary and the fish snippet
 ```
 
+udev starts the getty when the adapter appears and stops it when the adapter goes (`SYSTEMD_WANTS` in the rule), so replugging the USB adapter brings the login back and boot never waits for an absent adapter. The getty is not enabled as a unit.
+
 Override the host with `make HOST=other deploy`. `make deploy` keeps the previous binary as `~/.local/bin/muthur.old`. Run `make check-deploy` first to lint the udev rule and the getty drop-in locally.
 
 To tune the boot logo, edit `assets/wy-logo.txt` and run `muthur splash` on the WY-60.
@@ -39,8 +41,12 @@ cd ~/.local/bin && mv muthur.old muthur
 From another session (ssh):
 
 ```sh
-sudo systemctl disable --now serial-getty@wy60
+sudo systemctl stop serial-getty@wy60
+sudo mv /etc/udev/rules.d/99-wy60.rules /root/99-wy60.rules.off
+sudo udevadm control --reload
 ```
+
+Stopping alone is not enough: udev starts the getty again on the next replug or boot, so move the rule aside until the cause is fixed. Put it back and run `make install-system` to restore.
 
 ## 6. Sudoers for tier 2 tools
 

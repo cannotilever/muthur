@@ -129,7 +129,7 @@ Single Rust crate, tokio runtime.
 | `tools` | Tool registry and safety tiers (`mod`), fixed-argv execution with timeouts (`exec`, `runner`), JSONL audit log (`audit`). |
 | `agent` | Pure tool-turn state machine: round cap, tier-2 confirmation queue, aborts; emits effects the MU/TH/UR tab carries out. |
 | `metrics` | `MetricsSource` trait; `LocalSource` for v1. |
-| `splash` | Boot sequence. |
+| `splash` | Boot splash state machine and renderer (logo, status lines, skip on key) that `App` plays before the TUI; also `muthur splash` preview. See [M6 spec](superpowers/specs/2026-11-19-m6-splash-deploy-design.md). |
 | `testcard` | `muthur testcard` subcommand: attribute / line-drawing probe and key-echo mode. |
 | `config` | TOML load, defaults, `0600` permission check. |
 

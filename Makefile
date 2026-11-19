@@ -13,7 +13,7 @@ build:
 deploy: build
 	ssh $(HOST) 'mkdir -p ~/.local/bin ~/.config/fish/conf.d'
 	scp $(BIN) $(HOST):.local/bin/muthur.new
-	ssh $(HOST) 'cd ~/.local/bin && { [ ! -e muthur ] || mv -f muthur muthur.old; } && mv muthur.new muthur'
+	ssh $(HOST) "bash -c 'cd ~/.local/bin && (mv -f muthur muthur.old 2>/dev/null || true) && mv muthur.new muthur'"
 	scp deploy/fish/muthur.fish $(HOST):.config/fish/conf.d/muthur.fish
 
 # The remote login shell is fish, so the script runs under bash -c. $$tmp is
@@ -24,11 +24,11 @@ install-system:
 	ssh -t $(HOST) "bash -c 'set -e; \
 	echo \"==> install udev rule\"; sudo install -m 644 $$tmp/99-wy60.rules /etc/udev/rules.d/99-wy60.rules; \
 	echo \"==> install getty drop-in\"; sudo install -d /etc/systemd/system/serial-getty@wy60.service.d; sudo install -m 644 $$tmp/override.conf /etc/systemd/system/serial-getty@wy60.service.d/override.conf; \
-	echo \"==> reload udev\"; sudo udevadm control --reload; \
-	echo \"==> trigger udev\"; sudo udevadm trigger; \
 	echo \"==> reload systemd\"; sudo systemctl daemon-reload; \
+	echo \"==> reload udev\"; sudo udevadm control --reload; \
+	echo \"==> migrate old getty\"; if systemctl is-enabled --quiet serial-getty@wy60; then sudo systemctl disable serial-getty@wy60; fi; \
 	echo \"==> disable old getty\"; if systemctl is-enabled --quiet serial-getty@ttyUSB0; then sudo systemctl disable --now serial-getty@ttyUSB0; fi; \
-	echo \"==> enable serial-getty@wy60\"; sudo systemctl enable --now serial-getty@wy60; \
+	echo \"==> trigger udev (starts the getty)\"; sudo udevadm trigger --subsystem-match=tty --action=add; \
 	echo \"==> clean up\"; rm -rf $$tmp'"
 
 # Local checks. udevadm verify needs udev >= 255, hence the guard. The unit is
