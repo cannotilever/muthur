@@ -60,16 +60,20 @@ pub fn parse_failed_units(out: &str) -> Vec<String> {
         .collect()
 }
 
-/// `ps --format '{{.Names}}\t{{.Status}}'` → containers with a one-word status.
+/// `ps --format '{{.ID}}\t{{.Names}}\t{{.Status}}'` → containers. Lines
+/// without all three fields cannot be acted on and are skipped.
 pub fn parse_containers(out: &str) -> Vec<Container> {
     out.lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| {
-            let (name, status) = l.split_once('\t').unwrap_or((l, ""));
-            Container {
-                name: name.trim().to_uppercase(),
-                status: status.split_whitespace().next().unwrap_or("?").to_uppercase(),
-            }
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            let [id, name, detail] = f[..] else { return None };
+            let detail = detail.trim();
+            Some(Container {
+                id: id.trim().to_string(),
+                name: name.trim().to_string(),
+                status: detail.split_whitespace().next().unwrap_or("?").to_uppercase(),
+                detail: detail.to_string(),
+            })
         })
         .collect()
 }
@@ -89,15 +93,12 @@ mod tests {
 
     #[test]
     fn parses_containers() {
-        assert_eq!(
-            parse_containers("web\tUp 3 hours\ndb\tExited (0) 2 days ago\nold\tCreated\nbad\tRestarting (1) 5 seconds ago\n"),
-            vec![
-                Container { name: "WEB".into(), status: "UP".into() },
-                Container { name: "DB".into(), status: "EXITED".into() },
-                Container { name: "OLD".into(), status: "CREATED".into() },
-                Container { name: "BAD".into(), status: "RESTARTING".into() }
-            ]
-        );
+        let out = "a1b2\tweb\tUp 3 hours\nc3d4\tMyDB\tExited (137) 2 hours ago\ne5\told\tCreated\nshort\tline\n\n";
+        assert_eq!(parse_containers(out), vec![
+            Container { id: "a1b2".into(), name: "web".into(), status: "UP".into(), detail: "Up 3 hours".into() },
+            Container { id: "c3d4".into(), name: "MyDB".into(), status: "EXITED".into(), detail: "Exited (137) 2 hours ago".into() },
+            Container { id: "e5".into(), name: "old".into(), status: "CREATED".into(), detail: "Created".into() },
+        ]);
     }
 
     #[test]

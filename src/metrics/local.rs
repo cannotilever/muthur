@@ -10,7 +10,7 @@ use sysinfo::{Disks, Networks, ProcessesToUpdate, System, ThreadKind};
 /// External probes are slow; refresh them at most this often.
 const SLOW_PROBE_EVERY: Duration = Duration::from_secs(10);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
-const CONTAINER_FORMAT: &str = "{{.Names}}\t{{.Status}}";
+pub const CONTAINER_FORMAT: &str = "{{.ID}}\t{{.Names}}\t{{.Status}}";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -62,13 +62,19 @@ pub struct LocalSource {
     last_probe: Option<Instant>,
     failed_units: Option<Vec<String>>,
     containers: Option<Vec<Container>>,
+    container_runtime: Option<String>,
 }
 
-/// `--all`: stopped and crashed containers are what CARGO must not hide.
-const CONTAINER_ARGS: [&str; 4] = ["ps", "--all", "--format", CONTAINER_FORMAT];
+/// `<rt> ps --all …`: stopped and crashed containers are what CARGO must not hide.
+pub fn ps_argv(rt: &str) -> Vec<String> {
+    [rt, "ps", "--all", "--format", CONTAINER_FORMAT].iter().map(|s| s.to_string()).collect()
+}
 
-fn containers_from(cmd: &str) -> Option<Vec<Container>> {
-    run_probe(cmd, &CONTAINER_ARGS, PROBE_TIMEOUT).map(|o| parse_containers(&o))
+/// The runtime that answered, with its containers.
+fn containers_from(cmd: &str) -> Option<(String, Vec<Container>)> {
+    let argv = ps_argv(cmd);
+    let args: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+    run_probe(cmd, &args, PROBE_TIMEOUT).map(|o| (cmd.to_string(), parse_containers(&o)))
 }
 
 impl LocalSource {
@@ -83,6 +89,7 @@ impl LocalSource {
             last_probe: None,
             failed_units: None,
             containers: None,
+            container_runtime: None,
         })
     }
 
@@ -93,12 +100,13 @@ impl LocalSource {
         self.last_probe = Some(Instant::now());
         self.failed_units = run_probe("systemctl", &["--failed", "--plain", "--no-legend"], PROBE_TIMEOUT)
             .map(|o| parse_failed_units(&o));
-        self.containers = match self.runtime {
+        let found = match self.runtime {
             ContainerRuntime::None => None,
             ContainerRuntime::Docker => containers_from("docker"),
             ContainerRuntime::Podman => containers_from("podman"),
             ContainerRuntime::Auto => containers_from("docker").or_else(|| containers_from("podman")),
         };
+        (self.container_runtime, self.containers) = found.map_or((None, None), |(rt, c)| (Some(rt), Some(c)));
     }
 
     fn disks(&self) -> Vec<Disk> {
@@ -181,6 +189,7 @@ impl MetricsSource for LocalSource {
             top: self.top(),
             failed_units: self.failed_units.clone(),
             containers: self.containers.clone(),
+            container_runtime: self.container_runtime.clone(),
         })
     }
 }
@@ -190,8 +199,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn container_probe_includes_stopped() {
-        assert!(CONTAINER_ARGS.contains(&"--all"), "{CONTAINER_ARGS:?}");
+    fn ps_argv_lists_all_with_ids() {
+        assert_eq!(ps_argv("podman"), vec!["podman", "ps", "--all", "--format", "{{.ID}}\t{{.Names}}\t{{.Status}}"]);
+    }
+
+    #[test]
+    fn no_runtime_means_no_runtime_name() {
+        let mut s = LocalSource::new(ContainerRuntime::None, default_exclude()).unwrap();
+        let a = s.snapshot().unwrap();
+        assert_eq!((a.containers, a.container_runtime), (None, None));
     }
 
     #[test]

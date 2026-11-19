@@ -9,7 +9,7 @@ fn snap(containers: Option<Vec<Container>>) -> Snapshot {
 }
 
 fn ship(n: usize) -> Vec<Container> {
-    (0..n).map(|i| Container { name: format!("CRATE{i:03}"), status: "UP".into() }).collect()
+    (0..n).map(|i| Container { id: format!("id{i}"), name: format!("crate{i:03}"), status: "UP".into(), ..Default::default() }).collect()
 }
 
 fn render(t: &mut CargoTab, area: Rect) -> Buffer {
@@ -52,8 +52,8 @@ fn no_runtime_and_empty_hold() {
 fn lists_containers_with_status_column() {
     let mut t = CargoTab::new();
     t.on_metrics(&snap(Some(vec![
-        Container { name: "WEB".into(), status: "UP".into() },
-        Container { name: "DB".into(), status: "EXITED".into() },
+        Container { id: "1".into(), name: "web".into(), status: "UP".into(), ..Default::default() },
+        Container { id: "2".into(), name: "db".into(), status: "EXITED".into(), ..Default::default() },
     ])));
     let buf = render(&mut t, WINDOWED);
     let s = text(&buf);
@@ -85,7 +85,7 @@ fn singular_title() {
 fn long_names_are_cut() {
     let mut t = CargoTab::new();
     let name = "X".repeat(200);
-    t.on_metrics(&snap(Some(vec![Container { name: name.clone(), status: "UP".into() }])));
+    t.on_metrics(&snap(Some(vec![Container { id: "1".into(), name: name.clone(), status: "UP".into(), ..Default::default() }])));
     let buf = render(&mut t, WINDOWED);
     let (_, y) = find(&buf, "XXXX").unwrap();
     let row = text(&buf).lines().nth(y as usize).unwrap().to_string();
@@ -138,9 +138,16 @@ fn fullscreen_fits_more() {
 #[test]
 fn trouble_sorts_to_the_top_in_runtime_order() {
     let mut t = CargoTab::new();
-    let k = |name: &str, status: &str| Container { name: name.into(), status: status.into() };
+    let k = |name: &str, status: &str| Container { id: name.into(), name: name.into(), status: status.into(), ..Default::default() };
     t.on_metrics(&snap(Some(vec![k("A", "UP"), k("B", "EXITED"), k("C", "UP"), k("D", "RESTARTING"), k("E", "UP")])));
     let buf = render(&mut t, WINDOWED);
     let rows: Vec<u16> = ["B ", "D ", "A ", "C ", "E "].iter().map(|n| find(&buf, &format!("│{n}")).unwrap().1).collect();
     assert!(rows.windows(2).all(|w| w[0] < w[1]), "{rows:?}\n{}", text(&buf));
+}
+
+#[test]
+fn names_display_upper_case() {
+    let mut t = CargoTab::new();
+    t.on_metrics(&snap(Some(vec![Container { id: "1".into(), name: "web".into(), status: "UP".into(), ..Default::default() }])));
+    assert!(text(&render(&mut t, WINDOWED)).contains("WEB"));
 }

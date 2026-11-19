@@ -27,7 +27,8 @@ pub(crate) fn snap() -> Snapshot {
             Proc { pid: 77, name: "FISH".into(), cpu: 1.0, mem: 8 << 20 },
         ],
         failed_units: Some(vec!["AUTORANDR".into()]),
-        containers: Some(vec![Container { name: "WEB".into(), status: "UP".into() }]),
+        containers: Some(vec![Container { id: "1".into(), name: "web".into(), status: "UP".into(), ..Default::default() }]),
+        container_runtime: Some("docker".into()),
     }
 }
 
@@ -221,7 +222,7 @@ fn print_layouts() {
 
 #[test]
 fn many_containers_are_one_summary_line() {
-    let many: Vec<Container> = (0..60).map(|i| Container { name: format!("SVC{i}"), status: "UP".into() }).collect();
+    let many: Vec<Container> = (0..60).map(|i| Container { id: format!("{i}"), name: format!("svc{i}"), status: "UP".into(), ..Default::default() }).collect();
     let mut t = UtilityTab::new();
     t.on_snapshot(Snapshot { containers: Some(many), ..snap() });
     for area in [WINDOWED, FULL] {

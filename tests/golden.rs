@@ -78,7 +78,7 @@ fn windowed_cargo() {
     let mut app = App::new(ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 })
         .with_tab(TabId::Cargo, Box::new(CargoTab::new()));
     let mut containers: Vec<Container> =
-        (0..50).map(|i| Container { name: format!("REFINERY-UNIT-{i:02}"), status: "UP".into() }).collect();
+        (0..50).map(|i| Container { id: format!("{i:012x}"), name: format!("refinery-unit-{i:02}"), status: "UP".into(), ..Default::default() }).collect();
     containers[3].status = "EXITED".into();
     containers[7].name = "AN-EXCEPTIONALLY-LONG-CONTAINER-NAME-THAT-WILL-NOT-FIT-IN-THE-PANE".into();
     app.on_metrics(Snapshot { containers: Some(containers), ..Default::default() });
@@ -191,7 +191,8 @@ fn utility_fullscreen() {
                 Proc { pid: 77, name: "FISH".into(), cpu: 1.0, mem: 8 << 20 },
             ],
             failed_units: Some(vec!["AUTORANDR".into()]),
-            containers: Some(vec![Container { name: "WEB".into(), status: "UP".into() }]),
+            containers: Some(vec![Container { id: "1".into(), name: "web".into(), status: "UP".into(), ..Default::default() }]),
+            container_runtime: Some("docker".into()),
         });
     }
     app.handle_key(Key::Ctrl(']'));

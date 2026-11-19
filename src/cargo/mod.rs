@@ -97,7 +97,7 @@ impl View {
         buf.set_string(inner.x, inner.y, format!("{:<name_w$} {}", "NAME", "STATUS"), Style::new());
         for (i, k) in shown.iter().enumerate() {
             let y = inner.y + 1 + i as u16;
-            buf.set_string(inner.x, y, cut(&k.name, name_w), Style::new());
+            buf.set_string(inner.x, y, cut(&k.name.to_uppercase(), name_w), Style::new());
             let style = if k.status == "UP" { Style::new() } else { Style::new().add_modifier(Modifier::REVERSED) };
             buf.set_string(inner.x + (name_w + 1) as u16, y, cut(&k.status, status_w), style);
         }
