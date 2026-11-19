@@ -7,8 +7,8 @@ use crate::llm::{LlmError, Stop, ToolResult};
 use crate::tools::exec::ToolOutcome;
 use std::time::Duration;
 
-/// Keys sooner than this after an override prompt appears are ignored.
-const ARMING: Duration = Duration::from_secs(1);
+/// Y/N/Esc sooner than this after an override prompt is first drawn are ignored.
+pub(super) const ARMING: Duration = Duration::from_secs(1);
 const AUDIT_OFFLINE: &str = "AUDIT LOG OFFLINE";
 
 /// The transcript note redisplayed for a logged tool result.
@@ -50,21 +50,29 @@ impl MuthurTab {
 
     pub(super) fn override_key(&mut self, key: &Key) {
         let State::Override { call_id, armed_at, .. } = &self.state else { return };
-        if (self.deps.now)() < *armed_at {
+        // Aborting is always safe, so Ctrl-C works even while arming.
+        if *key == Key::Ctrl('c') {
+            self.interrupt();
+            return;
+        }
+        // Unarmed until drawn, then for ARMING after that.
+        if armed_at.is_none_or(|t| (self.deps.now)() < t) {
             return;
         }
         let id = call_id.clone();
         match key {
             Key::Char('y' | 'Y') => self.answer(&id, true),
             Key::Char('n' | 'N') | Key::Esc => self.answer(&id, false),
-            Key::Ctrl('c') => self.interrupt(),
             _ => {}
         }
     }
 
     fn answer(&mut self, call_id: &str, yes: bool) {
+        let Some(turn) = &mut self.turn else {
+            self.state = State::Ready;
+            return;
+        };
         self.state = State::Tools;
-        let Some(turn) = &mut self.turn else { return };
         let effects = turn.on_confirm(call_id, yes);
         self.apply(effects, None);
     }
@@ -96,6 +104,10 @@ impl MuthurTab {
                         self.settle_segment();
                     }
                     self.spawn_request(forced_final);
+                    // A failed window build ended the turn (end_early); nothing after it applies.
+                    if self.turn.is_none() {
+                        break;
+                    }
                 }
                 Effect::Run { call_id, invocation } => {
                     (self.deps.run_tool)(self.req_id, call_id, invocation);
@@ -106,7 +118,8 @@ impl MuthurTab {
                     }
                 }
                 Effect::Confirm { call_id, prompt } => {
-                    self.state = State::Override { call_id, prompt, armed_at: (self.deps.now)() + ARMING };
+                    // Armed from the first render, so a prompt raised in the background still gets its delay.
+                    self.state = State::Override { call_id, prompt, armed_at: None };
                     self.activity = true;
                 }
                 Effect::Note(s) => {

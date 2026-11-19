@@ -441,7 +441,13 @@ fn tool_use(h: &mut H, req: u64, calls: &[(&str, &str, serde_json::Value)]) {
     h.t.on_llm(req, StreamEvent::Done { stop: Stop::ToolUse, model: Some("claude-test".into()), raw: Some(raw) });
 }
 
+/// Raises the restart override prompt and renders it once (which starts arming).
 fn restart_prompt(h: &mut H) {
+    raise_restart(h);
+    screen(&mut h.t, 80, 40);
+}
+
+fn raise_restart(h: &mut H) {
     submit(h, "restart nginx");
     tool_use(h, 1, &[("c1", "restart_service", json!({"unit": "nginx"}))]);
 }
@@ -660,4 +666,72 @@ fn history_shows_tool_notes() {
 fn persona_mentions_tools() {
     assert!(PERSONA.contains("operator override"));
     assert!(!PERSONA.contains("do not yet have access"));
+}
+
+#[test]
+fn override_arms_from_first_render() {
+    let mut h = harness();
+    raise_restart(&mut h);
+    // In the background: no render for a long while, then the operator looks.
+    h.tick(5000);
+    h.t.handle_key(&Key::Char('y'));
+    assert!(h.ran.borrow().is_empty(), "unseen prompt must not be armed");
+    assert!(status_row(&mut h).contains("OVERRIDE REQUIRED"));
+    h.t.handle_key(&Key::Char('y'));
+    assert!(h.ran.borrow().is_empty(), "keys right after first render are ignored");
+    assert!(matches!(h.t.state, State::Override { .. }));
+    h.tick(1100);
+    h.t.handle_key(&Key::Char('y'));
+    assert_eq!(h.ran.borrow().len(), 1);
+}
+
+#[test]
+fn ctrl_c_aborts_override_during_arming() {
+    for render in [false, true] {
+        let mut h = harness();
+        if render { restart_prompt(&mut h) } else { raise_restart(&mut h) }
+        h.tick(100);
+        h.t.handle_key(&Key::Ctrl('c'));
+        assert_eq!(h.t.state, State::Ready);
+        assert!(h.ran.borrow().is_empty());
+        let recs = records(&h);
+        let n = recs.len();
+        assert_eq!(recs[n - 2]["results"][0]["content"], "ABORTED BY OPERATOR");
+        assert_eq!(recs[n - 1]["stop"], "interrupted");
+    }
+}
+
+#[test]
+fn stream_error_mid_turn_closes_log() {
+    let mut h = harness();
+    submit(&mut h, "status");
+    tool_use(&mut h, 1, &[("c1", "ship_status", json!({}))]);
+    // While tools run no stream is open: a stray error is ignored.
+    h.t.on_llm(1, StreamEvent::Error(LlmError::SignalLost));
+    assert_eq!(h.t.state, State::Tools);
+    h.t.on_tool_done(1, "c1".into(), ok("ship"));
+    h.t.on_llm(2, StreamEvent::Error(LlmError::SignalLost));
+    assert_eq!(h.t.state, State::Ready);
+    assert!(text(&mut h.t).contains("UNABLE TO COMPLY -- SIGNAL LOST"));
+    let recs = records(&h);
+    let kinds: Vec<&str> = recs.iter().filter_map(|r| r["kind"].as_str()).filter(|k| *k != "epoch").collect();
+    assert_eq!(kinds, ["user", "assistant", "tool", "assistant"]);
+    let last = recs.last().unwrap();
+    assert_eq!(last["stop"], "error");
+    // Late outcomes after the turn ended do nothing.
+    h.t.on_tool_done(1, "c1".into(), ok("late"));
+    submit(&mut h, "again");
+    let s = h.sent.borrow();
+    assert_eq!(s.len(), 3);
+    assert_eq!(s[2].1.messages.len(), 1, "failed exchange must be left out: {:?}", s[2].1.messages);
+}
+
+#[test]
+fn answer_without_turn_returns_ready() {
+    let mut h = harness();
+    restart_prompt(&mut h);
+    h.t.turn = None;
+    h.tick(1100);
+    h.t.handle_key(&Key::Char('y'));
+    assert_eq!(h.t.state, State::Ready);
 }

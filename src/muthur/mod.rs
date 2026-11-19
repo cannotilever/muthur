@@ -77,8 +77,9 @@ enum State {
     Confirm,
     /// Tool results pending.
     Tools,
-    /// A tier-2 call awaits the operator; keys before `armed_at` are ignored.
-    Override { call_id: String, prompt: String, armed_at: Instant },
+    /// A tier-2 call awaits the operator. `armed_at` is set when the prompt is
+    /// first drawn; Y/N/Esc before then (or before it is drawn) are ignored.
+    Override { call_id: String, prompt: String, armed_at: Option<Instant> },
 }
 
 pub struct MuthurTab {
@@ -442,6 +443,9 @@ impl Tab for MuthurTab {
         let (status, reverse) = self.status_text(now);
         let style = if reverse { Style::default().add_modifier(Modifier::REVERSED) } else { Style::default() };
         put(buf, x, status_y, w, &status, style);
+        if let State::Override { armed_at: armed @ None, .. } = &mut self.state {
+            *armed = Some(now + turn::ARMING);
+        }
         if self.scroll > 0 {
             let marker = format!("[SCROLL -{}]", self.scroll);
             let mw = marker.len() as u16;
