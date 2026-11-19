@@ -280,6 +280,7 @@ fn build_muthur(
     ship: &str,
     tx: UnboundedSender<Event>,
     slot: crate::tools::exec::SnapshotSlot,
+    audit: crate::tools::audit::SharedAudit,
 ) -> anyhow::Result<crate::muthur::MuthurTab> {
     use crate::llm::{LlmError, StreamEvent, client::LlmClient};
     use crate::muthur::{Abort, MuthurDeps, MuthurTab};
@@ -322,7 +323,6 @@ fn build_muthur(
             });
         }),
     };
-    let audit = open_audit_log();
     Ok(MuthurTab::new(cfg.muthur.clone(), tools, ship, log, audit, deps))
 }
 
@@ -444,7 +444,9 @@ pub fn run(cfg: &Config, strict: bool) -> anyhow::Result<()> {
     let chrome = ChromeView { ship_name: ship.clone(), year_offset: cfg.chrome.year_offset };
     let slot = crate::tools::exec::SnapshotSlot::default();
     start_metrics(cfg, &tx, slot.clone());
-    let muthur = build_muthur(cfg, &chrome.ship_name, tx.clone(), slot)?;
+    // One audit log for every writer (MU/TH/UR now, CARGO next).
+    let audit = crate::tools::audit::shared(open_audit_log());
+    let muthur = build_muthur(cfg, &chrome.ship_name, tx.clone(), slot, audit)?;
     let mut app = App::assemble(chrome, muthur, UtilityTab::new(), crate::cargo::CargoTab::new(), shell);
     if cfg.chrome.splash {
         app = app.with_splash(splash_for(cfg, &ship));
@@ -751,7 +753,7 @@ mod tests {
         };
         let tools = crate::tools::ToolDefs::new(&Default::default());
         let audit = crate::tools::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap();
-        let m = MuthurTab::new(cfg, tools, "USCSS TEST", log, audit, deps);
+        let m = MuthurTab::new(cfg, tools, "USCSS TEST", log, crate::tools::audit::shared(audit), deps);
         let shell = crate::shell::ShellTab::new(
             crate::shell::ShellConfig { command: "sh".into(), args: vec!["-c".into(), "sleep 2".into()], scrollback: 10 },
             crate::scroll::HintSlot::default(),

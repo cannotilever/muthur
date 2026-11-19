@@ -25,6 +25,13 @@ pub struct AuditEntry {
     pub output: String,
 }
 
+/// One log for every writer (MU/TH/UR and CARGO); the app is single-threaded.
+pub type SharedAudit = std::rc::Rc<std::cell::RefCell<AuditLog>>;
+
+pub fn shared(log: AuditLog) -> SharedAudit {
+    std::rc::Rc::new(std::cell::RefCell::new(log))
+}
+
 pub struct AuditLog {
     path: Option<PathBuf>,
     needs_newline: bool,

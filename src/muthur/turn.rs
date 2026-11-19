@@ -5,10 +5,8 @@ use crate::agent::{Effect, ABORTED_ISSUED};
 use crate::input::Key;
 use crate::llm::{LlmError, Stop, ToolResult};
 use crate::tools::exec::ToolOutcome;
-use std::time::Duration;
 
 /// Y/N/Esc sooner than this after an override prompt is seen (see `State::Override`) are ignored.
-pub(super) const ARMING: Duration = Duration::from_secs(1);
 const AUDIT_OFFLINE: &str = "AUDIT LOG OFFLINE";
 
 /// The transcript note redisplayed for a logged tool result.
@@ -31,7 +29,7 @@ impl MuthurTab {
         self.abort = None;
         let calls = std::mem::take(&mut self.calls);
         let effects = match &mut self.turn {
-            Some(t) => t.on_done(&stop, calls, &self.tools, self.audit.is_online()),
+            Some(t) => t.on_done(&stop, calls, &self.tools, self.audit.borrow().is_online()),
             None => vec![Effect::Finished { truncated: false }],
         };
         if !effects.iter().any(|e| matches!(e, Effect::Finished { .. })) {
@@ -82,7 +80,7 @@ impl MuthurTab {
             return;
         };
         self.state = State::Tools;
-        let effects = turn.on_confirm(call_id, yes, self.audit.is_online());
+        let effects = turn.on_confirm(call_id, yes, self.audit.borrow().is_online());
         self.apply(effects, None);
     }
 
@@ -153,7 +151,7 @@ impl MuthurTab {
 
     fn record_audit(&mut self, entry: &crate::tools::audit::AuditEntry) {
         let ts = (self.deps.timestamp)();
-        if let Err(e) = self.audit.append(entry, &ts) {
+        if let Err(e) = self.audit.borrow_mut().append(entry, &ts) {
             tracing::error!("audit log: cannot record tool call: {e}");
             self.status_flash = Some(AUDIT_OFFLINE.into());
         }

@@ -10,7 +10,7 @@ use crate::config::MuthurSection;
 use crate::input::Key;
 use crate::agent::{Call, Orphan, Turn};
 use crate::llm::{ChatRequest, LlmError, StreamEvent};
-use crate::tools::audit::AuditLog;
+use crate::tools::audit::SharedAudit;
 use crate::tools::{Invocation, ToolDefs};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
@@ -91,7 +91,7 @@ pub struct MuthurTab {
     log: ChatLog,
     deps: MuthurDeps,
     tools: ToolDefs,
-    audit: AuditLog,
+    audit: SharedAudit,
     /// The agent turn of the inquiry in progress.
     turn: Option<Turn>,
     /// Tool calls received in the current stream.
@@ -128,7 +128,7 @@ pub struct MuthurTab {
 }
 
 impl MuthurTab {
-    pub fn new(cfg: MuthurSection, tools: ToolDefs, ship: &str, log: ChatLog, audit: AuditLog, deps: MuthurDeps) -> Self {
+    pub fn new(cfg: MuthurSection, tools: ToolDefs, ship: &str, log: ChatLog, audit: SharedAudit, deps: MuthurDeps) -> Self {
         let mut transcript = Vec::new();
         for ex in log.history() {
             transcript.push(Entry::User(strip_ship_time(&ex.user).to_string()));
@@ -458,7 +458,7 @@ impl Tab for MuthurTab {
             if !*drawn {
                 *drawn = true;
             } else if armed_at.is_none() {
-                *armed_at = Some(now + turn::ARMING);
+                *armed_at = Some(now + crate::app::ARMING);
             }
         }
         if self.scroll > 0 {

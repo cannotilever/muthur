@@ -370,7 +370,7 @@ pub(crate) fn fake_muthur() -> (crate::muthur::MuthurTab, tempfile::TempDir) {
         ..Default::default()
     });
     let audit = crate::tools::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap();
-    (MuthurTab::new(cfg, tools, "USCSS TEST", log, audit, deps), dir)
+    (MuthurTab::new(cfg, tools, "USCSS TEST", log, crate::tools::audit::shared(audit), deps), dir)
 }
 
 type Ran = std::rc::Rc<std::cell::RefCell<Vec<String>>>;
@@ -396,7 +396,7 @@ fn fake_muthur_clocked() -> (crate::muthur::MuthurTab, tempfile::TempDir, std::r
         ..Default::default()
     });
     let audit = crate::tools::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap();
-    (MuthurTab::new(cfg, tools, "USCSS TEST", log, audit, deps), dir, clock, ran)
+    (MuthurTab::new(cfg, tools, "USCSS TEST", log, crate::tools::audit::shared(audit), deps), dir, clock, ran)
 }
 
 #[test]

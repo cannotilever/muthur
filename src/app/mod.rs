@@ -15,6 +15,9 @@ use ratatui::Frame;
 use ratatui::layout::Position;
 pub use tabs::{PlaceholderTab, TABS, Tab, TabId};
 
+/// How long a Y/N prompt must be on screen before Y counts (MU/TH/UR, CARGO).
+pub const ARMING: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// What the title bar shows.
 pub struct ChromeView {
     pub ship_name: String,

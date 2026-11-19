@@ -37,7 +37,7 @@ fn muthur_tab(path: &std::path::Path, prefill: Option<(&str, &str)>) -> (muthur:
         ..Default::default()
     });
     let audit = AuditLog::open(path.with_file_name("audit.jsonl")).unwrap();
-    (MuthurTab::new(cfg, tools, "USCSS TEST", log, audit, deps), clock)
+    (MuthurTab::new(cfg, tools, "USCSS TEST", log, muthur::tools::audit::shared(audit), deps), clock)
 }
 
 fn scene(name: &str, keys: &[Key]) {
