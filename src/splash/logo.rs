@@ -68,6 +68,14 @@ mod tests {
         let l = Logo::shipped();
         assert!(l.height() >= 1 && l.height() <= MAX_ROWS, "{} rows", l.height());
         assert!(l.width() <= MAX_COLS, "{} cols", l.width());
-        assert!(l.rows().iter().flatten().any(|c| *c == Cell::Block));
+        assert!(l.rows().iter().flatten().any(|c| *c != Cell::Char(' ')), "logo is blank");
+    }
+
+    #[test]
+    fn shipped_logo_is_plain_ascii() {
+        // ASCII art: one byte per cell on the wire, no attribute switching.
+        for c in Logo::shipped().rows().iter().flatten() {
+            assert!(matches!(c, Cell::Char(ch) if ch.is_ascii_graphic() || *ch == ' '), "{c:?}");
+        }
     }
 }

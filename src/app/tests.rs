@@ -621,3 +621,20 @@ fn shell_learns_passthrough_before_each_pty_event() {
     app.on_pty(PtyEvent::Output(b"y".to_vec()));
     assert_eq!(st.lock().unwrap().passthrough, vec![false, true]);
 }
+
+#[test]
+fn natural_finish_passes_the_bell_on_once() {
+    let mut app = App::new(chrome()).with_splash(stale_splash());
+    draw(&mut app);
+    assert!(app.take_bell());
+    assert!(!app.take_bell());
+}
+
+#[test]
+fn skipping_before_ready_does_not_ring() {
+    let mut app = App::new(chrome()).with_splash(fresh_splash());
+    draw(&mut app);
+    keys(&mut app, &[Key::Char('x')]);
+    draw(&mut app);
+    assert!(!app.take_bell());
+}

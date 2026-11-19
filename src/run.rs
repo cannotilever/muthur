@@ -146,6 +146,11 @@ pub async fn event_loop<W: Write>(
             terminal.draw(|f| app.render(f, clock()))?;
             dirty = false;
             was_passthrough = app.passthrough;
+            if app.take_bell() {
+                let w = terminal.backend_mut().writer_mut();
+                w.write_all(b"\x07")?;
+                w.flush()?;
+            }
             // The splash can end inside render: quit or clear now, not after
             // the next wake-up.
             if app.quit {
@@ -537,6 +542,7 @@ mod tests {
         assert_eq!(out.matches("\x1b[2J").count(), 2, "initial clear + one handover clear");
         let (clear, chrome) = (out.rfind("\x1b[2J").unwrap(), out.find("17 NOV 2137 14:02").expect("tui painted"));
         assert!(chrome > clear, "TUI must be painted only after the clear");
+        assert_eq!(out.matches('\x07').count(), 1, "one bell at READY.");
     }
 
     #[tokio::test]
@@ -549,6 +555,7 @@ mod tests {
         assert!(r.expect("loop did not exit").is_ok());
         let out = String::from_utf8(t.backend().writer().clone()).unwrap();
         assert!(!out.contains("17 NOV 2137 14:02"), "placeholder TUI must not be drawn");
+        assert_eq!(out.matches('\x07').count(), 1, "muthur splash still rings before exiting");
     }
 
     #[tokio::test]

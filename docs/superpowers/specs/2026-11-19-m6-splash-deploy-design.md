@@ -4,7 +4,7 @@
 
 ## Goal
 
-Every login on the WY-60 opens with a Weyland-Yutani boot splash: a block-art logo, then boot lines typed at teletype pace that report real facts about the ship. Any key skips it. The splash runs inside the normal event loop, so the tabs, metrics, PTY and LLM client warm up behind it.
+Every login on the WY-60 opens with a Weyland-Yutani boot splash: an ASCII-art logo, then boot lines typed at teletype pace that report real facts about the ship. Any key skips it. The splash runs inside the normal event loop, so the tabs, metrics, PTY and LLM client warm up behind it.
 
 The server, `omicron` (Arch, systemd), can be set up from the dev machine:
 - `make install-system` installs the udev rule and the getty override once.
@@ -16,8 +16,8 @@ The server, `omicron` (Arch, systemd), can be set up from the dev machine:
 |---|---|
 | Target OS | Arch / systemd only. No OpenRC files. |
 | When the splash plays | Every launch. `[chrome] splash = true` by default; `false` disables it. |
-| Style | Centred block-art logo, then a dotted-leader boot log (option B from brainstorming). The fallback, if the logo misbehaves on hardware, is the plain boot log without the logo. |
-| Logo source | Data, not code: `assets/wy-logo.txt`, built in with `include_str!`. At most 22 rows × 80 columns. `█` = block (reverse-video space on the wire); any other character is printed as itself. |
+| Style | Centred ASCII-art logo (shaded `:@#` strokes; changed from block art after operator review), then a dotted-leader boot log (option B from brainstorming). The fallback, if the logo misbehaves on hardware, is the plain boot log without the logo. |
+| Logo source | Data, not code: `assets/wy-logo.txt`, built in with `include_str!`. At most 22 rows × 80 columns. `█` = block (reverse-video space on the wire); any other character is printed as itself. The shipped art is plain ASCII. |
 | Vessel name | `ship_name`, as shown in the chrome (default `USCSS <HOSTNAME>`). |
 | Placement | A `Splash` mode inside `App` and the existing event loop (approach 1), not a synchronous pre-roll. |
 | Facts | Taken from the first metrics snapshot. Link facts come from config, interface status from `build_muthur`. |
@@ -88,11 +88,11 @@ The phases are `Logo → Header → Lines → Ready → Done`.
 
 1. **Logo.** The first frame clears the screen and draws the whole logo. The wire paints it top to bottom at line speed (about 0.7 s for 2.5 KB). There is no artificial animation.
 2. **Header.** Drawn in the frame after the logo.
-3. **Lines.** The boot lines type out through `muthur::reveal::Reveal` at 400 characters/s. After each value there is a 150 ms pause. Before the value of a fact line, if no snapshot has arrived, the reveal waits up to 1.5 s from when that line's dots finished. On timeout, or at once if metrics are offline, the value is `NO DATA`. Once one fact line has timed out, all later fact lines without data show `NO DATA` without waiting again.
-4. **Ready.** `READY.` appears and holds for 1 s.
+3. **Lines.** The boot lines type out through `muthur::reveal::Reveal` at 400 characters/s. After each value there is a 400 ms pause. Before the value of a fact line, if no snapshot has arrived, the reveal waits up to 1.5 s from when that line's dots finished. On timeout, or at once if metrics are offline, the value is `NO DATA`. Once one fact line has timed out, all later fact lines without data show `NO DATA` without waiting again.
+4. **Ready.** `READY.` appears, the terminal bell rings once (BEL, written by the run loop; skipping before `READY.` means no bell), and the screen holds for 2.5 s.
 5. **Done.** `App` drops the splash and sets `redraw`. The TUI arrives with the normal full repaint.
 
-The splash takes about 4 s in total with a warm snapshot. The 400 characters/s rate and the 150 ms / 1.5 s / 1 s durations are constants in `splash/mod.rs`. They are not config keys.
+The splash takes about 7.5 s in total with a warm snapshot. The 400 characters/s rate and the 400 ms / 1.5 s / 2.5 s durations are constants in `splash/mod.rs`. They are not config keys.
 
 ## `Splash` API
 
@@ -217,7 +217,7 @@ TDD, as in M3–M5.
 
 **`splash` unit tests** (time-injected):
 - Phase order and the times at which each phase starts with a ready snapshot.
-- The reveal reaches `READY.`, which holds 1 s before `is_done`.
+- The reveal reaches `READY.`, which rings the bell once and holds 2.5 s before `is_done`.
 - Fact line waits 1.5 s, then shows `NO DATA`, and later fact lines don't wait again.
 - `on_metrics_offline` gives `NO DATA` with no wait.
 - Fact formatting from a fixed `Snapshot`: cores, memory, uptime, `NOMINAL` / `2 FAILED` / `NOT MONITORED`.
@@ -239,6 +239,11 @@ TDD, as in M3–M5.
 - Boot with the adapter attached, and check that the getty comes up on `/dev/wy60`.
 - Log in, and check that the splash plays and the TUI follows.
 - Kill MUTHUR, and check that plain fish remains.
+
+## Changes after operator review (2026-11-19)
+
+- Logo redrawn as ASCII art; pauses lengthened to 400 ms per line and 2.5 s on `READY.`; one BEL at `READY.` (BEL added to the `--strict` allowlist).
+- Shell tab answers Primary Device Attributes (`ESC[c` / `ESC[0c`) with `ESC[?1;2c`, except in passthrough. fish 4 otherwise waits 10 s for a reply at startup.
 
 ## Out of scope
 

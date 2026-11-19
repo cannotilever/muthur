@@ -12,9 +12,9 @@ use std::time::{Duration, Instant};
 
 pub const LOGO_SETTLE: Duration = Duration::from_millis(800);
 pub const CPS: u32 = 400;
-pub const VALUE_PAUSE: Duration = Duration::from_millis(150);
+pub const VALUE_PAUSE: Duration = Duration::from_millis(400);
 pub const FACT_WAIT: Duration = Duration::from_millis(1500);
-pub const READY_HOLD: Duration = Duration::from_millis(1000);
+pub const READY_HOLD: Duration = Duration::from_millis(2500);
 
 const NO_DATA: &str = "NO DATA";
 /// 0-based x of the first boot-line column (column 9).
@@ -91,6 +91,8 @@ pub struct Splash {
     timed_out: bool,
     waiting: bool,
     ready_at: Option<Instant>,
+    /// `READY.` appeared and the bell has not been taken yet.
+    bell: bool,
     done: bool,
 }
 
@@ -140,6 +142,7 @@ impl Splash {
             timed_out: false,
             waiting: false,
             ready_at: None,
+            bell: false,
             done: false,
         }
     }
@@ -203,6 +206,7 @@ impl Splash {
                 }
                 Step::Ready => {
                     self.ready_at = Some(self.cursor);
+                    self.bell = true;
                 }
             }
             self.next += 1;
@@ -219,6 +223,11 @@ impl Splash {
             changed = true;
         }
         changed
+    }
+
+    /// True once, when `READY.` has appeared: the caller rings the bell.
+    pub fn take_bell(&mut self) -> bool {
+        std::mem::take(&mut self.bell)
     }
 
     pub fn tick_interval(&self) -> Duration {

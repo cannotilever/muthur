@@ -49,7 +49,8 @@ impl<W: Write, D: Dialect> StrictWriter<W, D> {
         }
         match b {
             0x1b => self.pending.push(b),
-            b'\r' | b'\n' | 0x08 | 0x0f | 0x20..=0x7e => {}
+            // BEL: the splash rings at READY.
+            b'\r' | b'\n' | 0x07 | 0x08 | 0x0f | 0x20..=0x7e => {}
             _ => self.violation(vec![b]),
         }
     }
@@ -102,7 +103,14 @@ mod tests {
     #[test]
     fn stray_controls_are_violations() {
         let mut w = StrictWriter::new(Vec::new(), Vt100Dialect);
-        w.write_all(b"\x07\x1b]0;x").unwrap();
-        assert_eq!(w.violations, vec![vec![0x07], b"\x1b]".to_vec()]);
+        w.write_all(b"\x05\x1b]0;x").unwrap();
+        assert_eq!(w.violations, vec![vec![0x05], b"\x1b]".to_vec()]);
+    }
+
+    #[test]
+    fn bell_is_allowed() {
+        let mut w = StrictWriter::new(Vec::new(), Vt100Dialect);
+        w.write_all(b"\x07").unwrap();
+        assert!(w.violations.is_empty(), "{:?}", w.violations);
     }
 }

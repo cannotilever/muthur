@@ -40,6 +40,8 @@ pub struct App {
     /// `muthur splash`: quit as soon as the splash ends or is skipped.
     pub quit_after_splash: bool,
     splash: Option<Splash>,
+    /// The splash reached `READY.`; the run loop sends BEL.
+    bell: bool,
     tabs: [Box<dyn Tab>; 3],
     activity: [bool; 3],
     chrome: ChromeView,
@@ -58,6 +60,11 @@ impl App {
     pub fn with_splash(mut self, splash: Splash) -> Self {
         self.splash = Some(splash);
         self
+    }
+
+    /// True once after the splash reached `READY.`.
+    pub fn take_bell(&mut self) -> bool {
+        std::mem::take(&mut self.bell)
     }
 
     pub fn splash_active(&self) -> bool {
@@ -140,6 +147,7 @@ impl App {
             passthrough: false,
             quit_after_splash: false,
             splash: None,
+            bell: false,
             tabs,
             activity: [false; 3],
             chrome,
@@ -219,6 +227,7 @@ impl App {
         let area = frame.area();
         if let Some(sp) = &mut self.splash {
             sp.advance(std::time::Instant::now());
+            self.bell |= sp.take_bell();
             if !sp.is_done() {
                 for tab in self.tabs.iter_mut() {
                     tab.set_obscured(true);

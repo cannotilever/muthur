@@ -115,26 +115,26 @@ fn render_keeps_final_frame_after_done() {
 }
 
 #[test]
-fn ready_holds_one_second_then_done() {
+fn ready_holds_two_and_a_half_seconds_then_done() {
     let t0 = Instant::now();
     let mut s = Splash::new(info(), t0);
     s.on_metrics(&snap());
     let t = step_until(&mut s, t0, 20_000, |s| text(s).lines().nth(42).unwrap().trim() == "READY.");
     assert!(!s.is_done());
     // The hold runs from the step's due time, up to one 10 ms tick before `t`.
-    s.advance(ms(t0, t + 989));
+    s.advance(ms(t0, t + 2489));
     assert!(!s.is_done());
-    s.advance(ms(t0, t + 1000));
+    s.advance(ms(t0, t + 2500));
     assert!(s.is_done());
 }
 
 #[test]
-fn total_time_with_warm_snapshot_is_about_four_seconds() {
+fn total_time_with_warm_snapshot_is_about_seven_and_a_half_seconds() {
     let t0 = Instant::now();
     let mut s = Splash::new(info(), t0);
     s.on_metrics(&snap());
     let d = done_at(&mut s, t0);
-    assert!((3_000..=5_000).contains(&d), "{d}");
+    assert!((6_500..=8_500).contains(&d), "{d}");
 }
 
 #[test]
@@ -327,4 +327,40 @@ fn info_online_with_key() {
     cfg.muthur.api_key = Some("k".into());
     let i = SplashInfo::from_config(&cfg, "USCSS X", info_date());
     assert!(matches!(i.interface, Interface::Online));
+}
+
+#[test]
+fn lines_linger_400_ms_after_each_value() {
+    let t0 = Instant::now();
+    let mut s = Splash::new(info(), t0);
+    s.on_metrics(&snap());
+    let ok = step_until(&mut s, t0, 20_000, |s| text(s).contains(" OK"));
+    s.advance(ms(t0, ok + 380));
+    assert!(!text(&s).contains("VESSEL"), "next line started before the 400 ms pause");
+    s.advance(ms(t0, ok + 420));
+    assert!(text(&s).contains("VESSEL"));
+}
+
+#[test]
+fn bell_rings_once_when_ready_appears() {
+    let t0 = Instant::now();
+    let mut s = Splash::new(info(), t0);
+    s.on_metrics(&snap());
+    s.advance(ms(t0, 2_000));
+    assert!(!s.take_bell(), "no bell before READY.");
+    step_until(&mut s, t0, 20_000, |s| text(s).lines().nth(42).unwrap().trim() == "READY.");
+    assert!(s.take_bell());
+    assert!(!s.take_bell(), "rings once");
+    s.advance(ms(t0, 60_000));
+    assert!(!s.take_bell());
+}
+
+#[test]
+fn one_late_advance_still_rings() {
+    let t0 = Instant::now();
+    let mut s = Splash::new(info(), t0);
+    s.on_metrics(&snap());
+    s.advance(ms(t0, 60_000));
+    assert!(s.is_done());
+    assert!(s.take_bell());
 }
