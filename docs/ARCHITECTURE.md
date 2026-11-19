@@ -106,6 +106,8 @@ Modelled on the Alien: Isolation personal terminal
 
 - **F1 / F2 / F3 / F4** — MU/TH/UR / Utility / Cargo / Shell (sidebar order;
   Utility is shown at startup). F4 is therefore not passed to the shell.
+- **Cargo folder:** arrows select, `U`/`R`/`D` start / restart / stop
+  (restart and stop ask Y/N), `L` logs, Esc back.
 - **Prefix `Ctrl-]`** then:
   - `f` fullscreen toggle · `p` passthrough toggle · `[` scrollback (Shell)
   - `r` force full redraw · `]` send a literal `Ctrl-]` · `?` help
@@ -126,7 +128,7 @@ Single Rust crate, tokio runtime.
 | `input` | Byte stream → key events via configurable keymap; prefix-key state machine. |
 | `app` | Event bus (`Input`, `Tick`, `PtyOutput`, `Llm`, `Metrics`, later `Alert`), chrome rendering, tab focus, per-tab fullscreen, mode transitions. |
 | `tabs::utility` | System monitor (see below). |
-| `tabs::cargo` | Container manifest (see below). |
+| `tabs::cargo` | Container manifest and actions: selection, start/restart/stop with Y/N, log view (see below). |
 | `tabs::muthur` | Chat UI (see below). |
 | `tabs::shell` | PTY + virtual terminal + translation (see below). |
 | `llm` | Streaming LLM client (reqwest + rustls/ring, no aws-lc): Anthropic Messages and OpenAI-compatible protocols, SSE parsing, typed `LlmError`s, idle timeout. Each request runs as a tokio task and sends `Event::Llm` to the loop. Deploy note: Alpine needs the `ca-certificates` package for TLS. |
@@ -264,9 +266,30 @@ The container manifest: `CARGO - N CONTAINERS`, a NAME / STATUS row per
 container, stopped and crashed ones included (`ps --all`; names cut to fit;
 any status other than `UP` in reverse video and sorted to the top, so a
 dead container is never scrolled out of sight).
-Fed by the same snapshots as Utility. A list longer than the pane scrolls:
-Shift-F15/F16 a page, arrows a row, Home to the top; the title shows the
-visible range. Says `NO CONTAINER RUNTIME` or `HOLD EMPTY` otherwise.
+Fed by the same snapshots as Utility. Says `NO CONTAINER RUNTIME` or
+`HOLD EMPTY` when there is nothing to list.
+
+- **Selection** — the arrows move a `>` + underline cursor (Shift-F15/F16 a
+  page, Home to the top); the list scrolls to keep it visible and the title
+  shows the visible range. The cursor follows the container ID across
+  re-sorts. Below the list: the selected container's full status
+  (`DB: EXITED (137) 2 HOURS AGO`) or a message, then the key hint.
+- **Actions** — `U` start, `R` restart, `D` stop, either case, on the
+  selected container by ID (`<docker|podman> <verb> <id>`, argv only, 30 s
+  timeout, no elevation: the account is in the `docker` group). Restart and
+  stop ask `<VERB> <NAME>? Y/N`, armed like MU/TH/UR's override prompt (on
+  screen uncovered for `ARMING`, 1 s); N or Esc cancels. One command at a
+  time (`BUSY`); progress, result and errors (reverse video) show on the
+  message line, and a `ps --all` refresh follows each action.
+- **Logs** — `L` fetches `logs --tail 200` (stdout and stderr merged, 10 s)
+  into a full-pane view: escape sequences and control characters stripped,
+  lines wrapped, opened at the newest line, scrollable; `L` refetches, Esc
+  returns to the list.
+- **Audit** — every command goes into `audit.jsonl` (shared with MU/TH/UR's
+  tools) as `cargo_start`/`cargo_restart`/`cargo_stop`/`cargo_logs`; restart
+  and stop are tier 2 `confirmed`, start and logs tier 1 `auto`.
+
+Spec: docs/superpowers/specs/2026-11-19-cargo-actions-design.md
 
 ### Metrics
 
@@ -304,3 +327,6 @@ for multi-server monitoring — tools then get a "which host" parameter.
 - InfluxDB metrics source / multi-server.
 - Multiple chat sessions ("folders").
 - Idle lock (v1 relies on the terminal's own screen blanking).
+- Cargo: MU/TH/UR tools that act on containers; live log following;
+  remove / pull / exec; acting on several containers at once; a sidebar
+  marker when a container dies on its own.
