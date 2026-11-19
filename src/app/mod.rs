@@ -99,6 +99,10 @@ impl App {
         self.tabs[TabId::Muthur.index()].on_llm(req_id, ev);
     }
 
+    pub fn on_cargo_done(&mut self, seq: u64, out: crate::tools::runner::RunOutput, ms: u64) {
+        self.tabs[TabId::Cargo.index()].on_cargo_done(seq, out, ms);
+    }
+
     pub fn on_tool_done(&mut self, req_id: u64, call_id: String, outcome: crate::tools::exec::ToolOutcome) {
         self.tabs[TabId::Muthur.index()].on_tool_done(req_id, call_id, outcome);
     }

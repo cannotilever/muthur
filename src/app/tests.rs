@@ -459,10 +459,14 @@ struct SpyState {
     metrics: usize,
     activity: bool,
     passthrough: Vec<bool>,
+    cargo_done: Vec<u64>,
 }
 struct Spy(Arc<Mutex<SpyState>>);
 impl Tab for Spy {
     fn render(&mut self, _area: Rect, _buf: &mut Buffer) {}
+    fn on_cargo_done(&mut self, seq: u64, _out: crate::tools::runner::RunOutput, _ms: u64) {
+        self.0.lock().unwrap().cargo_done.push(seq);
+    }
     fn handle_key(&mut self, key: &Key) {
         self.0.lock().unwrap().keys.push(key.clone());
     }
@@ -644,4 +648,12 @@ fn metrics_and_outage_reach_utility_and_cargo() {
         let all = screen_text(&draw(&mut app));
         assert!(all.contains("TELEMETRY OFFLINE") && all.contains("NO /PROC"), "{id:?}\n{all}");
     }
+}
+
+#[test]
+fn cargo_done_reaches_cargo() {
+    let st = Arc::new(Mutex::new(SpyState::default()));
+    let mut app = spy_app(&st, TabId::Cargo);
+    app.on_cargo_done(7, crate::tools::runner::RunOutput::NotFound, 3);
+    assert_eq!(st.lock().unwrap().cargo_done, vec![7]);
 }
