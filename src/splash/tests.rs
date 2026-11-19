@@ -81,9 +81,9 @@ fn lines_wait_for_logo_settle() {
     let mut s = Splash::new(info(), t0);
     s.on_metrics(&snap());
     s.advance(ms(t0, 799));
-    assert!(!text(&s).contains("SYS"));
+    assert!(!text(&s).contains("SYSTEM CHECK"));
     s.advance(ms(t0, 900));
-    assert!(text(&s).contains("SYS"));
+    assert!(text(&s).contains("SYSTEM CHECK"));
 }
 
 #[test]
@@ -95,7 +95,7 @@ fn full_run_formats_every_fact() {
     let out = text(&s);
     let row = |n: usize| out.lines().nth(n - 1).unwrap().to_string();
     assert_eq!(row(27).trim_end(), format!("        SYSTEM CHECK {} OK", ".".repeat(25)));
-    for want in ["USCSS OMICRON", "16 CORES", "31.2G", "3D 04:12", "38400 BAUD  XON/XOFF", "NOMINAL", "MU/TH/UR [ONLINE]"] {
+    for want in ["USCSS OMICRON", "16 CORES", "31.2G", "3D 04:12", "38400 BAUD  XON/XOFF", "NOMINAL", "[ONLINE]"] {
         assert!(out.contains(want), "{want}\n{out}");
     }
     assert_eq!(row(43).trim(), "READY.");
@@ -110,7 +110,7 @@ fn render_keeps_final_frame_after_done() {
     s.advance(ms(t0, 70_000));
     assert!(s.is_done());
     let out = text(&s);
-    assert!(out.contains("MU/TH/UR [ONLINE]"));
+    assert!(out.contains("[ONLINE]"));
     assert_eq!(out.lines().nth(42).unwrap().trim(), "READY.");
 }
 
@@ -121,7 +121,8 @@ fn ready_holds_one_second_then_done() {
     s.on_metrics(&snap());
     let t = step_until(&mut s, t0, 20_000, |s| text(s).lines().nth(42).unwrap().trim() == "READY.");
     assert!(!s.is_done());
-    s.advance(ms(t0, t + 999));
+    // The hold runs from the step's due time, up to one 10 ms tick before `t`.
+    s.advance(ms(t0, t + 989));
     assert!(!s.is_done());
     s.advance(ms(t0, t + 1000));
     assert!(s.is_done());
@@ -170,12 +171,47 @@ fn metrics_offline_skips_the_wait() {
 fn snapshot_during_wait_resumes_immediately() {
     let t0 = Instant::now();
     let mut s = Splash::new(info(), t0);
-    let t = step_until(&mut s, t0, 20_000, |s| {
-        text(s).lines().find(|l| l.contains("PROCESSOR")).is_some_and(|l| l.contains(&".".repeat(25)))
-    });
+    let full = format!("PROCESSOR {} ", ".".repeat(28));
+    let t = step_until(&mut s, t0, 20_000, |s| text(s).contains(&full));
+    // Genuinely waiting: advance further with no snapshot, nothing resolves.
+    s.advance(ms(t0, t + 200));
+    assert!(!text(&s).contains("NO DATA") && !text(&s).contains("CORES"));
     s.on_metrics(&snap());
     s.advance(ms(t0, t + 210));
     assert!(text(&s).contains("16 CORES"), "{}", text(&s));
+    // The following line starts from now, not from the wait's start.
+    assert!(!text(&s).contains("MEMORY"));
+}
+
+#[test]
+fn one_late_advance_reaches_done() {
+    let t0 = Instant::now();
+    let mut s = Splash::new(info(), t0);
+    s.on_metrics(&snap());
+    s.advance(ms(t0, 60_000));
+    assert!(s.is_done());
+}
+
+#[test]
+fn long_values_are_truncated() {
+    let t0 = Instant::now();
+    let name: String = ('A'..='Z').cycle().take(60).collect();
+    let mut s = Splash::new(SplashInfo { ship_name: name.clone(), ..info() }, t0);
+    s.on_metrics(&snap());
+    s.advance(ms(t0, 60_000));
+    let out = text(&s);
+    let row = out.lines().nth(27).unwrap();
+    assert_eq!(row.chars().count(), 80);
+    assert!(row.ends_with(&name[..33]), "{row}");
+}
+
+#[test]
+fn offline_reason_is_uppercased() {
+    let t0 = Instant::now();
+    let mut s = Splash::new(SplashInfo { interface: Interface::Offline("no key".into()), ..info() }, t0);
+    s.on_metrics(&snap());
+    s.advance(ms(t0, 60_000));
+    assert!(text(&s).contains("[OFFLINE: NO KEY]"));
 }
 
 #[test]
@@ -208,12 +244,12 @@ fn failed_units_variants() {
 fn offline_interface() {
     let t0 = Instant::now();
     let mut s = Splash::new(
-        SplashInfo { interface: Interface::Offline("NO KEY".into()), ..info() },
+        SplashInfo { interface: Interface::Offline("NO ACCESS CODE".into()), ..info() },
         t0,
     );
     s.on_metrics(&snap());
     s.advance(ms(t0, 60_000));
-    assert!(text(&s).contains("MU/TH/UR [OFFLINE: NO KEY]"));
+    assert!(text(&s).contains("[OFFLINE: NO ACCESS CODE]"));
 }
 
 #[test]

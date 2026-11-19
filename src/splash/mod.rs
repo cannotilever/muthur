@@ -70,7 +70,6 @@ pub struct Splash {
     next: usize,
     /// Virtual time at which the next step starts.
     cursor: Instant,
-    last_now: Instant,
     reveal: Reveal,
     snapshot: Option<Snapshot>,
     offline: bool,
@@ -92,8 +91,8 @@ impl Splash {
 
     pub fn with_logo(info: SplashInfo, logo: Logo, now: Instant) -> Self {
         let iface = match &info.interface {
-            Interface::Online => "MU/TH/UR [ONLINE]".to_string(),
-            Interface::Offline(r) => format!("MU/TH/UR [OFFLINE: {r}]"),
+            Interface::Online => "[ONLINE]".to_string(),
+            Interface::Offline(r) => format!("[OFFLINE: {}]", r.to_uppercase()),
         };
         let mut steps = Vec::new();
         let mut line = |label: &str, value: Option<String>, fact: Option<Fact>| {
@@ -120,7 +119,6 @@ impl Splash {
             steps,
             next: 0,
             cursor: now + LOGO_SETTLE,
-            last_now: now,
             reveal: Reveal::new(CPS),
             snapshot: None,
             offline: false,
@@ -155,8 +153,6 @@ impl Splash {
 
     /// Run every step that is due at `now`. Returns true if the display changed.
     pub fn advance(&mut self, now: Instant) -> bool {
-        let prev_now = self.last_now;
-        self.last_now = self.last_now.max(now);
         let mut changed = false;
         while self.next < self.steps.len() && now >= self.cursor {
             match &self.steps[self.next] {
@@ -169,9 +165,6 @@ impl Splash {
                 Step::Fact(f) => {
                     let f = *f;
                     let (text, wait_cost) = if let Some(v) = self.fact_value(f) {
-                        if self.waiting {
-                            self.cursor = self.cursor.max(prev_now);
-                        }
                         (v, Duration::ZERO)
                     } else if self.offline || self.timed_out {
                         (NO_DATA.to_string(), Duration::ZERO)
@@ -182,14 +175,19 @@ impl Splash {
                         self.waiting = true;
                         break;
                     };
-                    self.waiting = false;
                     self.cursor += wait_cost;
                     let n = text.chars().count() as u32 + 1;
+                    // Typed from the wait's start so the value shows at once;
+                    // later lines resume from now, not from the wait's start.
                     self.reveal.push(&format!("{text}\n"), self.cursor);
+                    if self.waiting {
+                        self.cursor = self.cursor.max(now);
+                    }
+                    self.waiting = false;
                     self.cursor += Duration::from_secs_f64(f64::from(n) / f64::from(CPS));
                 }
                 Step::Ready => {
-                    self.ready_at = Some(now);
+                    self.ready_at = Some(self.cursor);
                 }
             }
             self.next += 1;
