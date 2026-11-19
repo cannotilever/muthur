@@ -12,6 +12,7 @@ pub mod muthur;
 pub mod run;
 pub mod scroll;
 pub mod shell;
+pub mod splash;
 pub mod strict;
 pub mod testcard;
 pub mod tools;

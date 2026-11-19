@@ -51,11 +51,13 @@ pub struct ChromeConfig {
     pub ship_name: Option<String>,
     /// Added to the real year for the in-universe date (2026 + 111 = 2137).
     pub year_offset: i32,
+    /// Play the boot splash on launch.
+    pub splash: bool,
 }
 
 impl Default for ChromeConfig {
     fn default() -> Self {
-        Self { ship_name: None, year_offset: 111 }
+        Self { ship_name: None, year_offset: 111, splash: true }
     }
 }
 
@@ -433,5 +435,12 @@ mod tests {
         let (_d, p) = write_cfg("", 0o644);
         let err = load(&p).unwrap_err().to_string();
         assert!(err.contains("chmod 600"), "{err}");
+    }
+
+    #[test]
+    fn splash_defaults_on_and_can_be_disabled() {
+        assert!(ChromeConfig::default().splash);
+        let (_d, p) = write_cfg("[chrome]\nsplash = false\n", 0o600);
+        assert!(!load(&p).unwrap().chrome.splash);
     }
 }
