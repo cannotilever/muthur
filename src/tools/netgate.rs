@@ -94,6 +94,11 @@ pub fn known_host(host: &str, operator_msg: &str, allow: &[String]) -> bool {
     if is_loopback(host) || allowed(host, allow) {
         return true;
     }
+    if let Ok(ip) = IpAddr::from_str(host) {
+        return operator_msg
+            .split(|c: char| !(c.is_ascii_hexdigit() || c == ':' || c == '.'))
+            .any(|t| IpAddr::from_str(t.trim_matches('.')).is_ok_and(|x| x == ip));
+    }
     find_verbatim(trim_dot(host), operator_msg, |a| match a.first() {
         None => true,
         Some(b'.') => a.get(1).is_none_or(|c| !(c.is_ascii_alphanumeric() || *c == b'-')),
@@ -107,7 +112,12 @@ pub fn known_url(url: &str, operator_msg: &str, allow: &[String]) -> bool {
         return true;
     }
     find_verbatim(url, operator_msg, |a| {
-        a.first().is_none_or(|c| c.is_ascii_whitespace() || b")>\"',.;".contains(c))
+        let stop = |c: &u8| c.is_ascii_whitespace() || b")>\"',;".contains(c);
+        match a.first() {
+            None => true,
+            Some(b'.') => a.get(1).is_none_or(stop),
+            Some(c) => stop(c),
+        }
     })
 }
 
@@ -161,5 +171,16 @@ mod tests {
         assert!(known_url("https://x.com/a?b=1", "check https://x.com/a?b=1.", &[]));
         assert!(!known_url("https://x.com/a?leak=secret", "check https://x.com/a", &[]));
         assert!(known_url("https://db.lan/x", "", &["db.lan".into()]));
+        assert!(!known_url("https://x.com", "see https://x.com.evil.net/", &[]));
+        assert!(!known_url("https://x.com/a", "see https://x.com/a.php", &[]));
+    }
+
+    #[test]
+    fn ip_literals_compare_as_addresses() {
+        assert!(!known_host("2001:db8::1", "ping 2001:db8::1:5", &[]));
+        assert!(!known_host("fe80::1", "ping 2001:db8:fe80::1", &[]));
+        assert!(known_host("2001:db8::1", "ping 2001:DB8:0::1 now", &[]));
+        assert!(!known_host("10.0.0.1", "ping 10.0.0.12", &[]));
+        assert!(known_host("10.0.0.1", "ping 10.0.0.1.", &[]));
     }
 }
