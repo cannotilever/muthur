@@ -16,7 +16,7 @@ pub struct DenyRules {
 }
 
 /// Command-word boundaries (the regex crate has no lookaround).
-const B: &str = r#"(?:^|[\s;&|(`'"$])"#;
+const B: &str = r#"(?:^|[\s;&|(`'"$/])"#;
 const A: &str = r"(?:$|[\s;&|)])";
 
 fn w(word: &str) -> String {
@@ -47,7 +47,9 @@ impl DenyRules {
             "/dev/wy60".to_string(),
         ];
         let destructive = vec![
-            format!(r"{B}rm\s(.*\s)?-[a-z]*[rf][a-z]*\s(.*\s)?(/\s*$|/\*|/[\s;&|])"),
+            format!(
+                r#"{B}rm\s(?:[^;&|]*\s)?(?:-[a-z]*[rf][a-z]*|--recursive|--force)\s(?:[^;&|]*\s)?["']?/+\.?\*?["']?(?:$|[\s;&|])"#
+            ),
             "--no-preserve-root".to_string(),
             format!(r"{B}mkfs(\.\w+)?{A}"),
             format!("{}.*of=/dev/(sd|nvme|vd|mmcblk)", w("dd")),
@@ -120,6 +122,17 @@ mod tests {
             ("rm -rf / ", true, Some("DESTRUCTIVE")),
             ("rm -rf /*", true, Some("DESTRUCTIVE")),
             ("rm -rf /tmp/x", true, None),
+            ("rm -fr /", true, Some("DESTRUCTIVE")),
+            ("rm -r -f /", true, Some("DESTRUCTIVE")),
+            ("rm --recursive --force /", true, Some("DESTRUCTIVE")),
+            ("rm -rf //", true, Some("DESTRUCTIVE")),
+            ("rm -rf \"/\"", true, Some("DESTRUCTIVE")),
+            ("rm -rf x; ls /", true, None),
+            ("rm -rf build && ls /", true, None),
+            ("ls && sudo id", false, Some("USE AS_ROOT")),
+            ("echo $(sudo id)", false, Some("USE AS_ROOT")),
+            ("/usr/bin/sudo id", false, Some("USE AS_ROOT")),
+            ("rm -rf /tmp/x/*", true, None),
             ("mkfs.ext4 /dev/sdb1", true, Some("DESTRUCTIVE")),
             ("dd if=x of=/dev/nvme0n1", true, Some("DESTRUCTIVE")),
             (":(){ :|:& };:", false, Some("DESTRUCTIVE")),
