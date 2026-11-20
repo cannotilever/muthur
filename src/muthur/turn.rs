@@ -82,9 +82,11 @@ impl MuthurTab {
         }
         let online = self.audit.borrow().is_online();
         let Some(turn) = &mut self.turn else { return };
-        let effects = turn.on_review(call_id, review, online);
+        let effects = turn.on_review(call_id, review.clone(), online);
         if !effects.is_empty() {
             self.review_abort = None;
+            // For the pending block of a prompt that may follow.
+            self.last_review = Some((call_id.to_string(), review));
         }
         self.apply(effects, None);
     }
@@ -162,6 +164,13 @@ impl MuthurTab {
             Answer::Password(given) => turn.on_password(&call_id, given, online),
             Answer::Override(yes) => turn.on_override(&call_id, yes, online),
         };
+        if effects.is_empty() {
+            // The turn had no such prompt open: never leave the tab stuck in Tools.
+            debug_assert!(false, "turn ignored the answer for call {call_id}");
+            self.secret = None;
+            self.interrupt();
+            return;
+        }
         self.apply(effects, None);
         self.secret = None;
     }
@@ -233,11 +242,13 @@ impl MuthurTab {
                     self.activity = true;
                 }
                 Effect::AskPassword { call_id, prompt } => {
+                    // Type-ahead must not be mistaken for (or end up next to) the password.
+                    self.clear_input();
                     self.state = State::Password { call_id, prompt, secret: Secret::new(), drawn: false, armed_at: None };
                     self.activity = true;
                 }
-                Effect::AskOverride { call_id, note } => {
-                    self.state = State::OverridePrompt { call_id, note, typed: String::new(), drawn: false, armed_at: None };
+                Effect::AskOverride { call_id, prompt, note } => {
+                    self.state = State::OverridePrompt { call_id, prompt, note, typed: String::new(), drawn: false, armed_at: None };
                     self.activity = true;
                 }
                 Effect::Note(s) => {

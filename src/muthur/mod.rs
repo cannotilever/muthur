@@ -12,7 +12,7 @@ use crate::agent::{Call, Orphan, Policy, Turn};
 use crate::llm::{ChatRequest, LlmError, StreamEvent};
 use crate::ops::AgentId;
 use crate::ops::audit::SharedAudit;
-use crate::review::{Review, ReviewInput};
+use crate::review::{Review, ReviewInput, Verdict};
 use crate::secret::Secret;
 use crate::tools::shell::Probe;
 use crate::tools::{Invocation, ToolDefs};
@@ -156,7 +156,7 @@ enum State {
     /// The operator's password for a root call.
     Password { call_id: String, prompt: String, secret: Secret, drawn: bool, armed_at: Option<Instant> },
     /// The reviewer denied; typing OVERRIDE forces the call.
-    OverridePrompt { call_id: String, note: String, typed: String, drawn: bool, armed_at: Option<Instant> },
+    OverridePrompt { call_id: String, prompt: String, note: String, typed: String, drawn: bool, armed_at: Option<Instant> },
 }
 
 /// States compare by kind only, so a password is never compared.
@@ -207,6 +207,8 @@ pub struct MuthurTab {
     audit: SharedAudit,
     /// Cancels the review in flight.
     review_abort: Option<Abort>,
+    /// The last verdict accepted, by call id, for the pending block of a prompt.
+    last_review: Option<(String, Review)>,
     /// The password just given, until the root `Run` for its call takes it.
     secret: Option<(String, Secret)>,
     /// Cancels the command running now.
@@ -270,6 +272,7 @@ impl MuthurTab {
             mode: Mode::Persona,
             audit,
             review_abort: None,
+            last_review: None,
             secret: None,
             cancel: None,
             turn: None,
@@ -567,6 +570,31 @@ impl MuthurTab {
         }
     }
 
+    /// The lines shown under the transcript while a prompt is up: the call's
+    /// full command or label, then the reviewer's note when there is one.
+    fn pending_block(&self) -> Vec<String> {
+        let (call_id, prompt) = match &self.state {
+            State::Ask { call_id, prompt, .. }
+            | State::Password { call_id, prompt, .. }
+            | State::OverridePrompt { call_id, prompt, .. } => (call_id, prompt),
+            _ => return Vec::new(),
+        };
+        let review = self.last_review.as_ref().filter(|(id, _)| id == call_id).map(|(_, r)| r);
+        let note = match (&self.state, review) {
+            (State::Ask { note, .. }, Some(r)) => Some(format!("     REVIEW: {} -- {note}", r.risk.upper())),
+            (State::Ask { note, .. }, None) => Some(format!("     REVIEW: {note}")),
+            (State::OverridePrompt { note, .. }, _) => Some(format!("     DENIED BY REVIEWER: {note}")),
+            // A root call reached through ask or OVERRIDE.
+            (State::Password { .. }, Some(r)) => match r.verdict {
+                Verdict::Ask => Some(format!("     REVIEW: {} -- {}", r.risk.upper(), r.note)),
+                Verdict::Deny => Some(format!("     DENIED BY REVIEWER: {}", r.note)),
+                Verdict::Allow => None,
+            },
+            _ => None,
+        };
+        std::iter::once(prompt.clone()).chain(note).collect()
+    }
+
     /// The status row at `width` columns, and whether it is reverse video.
     fn status_text(&self, now: Instant, width: usize) -> (String, bool) {
         // A tool prompt: `<head> -- <part…> -- <tail>`, the part cut to fit.
@@ -693,20 +721,18 @@ impl Tab for MuthurTab {
         let status_y = sep_y + 1;
         let input_y = sep_y + 2;
 
-        // Transcript; while a Y/N or OVERRIDE prompt is up, the reviewer's
-        // whole note under it (the status row may only fit part of it).
+        // Transcript; while a prompt is up, the pending block under it: the
+        // whole command and the reviewer's note (the status row may fit only part).
         let revealing = self.revealing.then(|| self.reveal.visible());
         let mut lines = transcript_lines(&self.transcript, revealing, w);
-        let pending = match &self.state {
-            State::Ask { note, .. } if !note.is_empty() => Some(format!("     REVIEW: {note}")),
-            State::OverridePrompt { note, .. } => Some(format!("     DENIED BY REVIEWER: {note}")),
-            _ => None,
-        };
-        if let Some(p) = pending {
+        let pending = self.pending_block();
+        if !pending.is_empty() {
             if !matches!(self.transcript.last(), Some(Entry::Harness(_))) {
                 lines.push(String::new());
             }
-            lines.extend(view::wrap_hanging(&ascii_safe(&p), w, 5));
+            for p in pending {
+                lines.extend(view::wrap_hanging(&ascii_safe(&p), w, 5));
+            }
         }
         let h = usize::from(rows);
         self.page = h.saturating_sub(1).max(1);

@@ -5,8 +5,8 @@ x DIRECT LINK: SCIENCE OFFICER                                                 x
 x                                                                              x
 x $ free some disk space                                                       x
 x                                                                              x
+x rm -rf /var/log/journal                                                      x
 x      DENIED BY REVIEWER: deletes the whole system journal                    x
-x                                                                              x
 x                                                                              x
 x                                                                              x
 x                                                                              x

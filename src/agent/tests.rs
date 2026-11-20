@@ -189,7 +189,7 @@ fn password_given_and_esc() {
 #[test]
 fn override_then_password_is_overridden() {
     let (mut t, e) = reviewed("id", true, review(Verdict::Deny, Risk::High, "too risky"), true);
-    assert_eq!(e, vec![Effect::AskOverride { call_id: "c1".into(), note: "too risky".into() }]);
+    assert_eq!(e, vec![Effect::AskOverride { call_id: "c1".into(), prompt: "id".into(), note: "too risky".into() }]);
     let e = t.on_override("c1", true, true);
     assert_eq!(e, vec![Effect::AskPassword { call_id: "c1".into(), prompt: "id".into() }]);
     let e = t.on_password("c1", true, true);
@@ -281,7 +281,7 @@ fn unknown_target_forced_to_ask() {
     let mut t = tturn("check the site");
     start(&mut t, vec![ping()], true);
     let e = t.on_review("c1", review(Verdict::Deny, Risk::High, "exfil"), true);
-    assert_eq!(e, vec![Effect::AskOverride { call_id: "c1".into(), note: "exfil".into() }]);
+    assert_eq!(e, vec![Effect::AskOverride { call_id: "c1".into(), prompt: "PING example.com 3".into(), note: "exfil".into() }]);
     // Named by the operator: allowed.
     let mut t = tturn("ping example.com");
     let e = start(&mut t, vec![ping()], true);

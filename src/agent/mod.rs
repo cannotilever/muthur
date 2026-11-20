@@ -34,8 +34,8 @@ pub enum Effect {
     Confirm { call_id: String, prompt: String, note: String },
     /// The operator's password for a root call; `given = false` means Esc.
     AskPassword { call_id: String, prompt: String },
-    /// The reviewer denied; the operator may type OVERRIDE.
-    AskOverride { call_id: String, note: String },
+    /// The reviewer denied; the operator may type OVERRIDE. `prompt` is the command or tool label.
+    AskOverride { call_id: String, prompt: String, note: String },
     Run { call_id: String, invocation: Invocation },
     Note(String),
     LogTool(Vec<ToolResult>),
@@ -388,7 +388,7 @@ impl Turn {
             }
             Verdict::Deny if !audit_online => slot.refuse_offline(agent, prior, &mut out),
             Verdict::Deny => {
-                out.push(Effect::AskOverride { call_id: slot.call.id.clone(), note: review.note });
+                out.push(Effect::AskOverride { call_id: slot.call.id.clone(), prompt: slot.label.clone(), note: review.note });
                 slot.state = State::Override(inv);
             }
         }

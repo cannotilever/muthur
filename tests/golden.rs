@@ -417,6 +417,7 @@ fn muthur_password() {
     // The windowed status row cuts the command to fit.
     assert!(line.contains("CLEARANCE REQUIRED -- ls -l /etc/... -- PASSWORD: *******"), "{line}");
     assert!(!p.screen().contents().contains("hunter2"));
+    assert!(p.screen().contents().lines().any(|l| l.contains("x ls -l /etc/shadow ")), "full command in the pending block");
 }
 
 #[test]
@@ -433,6 +434,8 @@ fn muthur_override_prompt() {
     let (line, inverse) = reverse_row(&p, "DENIED BY REVIEWER --");
     assert!(inverse, "override row is not reverse video");
     assert!(line.contains("-- TYPE OVERRIDE TO FORCE, ESC TO REFUSE"), "{line}");
+    let text = p.screen().contents();
+    assert!(text.contains("x rm -rf /var/log/journal ") && text.contains("     DENIED BY REVIEWER: deletes the whole system journal"), "{text}");
 }
 
 #[test]

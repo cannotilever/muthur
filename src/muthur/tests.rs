@@ -1020,7 +1020,9 @@ fn ask_prompt_confirms_after_arming() {
     let row = status_row(&mut h);
     assert!(row.contains("CONFIRM -- touch /tmp/x -- Y/N"), "{row}");
     // The reviewer's note is shown while the operator decides.
-    assert!(text(&mut h.t).contains("REVIEW: creates a file"));
+    let shown = text(&mut h.t);
+    assert!(shown.contains("touch /tmp/x\n") || shown.contains("│ touch /tmp/x "), "the pending command is shown: {shown}");
+    assert!(shown.contains("     REVIEW: LOW -- creates a file"), "{shown}");
     assert_eq!(h.t.tick_interval(), Some(Duration::from_millis(100)));
     seen(&mut h);
     h.tick(1100);
@@ -1037,7 +1039,8 @@ fn ask_prompt_confirms_after_arming() {
     let rows = screen(&mut h.t, 61, 40);
     let run = rows.iter().position(|r| r.contains("RUN  touch /tmp/x  [ASK: LOW]")).unwrap_or_else(|| panic!("{rows:#?}"));
     assert!(rows[run + 1].starts_with("│      REVIEW: LOW -- creates a file"), "{rows:#?}");
-    assert!(!rows.iter().any(|r| r.contains("REVIEW: creates a file")), "the provisional note is gone: {rows:#?}");
+    assert_eq!(rows.iter().filter(|r| r.contains("REVIEW: LOW -- creates a file")).count(), 1, "the pending block is gone: {rows:#?}");
+    assert!(!rows.iter().any(|r| r.starts_with("│ touch /tmp/x")), "{rows:#?}");
 }
 
 #[test]
@@ -1328,4 +1331,56 @@ fn audit_offline_between_prompt_and_answer_refuses_root() {
     accept(&mut h, P::Password);
     assert!(h.ran.borrow().is_empty(), "root must not run unaudited");
     assert_eq!(last_results(&h)[0].content, "NOT AUTHORIZED: AUDIT LOG OFFLINE");
+}
+
+#[test]
+fn full_command_visible_at_prompts() {
+    let long = format!("find /var/lib -xdev -type f -name '*.log' -mtime +30 -size +10M -printf '%p %s\\n' {}", "| sort -k2 -n ".repeat(6));
+    assert!(long.len() > 140, "{}", long.len());
+    // Joins the transcript rows (without borders and indent) to look for the whole command.
+    let joined = |h: &mut H| {
+        let rows = screen(&mut h.t, 61, 40);
+        rows[1..36].iter().map(|r| r.trim_start_matches('│').trim_end_matches('│').trim()).collect::<Vec<_>>().join(" ")
+    };
+    for (root, verdict, note_line) in [
+        (true, Verdict::Allow, None),
+        (true, Verdict::Ask, Some("REVIEW: LOW -- big logs")),
+        (true, Verdict::Deny, Some("DENIED BY REVIEWER: big logs")),
+        (false, Verdict::Ask, Some("REVIEW: LOW -- big logs")),
+    ] {
+        let mut h = harness();
+        raise_run(&mut h, &long, root);
+        h.t.on_review(1, "c1".into(), review(verdict, "big logs"));
+        if verdict == Verdict::Deny && root {
+            // OVERRIDE first, then the password.
+            let all = joined(&mut h);
+            assert!(all.contains(&long), "override: {all}");
+            assert!(all.contains("DENIED BY REVIEWER: big logs"), "{all}");
+            seen(&mut h);
+            h.tick(1100);
+            type_str(&mut h.t, "override");
+            h.t.handle_key(&Key::Enter);
+            assert!(matches!(h.t.state, State::Password { .. }));
+        }
+        let all = joined(&mut h);
+        assert!(all.contains(&long), "{verdict:?} root={root}: {all}");
+        if let Some(n) = note_line {
+            assert!(all.contains(n), "{verdict:?}: {all}");
+        }
+        // Wrapped with the hanging indent.
+        let rows = screen(&mut h.t, 61, 40);
+        let first = rows.iter().position(|r| r.contains("find /var/lib")).unwrap();
+        assert!(rows[first + 1].starts_with("│      "), "{rows:#?}");
+    }
+}
+
+#[test]
+fn password_prompt_clears_type_ahead() {
+    let mut h = harness();
+    raise_run(&mut h, "id", true);
+    type_str(&mut h.t, "abc");
+    assert_eq!(h.t.input, "abc", "typing while reviewing goes to the input line");
+    h.t.on_review(1, "c1".into(), review(Verdict::Allow, "ok"));
+    assert!(matches!(h.t.state, State::Password { .. }));
+    assert_eq!((h.t.input.as_str(), h.t.cursor), ("", 0));
 }
