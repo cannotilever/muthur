@@ -106,7 +106,8 @@ The M7 threat model trusts the operator and nothing a model writes. The persona 
 
 ## Chat log
 
-- **Child records** (`user` holding the task, `tool`, `assistant`) are written with `"agent": "tech"` and `"delegated": "<persona call_id>"`. They are written in order, between the persona's tool-use `assistant` record and its `tool` record.
+- **Child records** (`user` holding the task, `tool`, `assistant`) are written with `"agent": "tech"` and `"delegated": "<delegation id>"`. They are written in order, between the persona's tool-use `assistant` record and its `tool` record.
+- **The delegation id** is harness-unique: `<persona call_id>#<seq of the delegation's user record>`. Model-supplied call ids are not reliably unique (OpenAI-compatible servers may repeat or omit them), so they never key the lane alone. The delegation's `user` record also stores the persona call id as `"call"`. (Amended 2026-11-20 after the final review.)
 - **Technical windows** skip every record that has `delegated`, for both exchanges and epochs. Delegated exchanges never enter `/DIRECT` context.
 - **Persona windows** are unchanged. The delegate's result is an ordinary persona tool result.
 - **Redisplay** (`history()`): delegated tech records are folded into their persona exchange, not shown as a separate tech exchange, so no DIRECT LINK banner is printed for them.
@@ -118,7 +119,7 @@ The M7 threat model trusts the operator and nothing a model writes. The persona 
 
 ## Audit log
 
-- Child calls are audited exactly as `/DIRECT` calls (`agent: tech`), with an added `"delegated_by": "<persona call_id>"`.
+- Child calls are audited exactly as `/DIRECT` calls (`agent: tech`), with an added `"delegated_by": "<delegation id>"`, which starts with the persona call id.
 - The `delegate` call itself gets one audit entry: `agent: muthur`, tool `delegate`, the task text, and outcome `reported`, `no_response` or `aborted`.
 
 ## Testing
