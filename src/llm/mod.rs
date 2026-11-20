@@ -48,7 +48,15 @@ pub struct ChatRequest {
     pub system: String,
     pub messages: Vec<Message>,
     pub tools: Vec<ToolSpec>,
-    pub tool_choice_none: bool,
+    pub tool_choice: ToolChoice,
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub enum ToolChoice {
+    #[default]
+    Auto,
+    None,
+    Force(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -1,6 +1,6 @@
 //! Anthropic Messages API protocol: request JSON, SSE stream parser, replay rule.
 use super::sse::SseRecord;
-use super::{ChatRequest, LlmError, MessageContent, Role, Stop, StreamEvent, StreamParser};
+use super::{ChatRequest, ToolChoice, LlmError, MessageContent, Role, Stop, StreamEvent, StreamParser};
 use crate::config::MuthurSection;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -64,8 +64,10 @@ pub fn request_body(cfg: &MuthurSection, req: &ChatRequest) -> Value {
             .iter()
             .map(|t| json!({"name": t.name, "description": t.description, "input_schema": t.schema, "strict": true}))
             .collect();
-        if req.tool_choice_none {
-            body["tool_choice"] = json!({"type": "none"});
+        match &req.tool_choice {
+            ToolChoice::Auto => {}
+            ToolChoice::None => body["tool_choice"] = json!({"type": "none"}),
+            ToolChoice::Force(n) => body["tool_choice"] = json!({"type": "tool", "name": n}),
         }
     }
     body
@@ -267,7 +269,7 @@ mod tests {
         ev.iter().filter_map(|e| if let StreamEvent::Text(t) = e { Some(t.as_str()) } else { None }).collect()
     }
     fn user(s: &str) -> Message { Message { role: Role::User, content: MessageContent::Text(s.into()) } }
-    fn req_with(messages: Vec<Message>) -> ChatRequest { ChatRequest { system: "SYS".into(), messages, tools: vec![], tool_choice_none: false } }
+    fn req_with(messages: Vec<Message>) -> ChatRequest { ChatRequest { system: "SYS".into(), messages, tools: vec![], tool_choice: ToolChoice::Auto } }
 
     #[test] fn text_stream() { let ev = run("anthropic_text.sse"); assert_eq!(texts(&ev), "ALL SYSTEMS NOMINAL."); assert!(matches!(ev.last(), Some(StreamEvent::Done{stop: Stop::End, model: Some(_), ..}))); }
     #[test] fn thinking_is_kept_raw_not_emitted() { let ev = run("anthropic_thinking.sse"); let StreamEvent::Done{raw: Some(raw), ..} = ev.last().unwrap() else { panic!() }; assert_eq!(raw[0]["type"], "thinking"); assert!(!raw[0]["signature"].as_str().unwrap().is_empty()); assert_eq!(raw[1], json!({"type":"text","text": texts(&ev)})); assert!(!ev.iter().any(|e| matches!(e, StreamEvent::Text(t) if t.is_empty()))); }
@@ -299,7 +301,15 @@ mod tests {
 
     fn key_cfg() -> MuthurSection { MuthurSection{ api_key: Some("k".into()), ..Default::default() } }
     fn spec(name: &str) -> ToolSpec { ToolSpec{ name: name.into(), description: "d".into(), schema: json!({"type":"object","properties":{},"required":[],"additionalProperties":false}) } }
-    #[test] fn tools_and_choice_in_body() { let cfg = key_cfg(); let mut r = req_with(vec![user("HI")]); r.tools = vec![spec("ship_status")]; let b = request_body(&cfg, &r); assert_eq!(b["tools"][0], json!({"name":"ship_status","description":"d","input_schema":{"type":"object","properties":{},"required":[],"additionalProperties":false},"strict":true})); assert!(b.get("tool_choice").is_none()); r.tool_choice_none = true; assert_eq!(request_body(&cfg, &r)["tool_choice"], json!({"type":"none"})); }
+    #[test] fn tools_and_choice_in_body() { let cfg = key_cfg(); let mut r = req_with(vec![user("HI")]); r.tools = vec![spec("ship_status")]; let b = request_body(&cfg, &r); assert_eq!(b["tools"][0], json!({"name":"ship_status","description":"d","input_schema":{"type":"object","properties":{},"required":[],"additionalProperties":false},"strict":true})); assert!(b.get("tool_choice").is_none()); r.tool_choice = ToolChoice::None; assert_eq!(request_body(&cfg, &r)["tool_choice"], json!({"type":"none"})); }
+    #[test] fn forced_choice_bodies() {
+        let mut r = req_with(vec![user("HI")]);
+        r.tools = vec![spec("verdict")];
+        r.tool_choice = ToolChoice::Force("verdict".into());
+        let b = request_body(&key_cfg(), &r);
+        assert_eq!(b["tool_choice"], json!({"type":"tool","name":"verdict"}));
+        assert!(b.get("thinking").is_none());
+    }
     #[test] fn no_tools_no_fields() { let b = request_body(&key_cfg(), &req_with(vec![user("HI")])); assert!(b.get("tools").is_none() && b.get("tool_choice").is_none()); }
     #[test] fn tool_results_message() { let m = Message{ role: Role::User, content: MessageContent::ToolResults(vec![ToolResult{ id:"t1".into(), name:"journal".into(), content:"X".into(), is_error:true, label:"L".into() }]) }; let b = request_body(&key_cfg(), &req_with(vec![user("HI"), m])); assert_eq!(b["messages"][1], json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"X","is_error":true}]})); }
     #[test] fn replay_keeps_tool_use() { let raw = vec![json!({"type":"thinking","thinking":"","signature":"s"}), json!({"type":"text","text":"CHECKING."}), json!({"type":"tool_use","id":"t1","name":"ship_status","input":{}})]; assert_eq!(replay_blocks(&raw, false), raw); assert_eq!(replay_blocks(&raw, true), raw[1..].to_vec()); }

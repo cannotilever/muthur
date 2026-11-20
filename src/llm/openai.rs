@@ -1,6 +1,6 @@
 //! OpenAI-compatible (vLLM) chat-completions protocol: request JSON and SSE stream parser.
 use super::sse::SseRecord;
-use super::{ChatRequest, LlmError, MessageContent, Role, Stop, StreamEvent, StreamParser};
+use super::{ChatRequest, ToolChoice, LlmError, MessageContent, Role, Stop, StreamEvent, StreamParser};
 use crate::config::MuthurSection;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -52,8 +52,10 @@ pub fn request_body(cfg: &MuthurSection, req: &ChatRequest) -> Value {
             .iter()
             .map(|t| json!({"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.schema}}))
             .collect();
-        if req.tool_choice_none {
-            body["tool_choice"] = json!("none");
+        match &req.tool_choice {
+            ToolChoice::Auto => {}
+            ToolChoice::None => body["tool_choice"] = json!("none"),
+            ToolChoice::Force(n) => body["tool_choice"] = json!({"type": "function", "function": {"name": n}}),
         }
     }
     body
@@ -178,7 +180,7 @@ mod tests {
     #[test] fn text_stream() { let ev = run("openai_text.sse"); assert_eq!(texts(&ev), "ALL SYSTEMS NOMINAL."); assert!(matches!(ev.last(), Some(StreamEvent::Done{stop: Stop::End, raw: None, ..}))); }
     #[test] fn tool_calls_accumulate_by_index() { let ev = run("openai_tool.sse"); assert!(ev.iter().any(|e| matches!(e, StreamEvent::ToolCall{name, input, ..} if name == "metrics" && input == &json!({"host":"local"})))); assert!(matches!(ev.last(), Some(StreamEvent::Done{stop: Stop::ToolUse, ..}))); }
     #[test] fn length_is_max_tokens() { assert!(matches!(run("openai_length.sse").last(), Some(StreamEvent::Done{stop: Stop::MaxTokens, ..}))); }
-    #[test] fn system_goes_first() { let b = request_body(&cfg(), &ChatRequest{ system: "SYS".into(), messages: vec![user("HI")], tools: vec![], tool_choice_none: false }); assert_eq!(b["messages"][0], json!({"role":"system","content":"SYS"})); assert_eq!(b["messages"][1], json!({"role":"user","content":"HI"})); assert_eq!(b["model"], "qwen"); assert_eq!(b["stream"], true); }
+    #[test] fn system_goes_first() { let b = request_body(&cfg(), &ChatRequest{ system: "SYS".into(), messages: vec![user("HI")], tools: vec![], tool_choice: ToolChoice::Auto }); assert_eq!(b["messages"][0], json!({"role":"system","content":"SYS"})); assert_eq!(b["messages"][1], json!({"role":"user","content":"HI"})); assert_eq!(b["model"], "qwen"); assert_eq!(b["stream"], true); }
     #[test] fn bearer_only_with_key() { assert!(!headers(&cfg()).iter().any(|(k,_)| *k == "authorization")); assert!(headers(&MuthurSection{ api_key: Some("k".into()), ..cfg() }).contains(&("authorization", "Bearer k".into()))); }
     #[test] fn api_key_is_trimmed() { assert!(headers(&MuthurSection{ api_key: Some(" k\n".into()), ..cfg() }).contains(&("authorization", "Bearer k".into()))); assert!(!headers(&MuthurSection{ api_key: Some("  ".into()), ..cfg() }).iter().any(|(k,_)| *k == "authorization")); }
     #[test] fn missing_done_is_transmission_error() {
@@ -189,7 +191,7 @@ mod tests {
         assert_eq!(p.finish(), vec![StreamEvent::Error(LlmError::Transmission)]);
     }
     fn spec(name: &str) -> crate::llm::ToolSpec { crate::llm::ToolSpec{ name: name.into(), description: "d".into(), schema: json!({"type":"object","properties":{}}) } }
-    fn req_with(messages: Vec<Message>) -> ChatRequest { ChatRequest { system: "SYS".into(), messages, tools: vec![], tool_choice_none: false } }
+    fn req_with(messages: Vec<Message>) -> ChatRequest { ChatRequest { system: "SYS".into(), messages, tools: vec![], tool_choice: ToolChoice::Auto } }
     #[test] fn tools_and_choice_in_body() {
         let mut r = req_with(vec![user("HI")]);
         assert!(request_body(&cfg(), &r).get("tools").is_none());
@@ -197,8 +199,15 @@ mod tests {
         let b = request_body(&cfg(), &r);
         assert_eq!(b["tools"][0], json!({"type":"function","function":{"name":"ship_status","description":"d","parameters":{"type":"object","properties":{}}}}));
         assert!(b.get("tool_choice").is_none());
-        r.tool_choice_none = true;
+        r.tool_choice = ToolChoice::None;
         assert_eq!(request_body(&cfg(), &r)["tool_choice"], "none");
+    }
+    #[test] fn forced_choice_bodies() {
+        let mut r = req_with(vec![user("HI")]);
+        r.tools = vec![spec("verdict")];
+        r.tool_choice = ToolChoice::Force("verdict".into());
+        assert_eq!(request_body(&cfg(), &r)["tool_choice"], json!({"type":"function","function":{"name":"verdict"}}));
+        assert!(request_body(&cfg(), &r).get("thinking").is_none());
     }
     #[test] fn assistant_tool_calls_and_results() {
         let c = json!({"id":"call_1","type":"function","function":{"name":"metrics","arguments":"{}"}});

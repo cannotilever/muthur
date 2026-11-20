@@ -491,7 +491,7 @@ fn tool_round_runs_and_respawns() {
     let mut h = harness();
     submit(&mut h, "is nginx running");
     assert!(!h.sent.borrow()[0].1.tools.is_empty());
-    assert!(!h.sent.borrow()[0].1.tool_choice_none);
+    assert_eq!(h.sent.borrow()[0].1.tool_choice, crate::llm::ToolChoice::Auto);
     h.t.on_llm(1, StreamEvent::Text("CHECKING.".into()));
     tool_use(&mut h, 1, &[("c1", "service_status", json!({"unit": "nginx"}))]);
     assert_eq!(*h.ran.borrow(), vec![(1, "c1".to_string(), Invocation::ServiceStatus { unit: "nginx.service".into() })]);
@@ -506,7 +506,7 @@ fn tool_round_runs_and_respawns() {
         assert_eq!(s.len(), 2);
         assert_eq!(s[1].0, 2);
         assert!(!s[1].1.tools.is_empty());
-        assert!(!s[1].1.tool_choice_none);
+        assert_eq!(s[1].1.tool_choice, crate::llm::ToolChoice::Auto);
     }
     let r = last_results(&h);
     assert_eq!(r.len(), 1);
@@ -618,14 +618,14 @@ fn round_limit_truncates() {
     let one = ToolsSection { max_rounds: 1, ..tools_cfg() };
     let mut h = harness_full(cfg(), one, true, |_| {});
     submit(&mut h, "status");
-    assert!(!h.sent.borrow()[0].1.tool_choice_none);
+    assert_eq!(h.sent.borrow()[0].1.tool_choice, crate::llm::ToolChoice::Auto);
     tool_use(&mut h, 1, &[("c1", "ship_status", json!({}))]);
     h.t.on_tool_done(1, "c1".into(), ok("ship"));
-    assert!(h.sent.borrow()[1].1.tool_choice_none);
+    assert_eq!(h.sent.borrow()[1].1.tool_choice, crate::llm::ToolChoice::None);
     // Tool calls anyway, twice: one more forced request, then truncation.
     tool_use(&mut h, 2, &[("c2", "ship_status", json!({}))]);
     assert_eq!(h.sent.borrow().len(), 3);
-    assert!(h.sent.borrow()[2].1.tool_choice_none);
+    assert_eq!(h.sent.borrow()[2].1.tool_choice, crate::llm::ToolChoice::None);
     tool_use(&mut h, 3, &[("c3", "ship_status", json!({}))]);
     assert_eq!(h.sent.borrow().len(), 3);
     assert_eq!(h.t.state, State::Ready);
@@ -635,7 +635,7 @@ fn round_limit_truncates() {
     let zero = ToolsSection { max_rounds: 0, ..tools_cfg() };
     let mut h = harness_full(cfg(), zero, true, |_| {});
     submit(&mut h, "status");
-    assert!(h.sent.borrow()[0].1.tool_choice_none);
+    assert_eq!(h.sent.borrow()[0].1.tool_choice, crate::llm::ToolChoice::None);
 }
 
 #[test]

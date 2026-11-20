@@ -337,7 +337,7 @@ impl MuthurTab {
             system: self.system.clone(),
             messages,
             tools: self.tools.specs().to_vec(),
-            tool_choice_none: forced_final,
+            tool_choice: if forced_final { crate::llm::ToolChoice::None } else { crate::llm::ToolChoice::Auto },
         };
         self.abort = Some((self.deps.spawn)(self.req_id, req));
         self.state = State::Waiting;

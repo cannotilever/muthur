@@ -33,6 +33,11 @@ impl LlmClient {
         Ok(Self { http, cfg: Arc::new(cfg), idle })
     }
 
+    /// The model this client sends to (empty when unset).
+    pub fn model(&self) -> String {
+        self.cfg.model().unwrap_or_default().to_string()
+    }
+
     /// Stream one request; every event goes through `emit`. Stops after the
     /// first `Done` or `Error`.
     pub async fn stream(&self, req: ChatRequest, mut emit: impl FnMut(StreamEvent)) {
@@ -228,7 +233,7 @@ mod tests {
             system: "sys".into(),
             messages: vec![Message { role: Role::User, content: MessageContent::Text("hi".into()) }],
             tools: vec![],
-            tool_choice_none: false,
+            tool_choice: crate::llm::ToolChoice::Auto,
         }
     }
 
