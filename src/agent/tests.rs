@@ -719,3 +719,88 @@ fn delegate_counts_toward_round_cap() {
     let e = t.on_delegate("d1", DelegateOutcome::NoResponse { lines: vec![] }, "X");
     assert_eq!(e.last(), Some(&Effect::Spawn { forced_final: true }));
 }
+
+fn dturn() -> Turn {
+    Turn::delegated(24, "why is nginx down".into(), "check nginx".into(), "SCIENCE OFFICER".into(), "d1".into())
+}
+
+fn ping_call(id: &str, host: &str) -> Call {
+    call(id, "ping", json!({"host": host, "count": 3}))
+}
+
+#[test]
+fn delegated_review_input_separates_task() {
+    let mut t = dturn();
+    let e = start(&mut t, vec![run_call("c1", "ls", false)], true);
+    let r = reviews(&e);
+    assert_eq!((r[0].operator_message.as_str(), r[0].delegated_task.as_deref()), ("why is nginx down", Some("check nginx")));
+    let mut t = tturn("why is nginx down");
+    let e = start(&mut t, vec![run_call("c1", "ls", false)], true);
+    assert_eq!(reviews(&e)[0].delegated_task, None);
+}
+
+#[test]
+fn task_only_host_is_unknown_target() {
+    let mk = |op: &str| Turn::delegated(24, op.into(), "ping evil.example 3 to verify".into(), "SO".into(), "d1".into());
+    let mut t = mk("check the site");
+    let e = start(&mut t, vec![ping_call("c1", "evil.example")], true);
+    assert!(reviews(&e)[0].unknown_target, "{e:?}");
+    let mut t = mk("check the site evil.example");
+    let e = start(&mut t, vec![ping_call("c1", "evil.example")], true);
+    assert!(!reviews(&e)[0].unknown_target, "{e:?}");
+}
+
+#[test]
+fn condensed_strips_run_prefix() {
+    assert_eq!(condensed("SO", "RUN  uptime  [ALLOW]"), "SO: uptime  [ALLOW]");
+    assert_eq!(condensed("SO", "RUN# systemctl restart nginx  [ROOT, ASK: MEDIUM]"), "SO: systemctl restart nginx  [ROOT, ASK: MEDIUM]");
+    assert_eq!(condensed("SO", "SHIP STATUS"), "SO: SHIP STATUS");
+}
+
+#[test]
+fn delegated_run_shows_one_condensed_line_and_audits_delegator() {
+    let mut t = dturn();
+    let mut all = start(&mut t, vec![run_call("r1", "uptime", false)], true);
+    all.extend(t.on_review("r1", allow(), true));
+    all.extend(t.on_tool_done("r1", run_ok("uptime", false, "EXIT 0\nup", "up")));
+    let want = vec!["SCIENCE OFFICER: uptime  [ALLOW]".to_string()];
+    assert_eq!(notes(&all), want.iter().map(String::as_str).collect::<Vec<_>>());
+    assert_eq!(t.lines(), want);
+    assert_eq!(logged(&all)[0][0].label, "RUN  uptime  [ALLOW]");
+    let a = audits(&all);
+    assert!(!a.is_empty());
+    for x in a {
+        assert_eq!((x.delegated_by.as_deref(), x.agent), (Some("d1"), Some(AgentId::Tech)));
+    }
+    assert!(tturn("x").lines().is_empty());
+}
+
+#[test]
+fn delegated_refusals_are_condensed() {
+    let mut t = dturn();
+    let e = start(&mut t, vec![run_call("c1", "sudo ls", false)], true);
+    let n = notes(&e);
+    assert_eq!(n.len(), 1, "{e:?}");
+    assert!(n[0].starts_with("SCIENCE OFFICER: ") && n[0].ends_with("[DENIED: USE AS_ROOT]"), "{n:?}");
+
+    let mut t = dturn();
+    start(&mut t, vec![run_call("c1", "ls", false)], true);
+    let mut e = t.on_review("c1", review(Verdict::Deny, Risk::High, "no"), true);
+    e.extend(t.on_override("c1", false, true));
+    let n = notes(&e);
+    assert_eq!(n.len(), 1, "{e:?}");
+    assert!(n[0].starts_with("SCIENCE OFFICER: ") && n[0].ends_with("[DENIED BY REVIEWER]"), "{n:?}");
+}
+
+#[test]
+fn delegated_abort_running_root_no_end_line() {
+    let mut t = dturn();
+    start(&mut t, vec![run_call("c1", "id", true)], true);
+    t.on_review("c1", allow(), true);
+    let e = t.on_password("c1", true, true);
+    assert!(has(&e, "run"), "{e:?}");
+    let e = t.abort();
+    assert!(notes(&e).is_empty(), "{e:?}");
+    let Some(Effect::Orphan(o)) = e.iter().find(|x| kind(x) == "orphan") else { panic!("{e:?}") };
+    assert_eq!(o.audit(run_ok("id", true, "EXIT 0", "late")).delegated_by.as_deref(), Some("d1"));
+}

@@ -132,6 +132,28 @@ struct Slot {
     line: Option<String>,
     state: State,
     result: Option<ToolResult>,
+    /// Set in a delegated turn: the officer's label, the delegate call's id,
+    /// and the condensed line announced for this call.
+    delegation: Option<SlotDelegation>,
+}
+
+#[derive(Debug)]
+struct SlotDelegation {
+    officer: String,
+    by: String,
+    line: Option<String>,
+}
+
+/// A delegated turn's condensed lines announced so far.
+struct Delegation {
+    lines: Vec<String>,
+}
+
+/// The persona-facing line of a delegated call: the start line without its
+/// `RUN  ` / `RUN# ` prefix, under the officer's label.
+pub fn condensed(officer: &str, start_line: &str) -> String {
+    let rest = start_line.strip_prefix("RUN  ").or_else(|| start_line.strip_prefix("RUN# ")).unwrap_or(start_line);
+    format!("{officer}: {rest}")
 }
 
 pub struct Turn {
@@ -141,6 +163,12 @@ pub struct Turn {
     forced: u8,
     agent: AgentId,
     operator_message: String,
+    /// Set for a turn run on MU/TH/UR's behalf.
+    delegation: Option<Delegation>,
+    /// The delegated task, for the reviewer only; never an authority.
+    delegated_task: Option<String>,
+    /// The officer's label and the delegate call's id, copied into each slot.
+    slot_delegation: Option<(String, String)>,
     /// Every call of this turn with a result, across rounds, for the reviewer.
     prior: Vec<PriorCall>,
     /// The open round's calls, in call order; empty when none is open.
@@ -188,6 +216,7 @@ impl Slot {
             reason,
             deny_rule: self.deny_rule.clone(),
             review: self.review.as_ref().map(Review::record),
+            delegated_by: self.delegation.as_ref().map(|d| d.by.clone()),
             ..AuditEntry::new(&self.call.name, self.call.input.clone(), decision)
         }
     }
@@ -219,9 +248,15 @@ impl Slot {
             return;
         }
         let line = self.start_line(tag);
-        out.push(Effect::Note(line.clone()));
-        if let Some(r) = &self.review {
-            out.push(Effect::Note(format!("     REVIEW: {} -- {}", r.risk.upper(), r.note)));
+        if let Some(d) = &mut self.delegation {
+            let c = condensed(&d.officer, &line);
+            out.push(Effect::Note(c.clone()));
+            d.line = Some(c);
+        } else {
+            out.push(Effect::Note(line.clone()));
+            if let Some(r) = &self.review {
+                out.push(Effect::Note(format!("     REVIEW: {} -- {}", r.risk.upper(), r.note)));
+            }
         }
         self.line = Some(line);
     }
@@ -283,7 +318,7 @@ impl Slot {
         let State::Running { inv, decision } = std::mem::replace(&mut self.state, State::Done) else { return };
         let argv = match &inv {
             Invocation::Run { command, as_root, .. } => {
-                if agent == AgentId::Tech {
+                if agent == AgentId::Tech && self.delegation.is_none() {
                     out.push(Effect::Note(after_line(&outcome)));
                 }
                 Some(shell::argv(command, *as_root))
@@ -310,12 +345,16 @@ impl Slot {
         let tech = agent == AgentId::Tech;
         let (text, argv) = match &inv {
             Invocation::Run { command, as_root: true, .. } => {
-                out.push(Effect::Note(if tech { "OUTCOME UNKNOWN".into() } else { format!("ACCESS INTERRUPTED: {}", self.label) }));
+                if self.delegation.is_none() {
+                    out.push(Effect::Note(if tech { "OUTCOME UNKNOWN".into() } else { format!("ACCESS INTERRUPTED: {}", self.label) }));
+                }
                 (ABORTED_ISSUED, Some(shell::argv(command, true)))
             }
             // Every tech-mode call shows its RUN line, so it needs an end line.
             _ if tech => {
-                out.push(Effect::Note("ABORTED".into()));
+                if self.delegation.is_none() {
+                    out.push(Effect::Note("ABORTED".into()));
+                }
                 (ABORTED, None)
             }
             _ => (ABORTED, None),
@@ -331,7 +370,42 @@ impl Slot {
 impl Turn {
     pub fn new(max_rounds: u32, agent: AgentId, operator_message: String) -> Self {
         // With no rounds allowed, the very first request is already at the cap.
-        Turn { max_rounds, rounds: 0, forced: u8::from(max_rounds == 0), agent, operator_message, prior: Vec::new(), slots: Vec::new() }
+        Turn {
+            max_rounds,
+            rounds: 0,
+            forced: u8::from(max_rounds == 0),
+            agent,
+            operator_message,
+            delegation: None,
+            delegated_task: None,
+            slot_delegation: None,
+            prior: Vec::new(),
+            slots: Vec::new(),
+        }
+    }
+
+    /// A technical turn run for MU/TH/UR. `operator_message` is the operator's
+    /// own line and the only authority; `task` is MU/TH/UR's wording, shown to
+    /// the reviewer apart and as untrusted text.
+    pub fn delegated(max_rounds: u32, operator_message: String, task: String, officer: String, delegated_by: String) -> Self {
+        let mut t = Turn::new(max_rounds, AgentId::Tech, operator_message);
+        t.delegated_task = Some(task);
+        t.delegation = Some(Delegation { lines: Vec::new() });
+        t.slot_delegation = Some((officer, delegated_by));
+        t
+    }
+
+    /// The condensed lines announced so far; empty for a turn that is not delegated.
+    pub fn lines(&self) -> &[String] {
+        self.delegation.as_ref().map_or(&[], |d| &d.lines)
+    }
+
+    /// Drains the finished round's results, keeping its condensed lines.
+    fn close_round(&mut self) -> Vec<ToolResult> {
+        if let Some(d) = &mut self.delegation {
+            d.lines.extend(self.slots.iter_mut().filter_map(|s| s.delegation.as_mut().and_then(|x| x.line.take())));
+        }
+        self.slots.drain(..).filter_map(|s| s.result).collect()
     }
 
     /// A stream ended. Every call is validated and deny-checked now; the valid
@@ -359,6 +433,7 @@ impl Turn {
                 line: None,
                 state: State::Done,
                 result: None,
+                delegation: self.slot_delegation.as_ref().map(|(officer, by)| SlotDelegation { officer: officer.clone(), by: by.clone(), line: None }),
             };
             if let Ok(inv) = &checked {
                 slot.label = inv.label();
@@ -554,7 +629,7 @@ impl Turn {
                 slot.abort(self.agent, &mut self.prior, out);
             }
         }
-        let results = self.slots.drain(..).filter_map(|s| s.result).collect();
+        let results = self.close_round();
         out.push(Effect::LogTool(results));
     }
 
@@ -572,7 +647,7 @@ impl Turn {
         if self.slots.iter().any(|s| s.result.is_none()) {
             return;
         }
-        let results = self.slots.drain(..).filter_map(|s| s.result).collect();
+        let results = self.close_round();
         out.push(Effect::LogTool(results));
         if self.forced > 0 {
             // A ToolUse in a forced-final response: one more forced request, then truncate.
@@ -610,7 +685,7 @@ impl Turn {
                     args: slot.call.input.clone(),
                     unknown_target: slot.unknown_target,
                     prior: self.prior.clone(),
-                    delegated_task: None,
+                    delegated_task: self.delegated_task.clone(),
                 };
                 out.push(Effect::Review { call_id: slot.call.id.clone(), input });
                 slot.state = State::Reviewing(inv);
