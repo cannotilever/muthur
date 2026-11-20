@@ -42,6 +42,8 @@ pub struct CargoDeps {
     pub run: Box<dyn FnMut(u64, Vec<String>, Duration, bool)>,
     pub now: Box<dyn Fn() -> Instant>,
     pub timestamp: Box<dyn Fn() -> String>,
+    /// Scroll hints for the backend (the log view scrolls by line).
+    pub hints: crate::scroll::HintSlot,
 }
 
 enum State {
@@ -109,7 +111,12 @@ impl CargoTab {
 
     /// A tab that runs nothing and audits nowhere (tests, previews).
     pub fn detached() -> Self {
-        let deps = CargoDeps { run: Box::new(|_, _, _, _| {}), now: Box::new(Instant::now), timestamp: Box::new(String::new) };
+        let deps = CargoDeps {
+            run: Box::new(|_, _, _, _| {}),
+            now: Box::new(Instant::now),
+            timestamp: Box::new(String::new),
+            hints: Default::default(),
+        };
         Self::new(deps, shared(AuditLog::offline()))
     }
 
@@ -309,7 +316,7 @@ impl Tab for CargoTab {
             State::Manifest(Some(c)) if c.is_empty() => vec![Line::from("HOLD EMPTY")],
             State::Manifest(Some(_)) if self.logs.is_some() => {
                 if let Some(v) = &mut self.logs {
-                    v.render(area, buf);
+                    v.render(area, buf, &self.deps.hints);
                 }
                 return;
             }

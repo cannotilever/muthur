@@ -238,6 +238,7 @@ struct H {
     calls: Calls,
     clock: Rc<Cell<Instant>>,
     audit_path: PathBuf,
+    hints: crate::scroll::HintSlot,
     _dir: tempfile::TempDir,
 }
 
@@ -259,15 +260,17 @@ fn harness_audit(list: Vec<Container>, online: bool) -> H {
     let calls: Calls = Rc::default();
     let clock = Rc::new(Cell::new(Instant::now()));
     let (rec, clk) = (calls.clone(), clock.clone());
+    let hints = crate::scroll::HintSlot::default();
     let deps = CargoDeps {
         run: Box::new(move |seq, argv, timeout, merged| rec.borrow_mut().push((seq, argv, timeout, merged))),
         now: Box::new(move || clk.get()),
         timestamp: Box::new(|| "ts".into()),
+        hints: hints.clone(),
     };
     let mut t = CargoTab::new(deps, audit);
     t.on_metrics(&snap(Some(list)));
     render(&mut t, WINDOWED);
-    H { t, calls, clock, audit_path, _dir: dir }
+    H { t, calls, clock, audit_path, hints, _dir: dir }
 }
 
 impl H {
@@ -735,4 +738,31 @@ fn keys_before_first_render_do_not_scroll() {
     t.handle_key(&Key::Down);
     let s = text(&render(&mut t, WINDOWED));
     assert!(s.contains("(1-35)") && s.contains(">CRATE002"), "{s}");
+}
+
+#[test]
+fn log_scrolling_sends_scroll_hints() {
+    use crate::scroll::ScrollHint;
+    let mut h = harness(vec![c("a1", "web", "UP")]);
+    h.key(Key::Char('L'));
+    h.done(exited(0, &numbered(100), ""));
+    render(&mut h.t, WINDOWED);
+    h.hints.take();
+    // 40 rows - 2 borders = 38 inner, the last is the hint line: 37 text rows from y 3.
+    let band = |lines| Some(ScrollHint { top: 3, bottom: 40, lines });
+    h.key(Key::Up);
+    render(&mut h.t, WINDOWED);
+    assert_eq!(h.hints.take(), band(-1), "older line comes in at the top");
+    h.key(Key::Down);
+    render(&mut h.t, WINDOWED);
+    assert_eq!(h.hints.take(), band(1));
+    render(&mut h.t, WINDOWED);
+    assert_eq!(h.hints.take(), None, "nothing moved");
+    h.key(Key::PageUp);
+    render(&mut h.t, WINDOWED);
+    assert_eq!(h.hints.take(), None, "a whole page is new: repaint");
+    h.key(Key::Char('L'));
+    h.done(exited(0, &numbered(101), ""));
+    render(&mut h.t, WINDOWED);
+    assert_eq!(h.hints.take(), None, "new text, not a scroll");
 }
