@@ -52,9 +52,11 @@ pub fn request_body(cfg: &MuthurSection, req: &ChatRequest) -> Value {
         "stream": true,
         "system": req.system,
         "messages": messages,
-        "output_config": {"effort": cfg.effort},
         "cache_control": cache,
     });
+    if !matches!(req.tool_choice, ToolChoice::Force(_)) {
+        body["output_config"] = json!({"effort": cfg.effort});
+    }
     if cfg.fallbacks {
         body["fallbacks"] = json!("default");
     }
@@ -309,6 +311,9 @@ mod tests {
         let b = request_body(&key_cfg(), &r);
         assert_eq!(b["tool_choice"], json!({"type":"tool","name":"verdict"}));
         assert!(b.get("thinking").is_none());
+        assert!(b.get("output_config").is_none());
+        r.tool_choice = ToolChoice::Auto;
+        assert!(request_body(&key_cfg(), &r).get("output_config").is_some());
     }
     #[test] fn no_tools_no_fields() { let b = request_body(&key_cfg(), &req_with(vec![user("HI")])); assert!(b.get("tools").is_none() && b.get("tool_choice").is_none()); }
     #[test] fn tool_results_message() { let m = Message{ role: Role::User, content: MessageContent::ToolResults(vec![ToolResult{ id:"t1".into(), name:"journal".into(), content:"X".into(), is_error:true, label:"L".into() }]) }; let b = request_body(&key_cfg(), &req_with(vec![user("HI"), m])); assert_eq!(b["messages"][1], json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"X","is_error":true}]})); }
