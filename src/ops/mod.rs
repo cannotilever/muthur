@@ -32,7 +32,12 @@ pub fn head_tail(text: &str, limit: usize) -> String {
     while !text.is_char_boundary(t) {
         t += 1;
     }
-    format!("{}\n[… {} BYTES OMITTED …]\n{}", &text[..h], t - h, &text[t..])
+    format!("{}{}{}", &text[..h], omitted(t - h), &text[t..])
+}
+
+/// The cut marker `head_tail` puts between head and tail.
+pub fn omitted(n: usize) -> String {
+    format!("\n[… {n} BYTES OMITTED …]\n")
 }
 
 /// Which agent issued an operation.

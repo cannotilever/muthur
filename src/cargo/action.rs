@@ -141,6 +141,7 @@ pub(super) fn failure(verb: Verb, out: &RunOutput) -> Option<String> {
         }
         RunOutput::NotFound => "RUNTIME NOT FOUND".into(),
         RunOutput::TimedOut => format!("{verb} TIMED OUT"),
+        RunOutput::Cancelled => format!("{verb} CANCELLED"),
     })
 }
 
@@ -149,6 +150,7 @@ pub(super) fn audit_entry(verb: Verb, id: &str, name: &str, argv: Vec<String>, o
         RunOutput::Exited { code, stdout, stderr } => (json!(code), format!("{stdout}{stderr}")),
         RunOutput::NotFound => (json!("not_found"), String::new()),
         RunOutput::TimedOut => (json!("timeout"), String::new()),
+        RunOutput::Cancelled => (json!("cancelled"), String::new()),
     };
     let decision = if verb.confirm() { Decision::Confirmed } else { Decision::Auto };
     entry(verb, id, name, argv, decision, exit, ms, output)

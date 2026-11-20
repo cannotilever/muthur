@@ -130,6 +130,7 @@ pub fn execute(inv: &Invocation, ctx: &ExecCtx) -> ToolOutcome {
             ms,
         ),
         RunOutput::TimedOut => outcome("NO RESPONSE".into(), true, argv, json!("timeout"), ms),
+        RunOutput::Cancelled => outcome("ABORTED BY OPERATOR".into(), true, argv, json!("cancelled"), ms),
         RunOutput::Exited {
             code,
             stdout,
