@@ -18,7 +18,16 @@ pub use tabs::{PlaceholderTab, TABS, Tab, TabId};
 /// How long a Y/N prompt must be on screen before Y counts (MU/TH/UR, CARGO).
 /// Keys sooner than this after the prompt is seen are ignored (see
 /// `muthur::State::Override`, `cargo::action::Prompt`).
+/// Break arrives as NUL in raw mode (`BRKINT`/`PARMRK` off), decoded as `^@`.
+pub const BREAK: Key = Key::Ctrl('@');
+
+/// After Break, how long the line must stay quiet before the re-init.
+pub const BREAK_SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
+
 pub const ARMING: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Builds a fresh boot splash, started at the given instant (for Break).
+pub type SplashFactory = Box<dyn Fn(std::time::Instant) -> Splash>;
 
 /// What the title bar shows.
 pub struct ChromeView {
@@ -46,6 +55,15 @@ pub struct App {
     /// `muthur splash`: quit as soon as the splash ends or is skipped.
     pub quit_after_splash: bool,
     splash: Option<Splash>,
+    /// Builds a fresh splash for Break (re-initialise the screen).
+    splash_factory: Option<SplashFactory>,
+    /// The current splash was started by Break: activity behind it is news.
+    splash_is_replay: bool,
+    /// Seeds a replayed splash.
+    last_snapshot: Option<Snapshot>,
+    metrics_offline: bool,
+    /// After Break: re-initialise when the line has been quiet until then.
+    settle_until: Option<std::time::Instant>,
     /// The splash reached `READY.`; the run loop sends BEL.
     bell: bool,
     tabs: [Box<dyn Tab>; TABS],
@@ -74,6 +92,11 @@ impl App {
         self
     }
 
+    pub fn with_splash_factory(mut self, f: SplashFactory) -> Self {
+        self.splash_factory = Some(f);
+        self
+    }
+
     /// True once after the splash reached `READY.`.
     pub fn take_bell(&mut self) -> bool {
         std::mem::take(&mut self.bell)
@@ -85,11 +108,14 @@ impl App {
 
     fn end_splash(&mut self) {
         self.splash = None;
-        // Whatever happened behind the splash is not news.
-        for tab in self.tabs.iter_mut() {
-            tab.take_activity();
+        // Whatever happened behind the boot splash is not news; behind a
+        // replay (Break) it is, and `render` picks it up.
+        if !std::mem::take(&mut self.splash_is_replay) {
+            for tab in self.tabs.iter_mut() {
+                tab.take_activity();
+            }
+            self.activity = [false; TABS];
         }
-        self.activity = [false; TABS];
         if self.quit_after_splash {
             self.quit = true;
         } else {
@@ -111,6 +137,9 @@ impl App {
 
     /// The active tab's redraw cadence; 1 s when it is idle.
     pub fn tick_interval(&self) -> std::time::Duration {
+        if self.settling() {
+            return std::time::Duration::from_millis(50);
+        }
         if let Some(s) = &self.splash {
             return s.tick_interval();
         }
@@ -126,12 +155,15 @@ impl App {
         for id in [TabId::Utility, TabId::Cargo] {
             self.tabs[id.index()].on_metrics(&s);
         }
+        self.last_snapshot = Some(s);
+        self.metrics_offline = false;
     }
 
     pub fn on_metrics_offline(&mut self, why: &str) {
         if let Some(sp) = &mut self.splash {
             sp.on_metrics_offline();
         }
+        self.metrics_offline = true;
         for id in [TabId::Utility, TabId::Cargo] {
             self.tabs[id.index()].on_metrics_offline(why);
         }
@@ -167,6 +199,11 @@ impl App {
             passthrough: false,
             quit_after_splash: false,
             splash: None,
+            splash_factory: None,
+            splash_is_replay: false,
+            last_snapshot: None,
+            metrics_offline: false,
+            settle_until: None,
             bell: false,
             tabs,
             activity: [false; TABS],
@@ -179,9 +216,24 @@ impl App {
         self.activity[id.index()] = false;
     }
 
-    /// A batch that arrives during the splash is consumed whole: the first key
-    /// skips it, the rest must not reach the tabs.
     pub fn handle_keys(&mut self, keys: Vec<Key>) {
+        self.handle_keys_at(keys, std::time::Instant::now());
+    }
+
+    /// A batch with Break, or any batch while the line settles after one, is
+    /// dropped whole: around a Break the WY-60 sends line noise and, while it
+    /// powers up, echoes our own output back. A batch that arrives during the
+    /// splash is consumed whole too: the first key skips it.
+    pub fn handle_keys_at(&mut self, keys: Vec<Key>, now: std::time::Instant) {
+        if keys.contains(&BREAK) {
+            self.on_break(now);
+            return;
+        }
+        if self.settle_until.is_some() {
+            tracing::debug!(n = keys.len(), "break: input dropped while settling");
+            self.settle_until = Some(now + BREAK_SETTLE);
+            return;
+        }
         if self.splash.is_some() {
             self.end_splash();
             return;
@@ -191,7 +243,53 @@ impl App {
         }
     }
 
+    /// True while waiting for the line to go quiet after Break: nothing may be
+    /// drawn, because the terminal is still busy and would lose or echo it.
+    pub fn settling(&self) -> bool {
+        self.settle_until.is_some()
+    }
+
+    /// Re-initialise once the line has been quiet for `BREAK_SETTLE`.
+    pub fn poll_settle(&mut self, now: std::time::Instant) {
+        if self.settle_until.is_some_and(|t| now >= t) {
+            self.settle_until = None;
+            self.reinit(now);
+        }
+    }
+
+    /// Break: the terminal was power-cycled or needs a reset. Leave passthrough
+    /// and any prefix/overlay now; re-initialise once the line settles.
+    fn on_break(&mut self, now: std::time::Instant) {
+        self.prefix = false;
+        self.overlay = None;
+        if self.passthrough {
+            self.passthrough = false;
+            self.tabs[TabId::Shell.index()].set_passthrough(false);
+        }
+        self.settle_until = Some(now + BREAK_SETTLE);
+    }
+
+    /// Clear, reset the terminal, replay the splash (if configured), repaint.
+    fn reinit(&mut self, now: std::time::Instant) {
+        tracing::info!(splash = self.splash_factory.is_some(), "break: re-initialising screen");
+        self.redraw = true;
+        if let Some(f) = &self.splash_factory {
+            let mut sp = f(now);
+            if let Some(s) = &self.last_snapshot {
+                sp.on_metrics(s);
+            } else if self.metrics_offline {
+                sp.on_metrics_offline();
+            }
+            self.splash = Some(sp);
+            self.splash_is_replay = true;
+        }
+    }
+
     pub fn handle_key(&mut self, key: Key) {
+        if key == BREAK || self.settle_until.is_some() {
+            self.handle_keys(vec![key]);
+            return;
+        }
         if self.splash.is_some() {
             self.end_splash();
             return;

@@ -138,7 +138,7 @@ fn help_overlay() {
     let mut app = App::new(chrome());
     keys(&mut app, &[Key::Ctrl(']'), Key::Char('?')]);
     let all: String = (0..43).map(|y| row(&draw(&mut app), y)).collect();
-    assert!(all.contains("QUIT"), "{all}");
+    assert!(all.contains("QUIT") && all.contains("BREAK            REINIT SCREEN"), "{all}");
 }
 
 /// Records each `set_obscured` call made before a render.
@@ -656,4 +656,152 @@ fn cargo_done_reaches_cargo() {
     let mut app = spy_app(&st, TabId::Cargo);
     app.on_cargo_done(7, crate::tools::runner::RunOutput::NotFound, 3);
     assert_eq!(st.lock().unwrap().cargo_done, vec![7]);
+}
+
+// ---- Break: re-initialise the screen ----
+
+const BREAK: Key = Key::Ctrl('@');
+
+/// A factory that counts its calls and builds splashes started `ago` in the past.
+fn counting_factory(ago: Duration) -> (SplashFactory, std::rc::Rc<std::cell::Cell<usize>>) {
+    let n = std::rc::Rc::new(std::cell::Cell::new(0));
+    let calls = n.clone();
+    let f = move |now: Instant| {
+        calls.set(calls.get() + 1);
+        Splash::new(splash_info(), now - ago)
+    };
+    (Box::new(f), n)
+}
+
+/// Break, then let the line settle.
+fn brk(app: &mut App) {
+    let t = Instant::now();
+    app.handle_keys_at(vec![BREAK], t);
+    app.poll_settle(t + BREAK_SETTLE);
+}
+
+#[test]
+fn break_waits_for_the_line_to_settle() {
+    let (f, _) = counting_factory(Duration::ZERO);
+    let mut app = App::new(chrome()).with_splash_factory(f);
+    let t = Instant::now();
+    app.handle_keys_at(vec![BREAK], t);
+    assert!(app.settling() && !app.redraw && !app.splash_active(), "nothing is sent while the terminal is busy");
+    app.poll_settle(t + BREAK_SETTLE - Duration::from_millis(1));
+    assert!(app.settling() && !app.redraw);
+    app.poll_settle(t + BREAK_SETTLE);
+    assert!(!app.settling() && app.redraw && app.splash_active());
+}
+
+#[test]
+fn input_while_settling_is_dropped_and_restarts_the_wait() {
+    let st = Arc::new(Mutex::new(SpyState::default()));
+    let mut app = spy_app(&st, TabId::Utility);
+    let t = Instant::now();
+    app.handle_keys_at(vec![BREAK], t);
+    let t2 = t + Duration::from_millis(300);
+    app.handle_keys_at(vec![Key::Char('x')], t2); // echo / line noise
+    app.poll_settle(t + BREAK_SETTLE);
+    assert!(app.settling(), "noise restarts the wait");
+    let t3 = t2 + Duration::from_millis(300);
+    app.handle_keys_at(vec![BREAK], t3); // another NUL from power-on noise
+    app.poll_settle(t2 + BREAK_SETTLE);
+    assert!(app.settling());
+    app.poll_settle(t3 + BREAK_SETTLE);
+    assert!(!app.settling() && app.redraw);
+    assert!(st.lock().unwrap().keys.is_empty(), "nothing received while settling reaches a tab");
+}
+
+#[test]
+fn settling_wakes_the_loop_often() {
+    let mut app = App::new(chrome());
+    app.handle_key(BREAK);
+    assert!(app.tick_interval() <= Duration::from_millis(50));
+}
+
+#[test]
+fn break_without_factory_only_redraws() {
+    let mut app = App::new(chrome());
+    brk(&mut app);
+    assert!(!app.splash_active() && app.redraw);
+}
+
+#[test]
+fn break_during_splash_restarts_it() {
+    let (f, n) = counting_factory(Duration::ZERO);
+    let mut app = App::new(chrome()).with_splash(fresh_splash()).with_splash_factory(f);
+    brk(&mut app);
+    assert!(app.splash_active(), "Break must not skip the splash");
+    assert_eq!(n.get(), 1, "a fresh splash replaces the old one");
+}
+
+#[test]
+fn break_clears_prefix_and_overlay() {
+    let mut app = App::new(chrome());
+    keys(&mut app, &[Key::Ctrl(']')]);
+    brk(&mut app);
+    assert!(!app.prefix && app.redraw, "Break acts even after ^]");
+    app.redraw = false;
+    keys(&mut app, &[Key::Ctrl(']'), Key::Char('?')]);
+    brk(&mut app);
+    assert!(app.overlay.is_none() && app.redraw, "Break acts under an overlay");
+}
+
+#[test]
+fn break_ends_passthrough() {
+    let st = Arc::new(Mutex::new(SpyState::default()));
+    let mut app = spy_app(&st, TabId::Shell);
+    app.active = TabId::Shell;
+    app.passthrough = true;
+    brk(&mut app);
+    assert!(!app.passthrough && app.redraw);
+    assert_eq!(st.lock().unwrap().passthrough, vec![false], "the shell learns at once");
+    assert!(st.lock().unwrap().keys.is_empty(), "Break is not sent to the shell");
+}
+
+#[test]
+fn activity_survives_replayed_splash() {
+    let st = Arc::new(Mutex::new(SpyState::default()));
+    let (f, _) = counting_factory(Duration::ZERO);
+    let mut app = spy_app(&st, TabId::Muthur).with_splash_factory(f);
+    st.lock().unwrap().activity = true;
+    draw(&mut app); // lights the MU/TH/UR marker
+    brk(&mut app);
+    assert!(app.splash_active());
+    draw(&mut app);
+    app.handle_key(Key::Char('x')); // skip the replay
+    let buf = draw(&mut app);
+    let top = chrome::box_top(TabId::Muthur);
+    assert_eq!(buf[(chrome::BOX_X + chrome::BOX_W - 2, top + 1)].symbol(), "*");
+}
+
+#[test]
+fn replayed_splash_is_seeded_with_last_snapshot() {
+    let (f, _) = counting_factory(Duration::from_millis(2500));
+    let mut app = App::new(chrome()).with_splash_factory(f);
+    app.on_metrics(Snapshot { cpu_cores: vec![0.0; 16], ..Default::default() });
+    brk(&mut app);
+    let all = screen_text(&draw(&mut app));
+    assert!(all.contains("16 CORES") && !all.contains("NO DATA"), "{all}");
+}
+
+#[test]
+fn replayed_splash_is_seeded_offline() {
+    let (f, _) = counting_factory(Duration::from_millis(2500));
+    let mut app = App::new(chrome()).with_splash_factory(f);
+    app.on_metrics_offline("NO /PROC");
+    brk(&mut app);
+    let all = screen_text(&draw(&mut app));
+    assert!(all.contains("NO DATA"), "{all}");
+}
+
+#[test]
+fn batch_with_break_is_dropped_whole() {
+    let st = Arc::new(Mutex::new(SpyState::default()));
+    let mut app = spy_app(&st, TabId::Utility);
+    let t = Instant::now();
+    app.handle_keys_at(vec![Key::Char('y'), BREAK, Key::Char('x')], t);
+    app.poll_settle(t + BREAK_SETTLE);
+    assert!(app.redraw);
+    assert!(st.lock().unwrap().keys.is_empty(), "noise around the NUL never reaches a tab");
 }

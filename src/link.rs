@@ -6,8 +6,8 @@ use crate::config::LinkConfig;
 use anyhow::{Context, bail};
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::sys::termios::{
-    BaudRate, ControlFlags, InputFlags, LocalFlags, OutputFlags, SetArg, SpecialCharacterIndices,
-    Termios, cfsetspeed, tcgetattr, tcsetattr,
+    BaudRate, ControlFlags, FlowArg, FlushArg, InputFlags, LocalFlags, OutputFlags, SetArg,
+    SpecialCharacterIndices, Termios, cfsetspeed, tcflow, tcflush, tcgetattr, tcsetattr,
 };
 use nix::fcntl::{FcntlArg, OFlag, fcntl};
 use std::fs::File;
@@ -201,6 +201,29 @@ impl ReadTimeout for LinkReader {
     }
 }
 
+/// See `Link::unsticker`.
+pub struct Unsticker {
+    file: File,
+}
+
+impl Unsticker {
+    /// Drop output queued for a screen that is gone and resume output the
+    /// terminal suspended with XOFF before it lost power. Never fatal.
+    /// (An RTS/CTS stall can't be overridden from here.)
+    pub fn unstick(&self) {
+        let mut q: nix::libc::c_int = 0;
+        // SAFETY: TIOCOUTQ writes one c_int through the pointer.
+        let _ = unsafe { tiocoutq(self.file.as_raw_fd(), &mut q) };
+        tracing::info!(discarded = q, "break: flushing output queue");
+        if let Err(e) = tcflush(&self.file, FlushArg::TCOFLUSH) {
+            tracing::warn!("break: flushing output failed: {e}");
+        }
+        if let Err(e) = tcflow(&self.file, FlowArg::TCOON) {
+            tracing::warn!("break: resuming output failed: {e}");
+        }
+    }
+}
+
 nix::ioctl_read_bad!(tiocoutq, nix::libc::TIOCOUTQ, nix::libc::c_int);
 
 impl Link {
@@ -212,6 +235,11 @@ impl Link {
 
     pub fn reader(&self) -> io::Result<LinkReader> {
         Ok(LinkReader { file: self.file.try_clone()? })
+    }
+
+    /// A handle the input thread uses to unstick output when Break arrives.
+    pub fn unsticker(&self) -> io::Result<Unsticker> {
+        Ok(Unsticker { file: self.file.try_clone()? })
     }
 
     /// Bytes written but not yet transmitted (kernel output queue).
@@ -263,5 +291,24 @@ mod tests {
     fn unsupported_baud_is_error() {
         assert!(baud_rate(38400).is_ok());
         assert!(baud_rate(38401).unwrap_err().to_string().contains("38401"));
+    }
+
+    #[test]
+    fn unstick_resumes_output_suspended_by_xoff() {
+        let pty = nix::pty::openpty(None, None).unwrap();
+        let link = Link::from_fd(pty.slave, None, FlowControl::XonXoff).unwrap();
+        tcflow(&link.file, FlowArg::TCOOFF).unwrap();
+        let mut w = link.writer().unwrap();
+        let unsticker = link.unsticker().unwrap();
+        let writer = std::thread::spawn(move || w.write_all(b"HI"));
+        std::thread::sleep(Duration::from_millis(50));
+        unsticker.unstick();
+        let mut master = File::from(pty.master);
+        let mut fds = [PollFd::new(master.as_fd(), PollFlags::POLLIN)];
+        assert_eq!(poll(&mut fds, PollTimeout::from(2000u16)).unwrap(), 1, "output still suspended");
+        let mut buf = [0u8; 8];
+        let n = master.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b"HI");
+        writer.join().unwrap().unwrap();
     }
 }

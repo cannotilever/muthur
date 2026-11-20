@@ -111,6 +111,16 @@ Modelled on the Alien: Isolation personal terminal
 - **Prefix `Ctrl-]`** then:
   - `f` fullscreen toggle · `p` passthrough toggle · `[` scrollback (Shell)
   - `r` force full redraw · `]` send a literal `Ctrl-]` · `?` help
+- **Break** — re-initialise after the WY-60 was power-cycled: clear and reset
+  the terminal, replay the boot splash (if `[chrome] splash` is on; activity
+  markers survive it), then a full repaint. Also leaves passthrough, closes the
+  prefix and any overlay, and unsticks output the terminal paused with XOFF
+  before it lost power (the input thread flushes and resumes the link's output
+  queue, since the event loop may be blocked in a write).
+  The re-init waits until the line has been quiet for 500 ms (`BREAK_SETTLE`),
+  and nothing is drawn in the meantime: the WY-60 loses what it receives while
+  it is still sending the break, and while it powers up it sends line noise and
+  echoes our own output back. Input received while waiting is dropped.
 - Measured key sequences and output capabilities: see `docs/hardware.md`.
   PgUp/PgDn are Shift-F15/Shift-F16 (the Page key only sends `^J`); delete-char
   is Line Del/Char (PF2) because Del is a hold-screen key.

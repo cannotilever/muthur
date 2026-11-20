@@ -43,6 +43,7 @@ on the terminal matching terminfo.
 | Backspace | `^H` |
 | Return, keypad Enter | `^M` |
 | Keypad digits `.` `-` `,` | plain ASCII (numeric keypad mode) |
+| Break | `0x00` (NUL) in raw mode (`BRKINT`, `IGNBRK`, `PARMRK` off). MUTHUR treats it as **re-initialise screen**, 500 ms after the line goes quiet: output sent during the break is lost, and on power-up the terminal sends noise (including more NULs) and echoes received output back for a few hundred ms. Ctrl-@ / Ctrl-Space also send NUL, if the WY-60 sends them at all, so they act as Break too and never reach the shell. |
 | Page (any modifier) | `^J` — indistinguishable from Ctrl-J; **unusable** |
 | Del | Hold Screen: XOFF on first press, XON on second (swallowed by the tty under XON/XOFF). Unusable as a key. *(Pending confirmation with `flow = "none"`.)* |
 

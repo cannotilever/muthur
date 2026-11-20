@@ -92,18 +92,27 @@ pub fn should_draw(dirty: bool, outq: usize) -> bool {
 }
 
 /// Read the link, parse keys, and forward them. Exits (sending `Hangup`) on a
-/// read error, or quietly when the receiver is gone.
+/// read error, or quietly when the receiver is gone. A NUL byte (Break) calls
+/// `on_break` first, here rather than in the event loop, which may be stuck in
+/// a write to a terminal that was powered off after sending XOFF.
 pub fn spawn_input<R: ReadTimeout + Send + 'static>(
     mut reader: R,
     mut parser: KeyParser,
     tx: UnboundedSender<Event>,
+    on_break: impl Fn() + Send + 'static,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut buf = [0u8; 256];
         loop {
             let keys = match reader.read_timeout(&mut buf, KEY_GAP) {
                 Ok(0) => parser.timeout(),
-                Ok(n) => parser.feed(&buf[..n]),
+                Ok(n) => {
+                    if buf[..n].contains(&0) {
+                        tracing::info!(bytes = ?&buf[..n], "break: NUL received");
+                        on_break();
+                    }
+                    parser.feed(&buf[..n])
+                }
                 Err(e) => {
                     tracing::warn!("link read failed: {e}");
                     let _ = tx.send(Event::Hangup);
@@ -143,7 +152,7 @@ pub async fn event_loop<W: Write>(
         // Entering passthrough: draw once more (the shell, now fullscreen,
         // resizes its PTY to the whole screen), then stop drawing.
         let entering = app.passthrough && !was_passthrough && dirty;
-        if (entering || !app.passthrough) && should_draw(dirty, outq()) {
+        if (entering || !app.passthrough) && !app.settling() && should_draw(dirty, outq()) {
             terminal.draw(|f| app.render(f, clock()))?;
             dirty = false;
             was_passthrough = app.passthrough;
@@ -211,6 +220,9 @@ pub async fn event_loop<W: Write>(
         if app.quit {
             return Ok(());
         }
+        // After Break, nothing is drawn until the line settles (see
+        // `App::settling`); the re-init then clears below before drawing.
+        app.poll_settle(Instant::now());
         if !app.passthrough {
             was_passthrough = false;
         }
@@ -384,7 +396,8 @@ fn open_session(cfg: &Config, strict: bool) -> anyhow::Result<Session> {
     };
     let keymap = Keymap::wy60_default().with_overrides(&cfg.keys)?;
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    spawn_input(link.reader()?, KeyParser::new(keymap), tx.clone());
+    let unsticker = link.unsticker()?;
+    spawn_input(link.reader()?, KeyParser::new(keymap), tx.clone(), move || unsticker.unstick());
 
     let out = link.writer()?;
     let writer: Box<dyn Write> =
@@ -476,6 +489,11 @@ pub fn run(cfg: &Config, strict: bool) -> anyhow::Result<()> {
     let mut app = App::assemble(chrome, muthur, UtilityTab::new(), cargo, shell);
     if cfg.chrome.splash {
         app = app.with_splash(splash_for(cfg, &ship));
+        // Break replays the splash with fresh facts (year, interface readiness).
+        let (cfg, ship) = (cfg.clone(), ship.clone());
+        app = app.with_splash_factory(Box::new(move |now| {
+            Splash::new(SplashInfo::from_config(&cfg, &ship, chrono::Local::now().naive_local()), now)
+        }));
     }
     tracing::info!(cols, rows, strict, "MU/TH/UR online");
 
@@ -835,5 +853,84 @@ mod tests {
         let mut l = crate::chatlog::ChatLog::open(p.clone()).unwrap();
         l.append_user("A", "t").unwrap();
         assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[tokio::test]
+    async fn nothing_is_drawn_while_the_line_settles() {
+        let (app, mut t) = setup();
+        let mut app = app.with_splash_factory(Box::new(|_| stale_splash()));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let script = async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            tx.send(Event::Keys(vec![Key::Ctrl('@')])).unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            tx.send(Event::Keys(vec![Key::Char('x')])).unwrap(); // echo
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            tx.send(Event::Hangup).unwrap(); // before the line has settled
+        };
+        let mut pty = no_pty();
+        let (r, _) = tokio::join!(event_loop(&mut app, &mut t, &mut rx, &mut pty, || 0, now), script);
+        r.unwrap();
+        let out = String::from_utf8(t.backend().writer().clone()).unwrap();
+        assert_eq!(out.matches("\x1b[2J").count(), 1, "only the initial clear: {out:?}");
+        assert!(!out.contains("VESSEL"), "splash must wait for the line to settle");
+    }
+
+    #[tokio::test]
+    async fn break_replays_splash_after_a_clear() {
+        let (app, mut t) = setup();
+        let mut app = app.with_splash_factory(Box::new(|_| stale_splash()));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let script = async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            tx.send(Event::Keys(vec![Key::Ctrl('@')])).unwrap();
+            tokio::time::sleep(crate::app::BREAK_SETTLE + Duration::from_millis(200)).await;
+            tx.send(Event::Keys(vec![Key::Ctrl(']'), Key::Char('q')])).unwrap();
+        };
+        let mut pty = no_pty();
+        let (r, _) = tokio::join!(event_loop(&mut app, &mut t, &mut rx, &mut pty, || 0, now), script);
+        r.unwrap();
+        let out = String::from_utf8(t.backend().writer().clone()).unwrap();
+        let first_tui = out.find("17 NOV 2137 14:02").expect("tui painted before Break");
+        let splash = out.find("VESSEL").expect("splash replayed");
+        assert!(splash > first_tui);
+        let clear_before_splash = out[..splash].rfind("\x1b[2J").unwrap();
+        assert!(clear_before_splash > first_tui, "Break clears before the splash");
+        assert!(out[splash..].contains("17 NOV 2137 14:02"), "TUI repainted after the replay");
+        let mut strict = crate::strict::StrictWriter::new(Vec::new(), Vt100Dialect);
+        strict.write_all(out.as_bytes()).unwrap();
+        assert!(strict.violations.is_empty(), "{:?}", strict.violations);
+    }
+
+    struct Scripted(std::collections::VecDeque<Vec<u8>>);
+    impl ReadTimeout for Scripted {
+        fn read_timeout(&mut self, buf: &mut [u8], _t: Duration) -> std::io::Result<usize> {
+            match self.0.pop_front() {
+                Some(b) => {
+                    buf[..b.len()].copy_from_slice(&b);
+                    Ok(b.len())
+                }
+                None => Err(std::io::Error::other("done")),
+            }
+        }
+    }
+
+    #[test]
+    fn input_thread_calls_break_hook_and_forwards_key() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let c = calls.clone();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let reader = Scripted(vec![b"a".to_vec(), vec![0x00]].into());
+        spawn_input(reader, KeyParser::new(Keymap::wy60_default()), tx, move || {
+            c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })
+        .join()
+        .unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let mut keys = Vec::new();
+        while let Ok(Event::Keys(k)) = rx.try_recv() {
+            keys.extend(k);
+        }
+        assert_eq!(keys, vec![Key::Char('a'), Key::Ctrl('@')]);
     }
 }
