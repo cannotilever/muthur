@@ -236,6 +236,7 @@ impl MuthurTab {
             text: self.partial_raw.clone(),
             stop: stop.into(),
             raw,
+            agent: AgentId::Muthur,
         }
     }
 
@@ -307,7 +308,7 @@ impl MuthurTab {
         self.finish_reveal();
         let logged = format!("[SHIP TIME {}] {line}", (self.deps.ship_time)());
         let ts = (self.deps.timestamp)();
-        if let Err(e) = self.log.append_user(&logged, &ts) {
+        if let Err(e) = self.log.append_user(&logged, &ts, AgentId::Muthur) {
             tracing::error!("chat log: cannot record inquiry: {e}");
             self.status_flash = Some(unable(LlmError::Transmission.reason()));
             return;
@@ -328,7 +329,7 @@ impl MuthurTab {
         self.calls.clear();
         self.revealing = true;
         let model = self.cfg.model().unwrap_or_default().to_string();
-        let messages = match self.log.window(self.cfg.provider, &model, &self.system, &self.tools.json(), self.cfg.context_tokens) {
+        let messages = match self.log.window(AgentId::Muthur, self.cfg.provider, &model, &self.system, &self.tools.json(), self.cfg.context_tokens, false) {
             Ok(m) => m,
             Err(e) => {
                 tracing::error!("chat log: cannot build message window: {e}");

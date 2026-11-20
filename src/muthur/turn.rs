@@ -4,6 +4,7 @@ use super::{unable, MuthurTab, State, NOTE_TRUNCATED};
 use crate::agent::{Effect, ABORTED_ISSUED};
 use crate::input::Key;
 use crate::llm::{LlmError, Stop, ToolResult};
+use crate::ops::AgentId;
 use crate::tools::ToolOutcome;
 
 const AUDIT_OFFLINE: &str = "AUDIT LOG OFFLINE";
@@ -142,7 +143,7 @@ impl MuthurTab {
                 }
                 Effect::LogTool(results) => {
                     let ts = (self.deps.timestamp)();
-                    if let Err(e) = self.log.append_tool(&results, &ts) {
+                    if let Err(e) = self.log.append_tool(&results, &ts, AgentId::Muthur) {
                         tracing::error!("chat log: cannot record tool results: {e}");
                     }
                 }

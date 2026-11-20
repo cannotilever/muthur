@@ -5,6 +5,7 @@ use crate::config::{MuthurSection, Provider, ToolsSection};
 use crate::input::Key;
 use crate::llm::{ChatRequest, LlmError, MessageContent, Stop, StreamEvent, ToolResult};
 use crate::ops::audit::AuditLog;
+use crate::ops::AgentId;
 use crate::tools::{Invocation, ToolDefs, ToolOutcome};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -109,8 +110,8 @@ fn done(stop: Stop) -> StreamEvent {
 }
 
 fn exchange(log: &mut ChatLog, user: &str, reply: &str, stop: &str) {
-    log.append_user(user, "ts").unwrap();
-    let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: reply.into(), stop: stop.into(), raw: None };
+    log.append_user(user, "ts", AgentId::Muthur).unwrap();
+    let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: reply.into(), stop: stop.into(), raw: None, agent: AgentId::Muthur };
     log.append_assistant(a, "ts").unwrap();
 }
 
@@ -578,9 +579,9 @@ fn audit_offline_flash() {
 #[test]
 fn history_shows_tool_notes() {
     let mut h = harness_with(cfg(), |l| {
-        l.append_user("[SHIP TIME X] STATUS", "ts").unwrap();
+        l.append_user("[SHIP TIME X] STATUS", "ts", AgentId::Muthur).unwrap();
         let raw = vec![json!({"type":"tool_use","id":"c1","name":"ship_status","input":{}})];
-        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "".into(), stop: "tool_use".into(), raw: Some(raw) };
+        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "".into(), stop: "tool_use".into(), raw: Some(raw), agent: AgentId::Muthur };
         l.append_assistant(a, "ts").unwrap();
         let r = |id: &str, content: &str, label: &str| ToolResult {
             id: id.into(),
@@ -589,8 +590,8 @@ fn history_shows_tool_notes() {
             is_error: false,
             label: label.into(),
         };
-        l.append_tool(&[r("c1", "ok", "SHIP STATUS"), r("c2", "NOT AUTHORIZED: UNKNOWN CONTAINER", "CONTAINER LOGS web 50")], "ts").unwrap();
-        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "NOMINAL.".into(), stop: "end_turn".into(), raw: None };
+        l.append_tool(&[r("c1", "ok", "SHIP STATUS"), r("c2", "NOT AUTHORIZED: UNKNOWN CONTAINER", "CONTAINER LOGS web 50")], "ts", AgentId::Muthur).unwrap();
+        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "NOMINAL.".into(), stop: "end_turn".into(), raw: None, agent: AgentId::Muthur };
         l.append_assistant(a, "ts").unwrap();
     });
     let rows = screen(&mut h.t, 61, 40);

@@ -13,13 +13,14 @@ type Clock = std::rc::Rc<std::cell::Cell<std::time::Instant>>;
 
 fn muthur_tab(path: &std::path::Path, prefill: Option<(&str, &str)>) -> (muthur::muthur::MuthurTab, Clock) {
     use muthur::chatlog::{Assistant, ChatLog};
+    use muthur::ops::AgentId;
     use muthur::config::{MuthurSection, Provider, ToolsSection};
     use muthur::muthur::{MuthurDeps, MuthurTab};
     use muthur::{ops::audit::AuditLog, tools::ToolDefs};
     let mut log = ChatLog::open(path.to_path_buf()).unwrap();
     if let Some((q, a)) = prefill {
-        log.append_user(q, "ts").unwrap();
-        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: a.into(), stop: "end".into(), raw: None };
+        log.append_user(q, "ts", AgentId::Muthur).unwrap();
+        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: a.into(), stop: "end".into(), raw: None, agent: AgentId::Muthur };
         log.append_assistant(a, "ts").unwrap();
     }
     let clock: Clock = std::rc::Rc::new(std::cell::Cell::new(std::time::Instant::now()));

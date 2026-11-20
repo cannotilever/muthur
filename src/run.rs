@@ -877,7 +877,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&planted).unwrap(), "planted");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "victim");
         let mut l = crate::chatlog::ChatLog::open(p.clone()).unwrap();
-        l.append_user("A", "t").unwrap();
+        l.append_user("A", "t", crate::ops::AgentId::Muthur).unwrap();
         assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
     }
 
