@@ -975,6 +975,11 @@ fn delegate(h: &mut H, req: u64, id: &str, task: &str) {
     tool_use(h, req, &[(id, "delegate", json!({"task": task}))]);
 }
 
+/// The record belongs to a delegation of the persona's call `call`.
+fn in_delegation(r: &serde_json::Value, call: &str) -> bool {
+    r["delegated"].as_str().and_then(|d| d.rsplit_once('#')).is_some_and(|(c, _)| c == call)
+}
+
 fn harness_report(mode: crate::config::DelegateReport) -> H {
     let mut h = harness();
     h.t.tech.delegate_report = mode;
@@ -1039,7 +1044,7 @@ fn delegate_child_run_condensed_and_relayed() {
     let r = last_results(&h);
     assert_eq!((r.len(), r[0].id.as_str(), r[0].content.as_str(), r[0].is_error), (1, "d1", UPTIME_RESULT, false));
     let recs = records(&h);
-    let delegated: Vec<&serde_json::Value> = recs.iter().filter(|r| r["delegated"] == "d1").collect();
+    let delegated: Vec<&serde_json::Value> = recs.iter().filter(|r| in_delegation(r, "d1")).collect();
     let kinds: Vec<&str> = delegated.iter().filter_map(|r| r["kind"].as_str()).filter(|k| *k != "epoch").collect();
     assert_eq!(kinds, ["user", "assistant", "tool", "assistant"], "{recs:#?}");
     assert!(delegated.iter().all(|r| r["agent"] == "tech"), "{delegated:#?}");
@@ -1063,7 +1068,7 @@ fn delegate_verbatim_prints_report() {
     let at = |needle: &str| rows.iter().position(|r| r.contains(needle)).unwrap_or_else(|| panic!("{needle}: {rows:#?}"));
     assert_eq!(at("SCIENCE OFFICER REPORTS:") + 1, at("Up 3 days."), "{rows:#?}");
     assert_eq!(last_results(&h)[0].content, UPTIME_RESULT);
-    assert_eq!(records(&h).iter().find(|r| r["delegated"] == "d1").unwrap()["report"], "verbatim");
+    assert_eq!(records(&h).iter().find(|r| in_delegation(r, "d1")).unwrap()["report"], "verbatim");
 }
 
 /// The entries of the reopened log, as redisplay shows them.
@@ -1139,16 +1144,19 @@ fn delegate_child_error_gives_no_response() {
     let mut h = harness();
     submit(&mut h, "why is nginx down");
     delegate(&mut h, 1, "d1", "check nginx");
-    h.t.on_llm(2, StreamEvent::Error(LlmError::SignalLost));
+    let log = traced(|| h.t.on_llm(2, StreamEvent::Error(LlmError::SignalLost)));
+    assert!(log.contains("WARN") && log.contains("d1#") && log.contains("SignalLost"), "{log}");
     assert_eq!(*h.agents.borrow(), vec![AgentId::Muthur, AgentId::Tech, AgentId::Muthur]);
     let r = last_results(&h);
     assert!(r[0].content.ends_with("NO RESPONSE FROM SCIENCE OFFICER"), "{}", r[0].content);
     assert!(r[0].is_error);
     assert_ne!(h.t.state, State::Ready, "the persona turn goes on");
+    h.tick(2000);
     let shown = text(&mut h.t);
     assert!(!shown.contains("UNABLE TO COMPLY"), "{shown}");
+    assert!(shown.contains("NO RESPONSE FROM SCIENCE OFFICER"), "{shown}");
     let recs = records(&h);
-    let child_last = recs.iter().rfind(|r| r["delegated"] == "d1" && r["kind"] == "assistant").unwrap();
+    let child_last = recs.iter().rfind(|r| in_delegation(r, "d1") && r["kind"] == "assistant").unwrap();
     assert_eq!(child_last["stop"], "error");
 }
 
@@ -1163,6 +1171,152 @@ fn delegate_tech_not_ready_gives_no_response() {
     assert_eq!(r[0].content, "COMMANDS:\nNONE\nNO RESPONSE FROM SCIENCE OFFICER");
     assert!(r[0].is_error);
     assert!(!records(&h).iter().any(|r| r.get("delegated").is_some()), "no delegated exchange is logged");
+    h.tick(2000);
+    let shown = text(&mut h.t);
+    assert!(shown.contains("NO RESPONSE FROM SCIENCE OFFICER") && !shown.contains("DELEGATING"), "{shown}");
+    h.t.on_llm(2, StreamEvent::Text("NO ANSWER.".into()));
+    h.t.on_llm(2, done(Stop::End));
+    let e = redisplayed(&h);
+    assert_eq!(harness_texts(&e), ["NO RESPONSE FROM SCIENCE OFFICER"], "{e:#?}");
+}
+
+#[test]
+fn redisplay_child_error_shows_no_response() {
+    let mut h = harness_report(crate::config::DelegateReport::Verbatim);
+    submit(&mut h, "why is nginx down");
+    delegate(&mut h, 1, "d1", "check nginx");
+    h.t.on_llm(2, StreamEvent::Text("Partial".into()));
+    h.t.on_llm(2, StreamEvent::Error(LlmError::SignalLost));
+    h.t.on_llm(3, StreamEvent::Text("NO ANSWER.".into()));
+    h.t.on_llm(3, done(Stop::End));
+    let live: Vec<String> = h.t.transcript.iter().filter_map(|e| if let Entry::Harness(s) = e { Some(s.clone()) } else { None }).collect();
+    let want = ["DELEGATING TO SCIENCE OFFICER", "NO RESPONSE FROM SCIENCE OFFICER"];
+    assert_eq!(live, want);
+    let e = redisplayed(&h);
+    assert_eq!(harness_texts(&e), want, "{e:#?}");
+}
+
+/// Persona request 1 delegates `id` "check nginx" (the child, request 2,
+/// answers at once), then request 3 delegates `id` again: "check disk".
+fn delegate_twice(h: &mut H, id: &str) {
+    submit(h, "check everything");
+    delegate(h, 1, id, "check nginx");
+    h.t.on_llm(2, StreamEvent::Text("Nginx fine.".into()));
+    h.t.on_llm(2, done(Stop::End));
+    delegate(h, 3, id, "check disk");
+}
+
+#[test]
+fn repeated_call_id_delegations_are_fresh() {
+    let mut h = harness();
+    delegated_uptime(&mut h);
+    h.t.on_llm(4, StreamEvent::Text("NGINX UP.".into()));
+    h.t.on_llm(4, done(Stop::End));
+    submit(&mut h, "check the disk");
+    delegate(&mut h, 5, "d1", "check disk");
+    assert_eq!(h.agents.borrow().last(), Some(&AgentId::Tech));
+    assert_eq!(last_messages(&h), vec![user_text("check disk")]);
+}
+
+#[test]
+fn repeated_call_id_in_one_turn_is_fresh() {
+    let mut h = harness();
+    delegate_twice(&mut h, "d1");
+    assert_eq!(h.agents.borrow().last(), Some(&AgentId::Tech));
+    assert_eq!(last_messages(&h), vec![user_text("check disk")]);
+}
+
+#[test]
+fn empty_call_id_delegation_is_fresh() {
+    let mut h = harness();
+    delegate_twice(&mut h, "");
+    assert_eq!(h.agents.borrow().last(), Some(&AgentId::Tech));
+    assert_eq!(last_messages(&h), vec![user_text("check disk")]);
+}
+
+/// One persona turn delegates `d1` twice: the first child runs `uptime`, the
+/// second `df -h`; the persona then answers.
+fn delegate_twice_with_commands(h: &mut H) {
+    submit(h, "check everything");
+    delegate(h, 1, "d1", "check nginx");
+    tool_use(h, 2, &[("c1", "run", run_call("uptime", false))]);
+    h.t.on_review(2, "c1".into(), review(Verdict::Allow, "read-only"));
+    h.t.on_tool_done(2, "c1".into(), ok("up 3 days"));
+    h.t.on_llm(3, StreamEvent::Text("Up.".into()));
+    h.t.on_llm(3, done(Stop::End));
+    delegate(h, 4, "d1", "check disk");
+    tool_use(h, 5, &[("c1", "run", run_call("df -h", false))]);
+    h.t.on_review(5, "c1".into(), review(Verdict::Allow, "read-only"));
+    h.t.on_tool_done(5, "c1".into(), ok("80%"));
+    h.t.on_llm(6, StreamEvent::Text("Disk fine.".into()));
+    h.t.on_llm(6, done(Stop::End));
+    h.t.on_llm(7, StreamEvent::Text("ALL FINE.".into()));
+    h.t.on_llm(7, done(Stop::End));
+}
+
+#[test]
+fn redisplay_repeated_call_id_delegations_in_order() {
+    let mut h = harness();
+    delegate_twice_with_commands(&mut h);
+    let e = redisplayed(&h);
+    let want = ["DELEGATING TO SCIENCE OFFICER", "SCIENCE OFFICER: uptime  [ALLOW]", "DELEGATING TO SCIENCE OFFICER", "SCIENCE OFFICER: df -h  [ALLOW]"];
+    assert_eq!(harness_texts(&e), want, "{e:#?}");
+}
+
+#[test]
+fn repeated_call_id_delegations_audit_distinct_delegated_by() {
+    let mut h = harness();
+    delegate_twice_with_commands(&mut h);
+    let a = audit_records(&h);
+    let by: Vec<&str> = a.iter().filter(|e| e["tool"] == "run").map(|e| e["delegated_by"].as_str().unwrap()).collect();
+    assert_eq!(by.len(), 2, "{a:#?}");
+    assert_ne!(by[0], by[1]);
+    assert!(by.iter().all(|b| b.starts_with("d1#")), "{by:?}");
+}
+
+#[test]
+fn redisplay_invalid_task_shows_refusal() {
+    let mut h = harness();
+    submit(&mut h, "check it");
+    delegate(&mut h, 1, "d1", "   ");
+    let live: Vec<String> = h.t.transcript.iter().filter_map(|e| if let Entry::Note(s) = e { Some(s.clone()) } else { None }).collect();
+    assert!(live.iter().any(|n| n.starts_with("ACCESS DENIED:")), "{live:?}");
+    h.t.on_llm(2, StreamEvent::Text("CANNOT.".into()));
+    h.t.on_llm(2, done(Stop::End));
+    let e = redisplayed(&h);
+    let notes: Vec<String> = e.iter().filter_map(|x| if let Entry::Note(s) = x { Some(s.clone()) } else { None }).collect();
+    assert_eq!(notes, live, "{e:#?}");
+}
+
+#[test]
+fn redisplay_refusal_does_not_take_a_later_same_id_delegation() {
+    let mut h = harness();
+    submit(&mut h, "check it");
+    delegate(&mut h, 1, "d1", "   ");
+    delegate(&mut h, 2, "d1", "check nginx");
+    tool_use(&mut h, 3, &[("c1", "run", run_call("uptime", false))]);
+    h.t.on_review(3, "c1".into(), review(Verdict::Allow, "read-only"));
+    h.t.on_tool_done(3, "c1".into(), ok("up 3 days"));
+    h.t.on_llm(4, StreamEvent::Text("Up.".into()));
+    h.t.on_llm(4, done(Stop::End));
+    h.t.on_llm(5, StreamEvent::Text("FINE.".into()));
+    h.t.on_llm(5, done(Stop::End));
+    let e = redisplayed(&h);
+    assert_eq!(harness_texts(&e), ["DELEGATING TO SCIENCE OFFICER", "SCIENCE OFFICER: uptime  [ALLOW]"], "{e:#?}");
+    let denied = e.iter().position(|x| matches!(x, Entry::Note(n) if n.starts_with("ACCESS DENIED:"))).unwrap_or_else(|| panic!("{e:#?}"));
+    assert!(denied < e.iter().position(|x| *x == Entry::Harness("DELEGATING TO SCIENCE OFFICER".into())).unwrap());
+}
+
+#[test]
+fn empty_verbatim_report_prints_no_header() {
+    let mut h = harness_report(crate::config::DelegateReport::Verbatim);
+    submit(&mut h, "why is nginx down");
+    delegate(&mut h, 1, "d1", "check nginx");
+    h.t.on_llm(2, StreamEvent::Text("  \n".into()));
+    h.t.on_llm(2, done(Stop::End));
+    assert_eq!(h.agents.borrow().last(), Some(&AgentId::Muthur));
+    let shown = text(&mut h.t);
+    assert!(!shown.contains("REPORTS:"), "{shown}");
 }
 
 #[test]
@@ -1268,7 +1422,8 @@ fn delegate_audit_entries() {
     delegated_uptime(&mut h);
     let a = audit_records(&h);
     let run = a.iter().find(|e| e["tool"] == "run").unwrap_or_else(|| panic!("{a:#?}"));
-    assert_eq!((&run["agent"], &run["delegated_by"]), (&json!("tech"), &json!("d1")));
+    assert_eq!(run["agent"], "tech");
+    assert!(run["delegated_by"].as_str().unwrap().starts_with("d1#"), "{run}");
     let del = a.iter().find(|e| e["tool"] == "delegate").unwrap_or_else(|| panic!("{a:#?}"));
     assert_eq!((&del["agent"], &del["decision"]), (&json!("muthur"), &json!("auto")));
     assert!(del["output"].as_str().unwrap().starts_with("COMMANDS:"), "{del}");
@@ -1284,7 +1439,7 @@ fn ctrl_c_during_delegation_ends_inquiry() {
     assert_eq!(h.t.state, State::Ready);
     assert!(h.t.child.is_none() && h.t.turn.is_none());
     let recs = records(&h);
-    let child_last = recs.iter().rfind(|r| r["delegated"] == "d1").unwrap();
+    let child_last = recs.iter().rfind(|r| in_delegation(r, "d1")).unwrap();
     assert_eq!((&child_last["kind"], &child_last["stop"]), (&json!("assistant"), &json!("interrupted")));
     let persona_tool = recs.iter().rfind(|r| r["kind"] == "tool" && r["agent"] == "muthur").unwrap();
     assert_eq!(persona_tool["results"][0]["content"], "ABORTED BY OPERATOR");
@@ -1312,7 +1467,7 @@ fn ctrl_c_at_child_password_aborts_everything() {
     assert_eq!(h.t.state, State::Ready);
     assert!(h.ran.borrow().is_empty());
     let recs = records(&h);
-    let child_tool = recs.iter().rfind(|r| r["kind"] == "tool" && r["delegated"] == "d1").unwrap();
+    let child_tool = recs.iter().rfind(|r| r["kind"] == "tool" && in_delegation(r, "d1")).unwrap();
     assert_eq!(child_tool["results"][0]["content"], "ABORTED BY OPERATOR");
     let persona_tool = recs.iter().rfind(|r| r["kind"] == "tool" && r["agent"] == "muthur").unwrap();
     assert_eq!(persona_tool["results"][0]["content"], "ABORTED BY OPERATOR");
@@ -1343,7 +1498,8 @@ fn ctrl_c_running_root_in_delegation_orphan_audited() {
     h.t.on_tool_done(2, "c1".into(), exit_outcome(0, 1));
     let a = audit_records(&h);
     let late = a.iter().rfind(|e| e["tool"] == "run").unwrap_or_else(|| panic!("{a:#?}"));
-    assert_eq!((&late["delegated_by"], &late["decision"]), (&json!("d1"), &json!("confirmed")));
+    assert_eq!(late["decision"], "confirmed");
+    assert!(late["delegated_by"].as_str().unwrap().starts_with("d1#"), "{late}");
     let n = a.len();
     h.t.on_tool_done(2, "c1".into(), exit_outcome(0, 1));
     assert_eq!(audit_records(&h).len(), n);
@@ -1358,7 +1514,7 @@ fn ctrl_c_while_child_streams() {
     h.t.on_llm(2, StreamEvent::Text("Checking".into()));
     h.t.handle_key(&Key::Ctrl('c'));
     let recs = records(&h);
-    let i = recs.iter().rposition(|r| r["delegated"] == "d1" && r["kind"] == "assistant").unwrap();
+    let i = recs.iter().rposition(|r| in_delegation(r, "d1") && r["kind"] == "assistant").unwrap();
     assert_eq!(recs[i]["stop"], "interrupted");
     let j = recs.iter().rposition(|r| r["kind"] == "tool" && r["agent"] == "muthur").unwrap();
     let k = recs.iter().rposition(|r| r["kind"] == "assistant" && r["agent"] == "muthur").unwrap();
@@ -1379,7 +1535,7 @@ fn ctrl_c_while_child_reviewing() {
     assert!(h.review_aborted.get());
     assert_eq!(h.t.state, State::Ready);
     let recs = records(&h);
-    let child_tool = recs.iter().rfind(|r| r["kind"] == "tool" && r["delegated"] == "d1").unwrap();
+    let child_tool = recs.iter().rfind(|r| r["kind"] == "tool" && in_delegation(r, "d1")).unwrap();
     assert_eq!(child_tool["results"][0]["content"], "ABORTED BY OPERATOR");
     // A verdict arriving after the abort does nothing.
     h.t.on_review(2, "c1".into(), review(Verdict::Allow, "ok"));

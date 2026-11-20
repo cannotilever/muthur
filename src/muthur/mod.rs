@@ -410,7 +410,7 @@ impl MuthurTab {
     #[cfg(feature = "agent")]
     fn lane(&self) -> Lane {
         match &self.child {
-            Some(c) => Lane::Delegated(c.call_id.clone()),
+            Some(c) => Lane::Delegated(c.delegation_id.clone()),
             None if self.direct() => Lane::Tech,
             None => Lane::Muthur,
         }
@@ -705,7 +705,7 @@ impl MuthurTab {
                 self.state = State::Waiting;
                 #[cfg(feature = "agent")]
                 if self.has_child() {
-                    self.child_failed();
+                    self.child_failed(&format!("cannot build message window: {e}"));
                     return;
                 }
                 self.end_early(Some(LlmError::Transmission));
@@ -893,12 +893,30 @@ fn redisplay(log: &ChatLog, cfg: &MuthurSection, label: &str) -> Vec<Entry> {
             transcript.extend(ex.tools.iter().map(|r| Entry::Harness(r.label.clone())));
         } else {
             transcript.push(Entry::User(user));
+            // Call ids may repeat, so the k-th `delegate` result with a given id
+            // that reached the officer pairs with the k-th logged delegation for
+            // that id, in log order. A refused call (invalid task) never pairs.
+            // Delegations that got no records otherwise (not ready, log failure)
+            // only happen while the config or log is broken for the whole
+            // inquiry, and an aborted call that never ran only after the one
+            // the Ctrl-C hit, so none sits between two that did.
+            let mut taken = vec![false; ex.delegations.len()];
             for r in &ex.tools {
-                #[cfg(feature = "agent")]
                 if r.name == "delegate" {
-                    // A delegation with no logged child records is not shown.
-                    if let Some(d) = ex.delegations.iter().find(|d| d.call_id == r.id) {
-                        push_delegation(&mut transcript, d, label);
+                    let reached = r.content.starts_with("COMMANDS:") || r.content.starts_with("ABORTED");
+                    let next = (0..taken.len()).find(|&i| reached && !taken[i] && ex.delegations[i].call_id == r.id);
+                    let no_response = r.is_error && r.content.lines().last().is_some_and(|l| l.starts_with("NO RESPONSE FROM "));
+                    match next {
+                        Some(i) => {
+                            taken[i] = true;
+                            push_delegation(&mut transcript, &ex.delegations[i], label, r.is_error);
+                        }
+                        // Refused before it ran (an invalid task): the live refusal note.
+                        None if !no_response => transcript.push(Entry::Note(turn::tool_note(r))),
+                        None => {}
+                    }
+                    if no_response {
+                        transcript.push(Entry::Harness(turn::no_response(label)));
                     }
                     continue;
                 }
@@ -914,13 +932,14 @@ fn redisplay(log: &ChatLog, cfg: &MuthurSection, label: &str) -> Vec<Entry> {
 }
 
 /// A delegation as the live screen showed it: the hand-off, the condensed
-/// commands and, in verbatim mode, the officer's report.
+/// commands and, in verbatim mode, the officer's report (none when the
+/// persona's call `failed`: no response, or aborted).
 #[cfg(feature = "agent")]
-fn push_delegation(transcript: &mut Vec<Entry>, d: &crate::chatlog::Delegation, label: &str) {
+fn push_delegation(transcript: &mut Vec<Entry>, d: &crate::chatlog::Delegation, label: &str, failed: bool) {
     transcript.push(Entry::Harness(format!("DELEGATING TO {label}")));
     transcript.extend(d.tools.iter().map(|r| Entry::Harness(crate::agent::condensed(label, &r.label))));
     let report = d.report.as_deref().map(str::trim_end).filter(|r| !r.trim().is_empty());
-    if let (true, Some(report)) = (d.verbatim, report) {
+    if let (true, false, Some(report)) = (d.verbatim, failed, report) {
         transcript.push(Entry::Harness(format!("{label} REPORTS:")));
         transcript.extend(report.lines().map(|l| Entry::Harness(l.to_string())));
     }
@@ -1095,7 +1114,7 @@ impl Tab for MuthurTab {
             StreamEvent::Error(e) => {
                 #[cfg(feature = "agent")]
                 if self.has_child() {
-                    self.child_failed();
+                    self.child_failed(&format!("{e:?}"));
                     return;
                 }
                 self.abort_turn();

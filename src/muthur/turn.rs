@@ -26,9 +26,17 @@ enum Answer {
 
 const AUDIT_OFFLINE: &str = "AUDIT LOG OFFLINE";
 
-/// A technical turn running a task the persona delegated, for its call `call_id`.
+/// The screen line of a delegation that got no response.
+pub(super) fn no_response(label: &str) -> String {
+    format!("NO RESPONSE FROM {label}")
+}
+
+/// A technical turn running a task the persona delegated.
 pub(super) struct Child {
-    pub(super) call_id: String,
+    /// The persona's `delegate` call this answers (not unique: servers may repeat ids).
+    call_id: String,
+    /// The harness-unique delegation id: the child's log lane and its audit `delegated_by`.
+    pub(super) delegation_id: String,
     turn: Turn,
     /// The text of the child's last reply: its report.
     report: String,
@@ -248,9 +256,12 @@ impl MuthurTab {
         self.child.take()
     }
 
-    /// A child request failed (stream error or window build): the persona's
-    /// call gets no response and its turn goes on.
-    pub(super) fn child_failed(&mut self) {
+    /// A child request failed (stream error or window build, `cause`): the
+    /// persona's call gets no response and its turn goes on.
+    pub(super) fn child_failed(&mut self, cause: &str) {
+        if let Some(c) = &self.child {
+            tracing::warn!(delegation = %c.delegation_id, "delegated request failed: {cause}");
+        }
         let stop = if self.partial_raw.is_empty() { "error" } else { "interrupted" };
         let a = self.assistant(None, stop, None);
         self.log_assistant(a);
@@ -263,9 +274,9 @@ impl MuthurTab {
 
     /// The child finished: show the report in verbatim mode and hand it to the persona.
     fn finish_child(&mut self, truncated: bool) {
-        let Some(Child { call_id, turn, report }) = self.child.take() else { return };
+        let Some(Child { call_id, turn, report, .. }) = self.child.take() else { return };
         let label = self.tech.label.clone();
-        if self.tech.delegate_report == DelegateReport::Verbatim {
+        if self.tech.delegate_report == DelegateReport::Verbatim && !report.trim().is_empty() {
             self.transcript.push(Entry::Harness(format!("{label} REPORTS:")));
             self.transcript.extend(report.trim_end().lines().map(|l| Entry::Harness(l.to_string())));
         }
@@ -273,9 +284,13 @@ impl MuthurTab {
         self.resume_persona(&call_id, DelegateOutcome::Report { lines, report, truncated });
     }
 
-    /// Resolve the persona's delegated call and carry on with its turn.
+    /// Resolve the persona's delegated call and carry on with its turn. A
+    /// delegation that got no response says so on screen.
     fn resume_persona(&mut self, call_id: &str, outcome: DelegateOutcome) {
         let label = self.tech.label.clone();
+        if matches!(outcome, DelegateOutcome::NoResponse { .. }) {
+            self.transcript.push(Entry::Harness(no_response(&label)));
+        }
         let effects = self.turn.as_mut().map(|t| t.on_delegate(call_id, outcome, &label)).unwrap_or_default();
         if effects.is_empty() {
             // No call was waiting: never leave the tab stuck mid-inquiry.
@@ -296,30 +311,34 @@ impl MuthurTab {
             self.apply(effects, None);
             return;
         }
-        if self.tech.cfg.readiness().is_err() {
-            self.resume_persona(&call_id, DelegateOutcome::NoResponse { lines: vec![] });
-            return;
-        }
         if self.revealing {
             self.settle_segment();
         }
-        self.transcript.push(Entry::Harness(format!("DELEGATING TO {label}")));
-        self.ensure_tech_system();
-        let ts = (self.deps.timestamp)();
-        let verbatim = self.tech.delegate_report == DelegateReport::Verbatim;
-        if let Err(e) = self.log.append_delegation(&call_id, &task, verbatim, &ts) {
-            tracing::error!("chat log: cannot record delegation: {e}");
+        if let Err(e) = self.tech.cfg.readiness() {
+            tracing::warn!("cannot delegate: technical agent not ready: {e:?}");
             self.resume_persona(&call_id, DelegateOutcome::NoResponse { lines: vec![] });
             return;
         }
-        let turn = Turn::delegated(self.tech.max_rounds, operator_message, task, label, call_id.clone());
-        self.child = Some(Child { call_id, turn, report: String::new() });
+        self.ensure_tech_system();
+        let ts = (self.deps.timestamp)();
+        let verbatim = self.tech.delegate_report == DelegateReport::Verbatim;
+        let delegation_id = match self.log.append_delegation(&call_id, &task, verbatim, &ts) {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::error!("chat log: cannot record delegation: {e}");
+                self.resume_persona(&call_id, DelegateOutcome::NoResponse { lines: vec![] });
+                return;
+            }
+        };
+        self.transcript.push(Entry::Harness(format!("DELEGATING TO {label}")));
+        let turn = Turn::delegated(self.tech.max_rounds, operator_message, task, label, delegation_id.clone());
+        self.child = Some(Child { call_id, delegation_id, turn, report: String::new() });
         self.spawn_request(self.tech.max_rounds == 0);
     }
 
-    /// The child running now, by call id: the owner of a batch of effects.
+    /// The child running now, by delegation id: the owner of a batch of effects.
     fn child_id(&self) -> Option<String> {
-        self.child.as_ref().map(|c| c.call_id.clone())
+        self.child.as_ref().map(|c| c.delegation_id.clone())
     }
 
     /// Resolve any open round as aborted (logged and audited); the caller ends the inquiry.
@@ -334,6 +353,8 @@ impl MuthurTab {
     /// that produced them, for the completion handling on `Finished`.
     fn apply(&mut self, effects: Vec<Effect>, stop: Option<&Stop>) {
         // The effects belong to the child running now, or to the persona's turn.
+        // A persona batch holds at most one Delegate, and it comes last (calls run
+        // one at a time), so stopping when the owner changes skips nothing of its.
         let owner = self.child_id();
         for e in effects {
             match e {

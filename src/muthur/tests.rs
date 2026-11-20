@@ -513,7 +513,7 @@ mod plain {
     fn persona_has_no_tool_lines() {
         let s = system_prompt(&cfg(), "X", "");
         assert!(s.ends_with("Never invent readings."), "{s}");
-        assert!(!s.contains("tools") && !s.contains("/DIRECT"), "{s}");
+        assert!(!s.contains("tools") && !s.contains("/DIRECT") && !s.contains("delegate"), "{s}");
     }
 
     #[test]

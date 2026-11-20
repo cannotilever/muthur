@@ -132,7 +132,7 @@ struct Slot {
     line: Option<String>,
     state: State,
     result: Option<ToolResult>,
-    /// Set in a delegated turn: the officer's label, the delegate call's id,
+    /// Set in a delegated turn: the officer's label, the delegation id,
     /// and the condensed line announced for this call.
     delegation: Option<SlotDelegation>,
 }
@@ -167,7 +167,7 @@ pub struct Turn {
     delegation: Option<Delegation>,
     /// The delegated task, for the reviewer only; never an authority.
     delegated_task: Option<String>,
-    /// The officer's label and the delegate call's id, copied into each slot.
+    /// The officer's label and the delegation id, copied into each slot.
     slot_delegation: Option<(String, String)>,
     /// Every call of this turn with a result, across rounds, for the reviewer.
     prior: Vec<PriorCall>,
@@ -386,7 +386,8 @@ impl Turn {
 
     /// A technical turn run for MU/TH/UR. `operator_message` is the operator's
     /// own line and the only authority; `task` is MU/TH/UR's wording, shown to
-    /// the reviewer apart and as untrusted text.
+    /// the reviewer apart and as untrusted text. `delegated_by` is the
+    /// delegation id (the persona's call id, then a harness-unique suffix).
     pub fn delegated(max_rounds: u32, operator_message: String, task: String, officer: String, delegated_by: String) -> Self {
         let mut t = Turn::new(max_rounds, AgentId::Tech, operator_message);
         t.delegated_task = Some(task);
@@ -395,7 +396,8 @@ impl Turn {
         t
     }
 
-    /// The condensed lines announced so far; empty for a turn that is not delegated.
+    /// The condensed lines of closed rounds; complete once the turn has emitted
+    /// `Finished`. Empty for a turn that is not delegated.
     pub fn lines(&self) -> &[String] {
         self.delegation.as_ref().map_or(&[], |d| &d.lines)
     }

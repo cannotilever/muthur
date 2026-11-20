@@ -29,7 +29,8 @@ pub struct Assistant {
 }
 
 /// Which stretch of the log a record belongs to. `Delegated` carries the
-/// persona tool call id; its records are stored apart from `/DIRECT`'s.
+/// delegation id (`<persona call id>#<seq of its user record>`, unique even
+/// when a server repeats call ids); its records are stored apart from `/DIRECT`'s.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Lane {
     Muthur,
@@ -58,6 +59,7 @@ impl From<AgentId> for Lane {
 /// One delegated technical exchange, folded into the persona exchange it sits in.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Delegation {
+    /// The persona's `delegate` call id (not unique: servers may repeat ids).
     pub call_id: String,
     pub verbatim: bool,
     pub tools: Vec<ToolResult>,
@@ -175,10 +177,14 @@ impl ChatLog {
         self.write(with_lane(r, &a.lane)).map(|_| ())
     }
 
-    /// The user record that opens a delegated exchange: the persona's task.
-    pub fn append_delegation(&mut self, call_id: &str, task: &str, verbatim: bool, ts: &str) -> std::io::Result<u64> {
+    /// The user record that opens a delegated exchange: the persona's task for
+    /// its call `call_id`. Returns the delegation id, which keys the lane: the
+    /// call id (kept as a prefix, for correlation) and this record's seq.
+    pub fn append_delegation(&mut self, call_id: &str, task: &str, verbatim: bool, ts: &str) -> std::io::Result<String> {
         let report = if verbatim { "verbatim" } else { "relayed" };
-        self.write(json!({"kind":"user","ts":ts,"agent":"tech","delegated":call_id,"report":report,"text":task}))
+        let id = format!("{call_id}#{}", self.next_seq);
+        self.write(json!({"kind":"user","ts":ts,"agent":"tech","delegated":id,"call":call_id,"report":report,"text":task}))?;
+        Ok(id)
     }
 
     pub fn append_tool(&mut self, results: &[ToolResult], ts: &str, lane: &Lane) -> std::io::Result<()> {
@@ -382,7 +388,8 @@ impl ChatLog {
                     .find(|r| kind(r) == "assistant" && !matches!(stop(r), "tool_use" | "error"))
                     .map(|r| text(r).to_string());
                 let d = Delegation {
-                    call_id: id.to_string(),
+                    // Records without `call` key the lane on the call id itself.
+                    call_id: ex[0].get("call").and_then(Value::as_str).unwrap_or(id).to_string(),
                     verbatim: ex[0].get("report").and_then(Value::as_str) == Some("verbatim"),
                     tools: tools_of(&ex),
                     report,
@@ -964,21 +971,22 @@ mod tests {
     }
 
     /// tech A, then persona (tool_use) wrapping delegation d1, then tech B.
-    fn delegated_log() -> (tempfile::TempDir, ChatLog) {
+    /// Returns the delegation's lane with the log.
+    fn delegated_log() -> (tempfile::TempDir, ChatLog, Lane) {
         let (dir, mut l) = log();
         l.append_user("A", "t", T).unwrap();
         l.append_assistant(asst_for(T, "ta"), "t").unwrap();
         l.append_user("P", "t", M).unwrap();
         l.append_assistant(tool_use_asst(Lane::Muthur), "t").unwrap();
-        l.append_delegation("d1", "task", false, "t").unwrap();
-        l.append_assistant(tool_use_asst(d("d1")), "t").unwrap();
-        l.append_tool(&[r1()], "t", &d("d1")).unwrap();
-        (dir, l)
+        let dl = d(&l.append_delegation("d1", "task", false, "t").unwrap());
+        l.append_assistant(tool_use_asst(dl.clone()), "t").unwrap();
+        l.append_tool(&[r1()], "t", &dl).unwrap();
+        (dir, l, dl)
     }
 
     fn full_log() -> (tempfile::TempDir, ChatLog) {
-        let (dir, mut l) = delegated_log();
-        l.append_assistant(Assistant { lane: d("d1"), ..asst("FINDINGS", None) }, "t").unwrap();
+        let (dir, mut l, dl) = delegated_log();
+        l.append_assistant(Assistant { lane: dl, ..asst("FINDINGS", None) }, "t").unwrap();
         l.append_tool(&[r1()], "t", &Lane::Muthur).unwrap();
         l.append_assistant(asst_for(M, "PERSONA DONE"), "t").unwrap();
         l.append_user("B", "t", T).unwrap();
@@ -1005,15 +1013,15 @@ mod tests {
 
     #[test]
     fn delegated_window_is_task_only() {
-        let (_d, mut l) = delegated_log();
-        let w = l.window(&d("d1"), Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
+        let (_d, mut l, dl) = delegated_log();
+        let w = l.window(&dl, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
         assert_eq!(w.len(), 3);
         assert_eq!(w[0], user("task"));
         assert_eq!(w[1].role, Role::Assistant);
         assert!(matches!(w[2].content, MessageContent::ToolResults(_)));
         assert!(!format!("{w:?}").contains("\"ta\""));
         // Its epoch carries the delegated id, so the Tech lane never sees it.
-        assert!(l.records.iter().any(|r| kind(r) == "epoch" && lane_of(r) == d("d1") && agent_of(r) == AgentId::Tech));
+        assert!(l.records.iter().any(|r| kind(r) == "epoch" && lane_of(r) == dl && agent_of(r) == AgentId::Tech));
         assert!(l.latest_epoch(&Lane::Tech).is_none());
     }
 
@@ -1051,17 +1059,17 @@ mod tests {
     fn verbatim_flag_and_no_report() {
         let (_d, mut l) = log();
         l.append_user("P", "t", M).unwrap();
-        l.append_delegation("d1", "task", true, "t").unwrap();
-        l.append_assistant(tool_use_asst(d("d1")), "t").unwrap();
+        let id = l.append_delegation("d1", "task", true, "t").unwrap();
+        l.append_assistant(tool_use_asst(d(&id)), "t").unwrap();
         let h = l.history();
         assert_eq!(h[0].delegations, vec![Delegation { call_id: "d1".into(), verbatim: true, tools: vec![], report: None }]);
-        assert!(l.records.iter().any(|r| r["report"] == "verbatim" && r["delegated"] == "d1"));
+        assert!(l.records.iter().any(|r| r["report"] == "verbatim" && r["delegated"] == id.as_str()));
     }
 
     #[test]
     fn orphan_delegation_records_are_ignored() {
-        let (dir, mut l) = delegated_log();
-        l.append_assistant(Assistant { lane: d("d1"), ..asst("FINDINGS", None) }, "t").unwrap();
+        let (dir, mut l, dl) = delegated_log();
+        l.append_assistant(Assistant { lane: dl, ..asst("FINDINGS", None) }, "t").unwrap();
         let mut l = ChatLog::open(dir.path().join("chat.jsonl")).unwrap();
         // M5 rules: the unfinished persona exchange is excluded from a later persona window.
         l.append_user("Q", "t", M).unwrap();
@@ -1084,8 +1092,8 @@ mod tests {
         l.append_assistant(tool_use_asst(Lane::Muthur), "t").unwrap();
         l.append_user("T1", "t", T).unwrap();
         l.append_assistant(asst_for(T, "ta"), "t").unwrap();
-        l.append_delegation("d1", "task", false, "t").unwrap();
-        l.append_assistant(Assistant { lane: d("d1"), ..asst("FINDINGS", None) }, "t").unwrap();
+        let id = l.append_delegation("d1", "task", false, "t").unwrap();
+        l.append_assistant(Assistant { lane: d(&id), ..asst("FINDINGS", None) }, "t").unwrap();
         let h = l.history();
         assert_eq!(h.iter().map(|e| e.user.as_str()).collect::<Vec<_>>(), vec!["P", "T1"]);
         assert_eq!(h[0].delegations.len(), 1);
@@ -1098,5 +1106,30 @@ mod tests {
         let shown: Vec<_> = l.history().into_iter().filter(|ex| ex.agent == AgentId::Muthur).collect();
         assert_eq!(shown.len(), 1);
         assert_eq!(shown[0].user, "P");
+    }
+
+    #[test]
+    fn repeated_call_id_gets_unique_lanes() {
+        let (_d, mut l) = log();
+        l.append_user("P", "t", M).unwrap();
+        let a = l.append_delegation("d1", "first", false, "t").unwrap();
+        l.append_assistant(Assistant { lane: d(&a), ..asst("ONE", None) }, "t").unwrap();
+        let b = l.append_delegation("d1", "second", false, "t").unwrap();
+        assert_ne!(a, b);
+        assert!(a.starts_with("d1#") && b.starts_with("d1#"), "{a} {b}");
+        let w = l.window(&d(&b), Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
+        assert_eq!(w, vec![user("second")]);
+        let user_recs: Vec<_> = l.records.iter().filter(|r| kind(r) == "user" && r.get("delegated").is_some()).collect();
+        assert!(user_recs.iter().all(|r| r["call"] == "d1"), "{user_recs:#?}");
+        let calls: Vec<_> = l.history()[0].delegations.iter().map(|x| (x.call_id.clone(), x.report.clone())).collect();
+        assert_eq!(calls, vec![("d1".to_string(), Some("ONE".to_string())), ("d1".to_string(), None)]);
+    }
+
+    #[test]
+    fn delegation_without_call_falls_back_to_its_id() {
+        let (_d, mut l) = log();
+        l.append_user("P", "t", M).unwrap();
+        l.write(json!({"kind":"user","ts":"t","agent":"tech","delegated":"d7","report":"relayed","text":"task"})).unwrap();
+        assert_eq!(l.history()[0].delegations[0].call_id, "d7");
     }
 }
