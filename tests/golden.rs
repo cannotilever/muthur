@@ -27,7 +27,7 @@ fn muthur_parts(
     path: &std::path::Path,
     prefill: Option<(&str, &str)>,
 ) -> (muthur::config::MuthurSection, muthur::chatlog::ChatLog, muthur::ops::audit::SharedAudit, muthur::muthur::MuthurDeps, Clock) {
-    use muthur::chatlog::{Assistant, ChatLog};
+    use muthur::chatlog::{Assistant, ChatLog, Lane};
     use muthur::config::{MuthurSection, Provider};
     use muthur::muthur::MuthurDeps;
     use muthur::ops::AgentId;
@@ -35,7 +35,7 @@ fn muthur_parts(
     let mut log = ChatLog::open(path.to_path_buf()).unwrap();
     if let Some((q, a)) = prefill {
         log.append_user(q, "ts", AgentId::Muthur).unwrap();
-        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: a.into(), stop: "end".into(), raw: None, agent: AgentId::Muthur };
+        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: a.into(), stop: "end".into(), raw: None, lane: Lane::Muthur };
         log.append_assistant(a, "ts").unwrap();
     }
     let clock: Clock = std::rc::Rc::new(std::cell::Cell::new(std::time::Instant::now()));

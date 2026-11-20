@@ -1,6 +1,6 @@
 use super::view::{wrap, wrap_hanging};
 use super::*;
-use crate::chatlog::{Assistant, ChatLog};
+use crate::chatlog::{Assistant, ChatLog, Lane};
 use crate::config::{MuthurSection, Provider};
 use crate::input::Key;
 use crate::llm::{ChatRequest, LlmError, MessageContent, Stop, StreamEvent};
@@ -180,7 +180,7 @@ fn done(stop: Stop) -> StreamEvent {
 
 fn exchange(log: &mut ChatLog, user: &str, reply: &str, stop: &str) {
     log.append_user(user, "ts", AgentId::Muthur).unwrap();
-    let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: reply.into(), stop: stop.into(), raw: None, agent: AgentId::Muthur };
+    let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: reply.into(), stop: stop.into(), raw: None, lane: Lane::Muthur };
     log.append_assistant(a, "ts").unwrap();
 }
 
@@ -556,13 +556,13 @@ mod plain {
 
     #[test]
     fn agent_log_is_readable() {
-        let asst = |agent, text: &str, stop: &str, raw| Assistant {
+        let asst = |agent: AgentId, text: &str, stop: &str, raw| Assistant {
             provider: Provider::Anthropic,
             model: "m".into(),
             text: text.into(),
             stop: stop.into(),
             raw,
-            agent,
+            lane: agent.into(),
         };
         let mut h = harness_with(cfg(), |l| {
             // A: a persona exchange with a tool round.
@@ -570,7 +570,7 @@ mod plain {
             let raw = vec![json!({"type":"tool_use","id":"c1","name":"ship_status","input":{}})];
             l.append_assistant(asst(AgentId::Muthur, "", "tool_use", Some(raw)), "ts").unwrap();
             let r = ToolResult { id: "c1".into(), name: "ship_status".into(), content: "UP".into(), is_error: false, label: "SHIP STATUS".into() };
-            l.append_tool(&[r], "ts", AgentId::Muthur).unwrap();
+            l.append_tool(&[r], "ts", &Lane::Muthur).unwrap();
             l.append_assistant(asst(AgentId::Muthur, "ALPHA DONE.", "end_turn", None), "ts").unwrap();
             // B: a direct-link exchange.
             l.append_user("[SHIP TIME X] uptime", "ts", AgentId::Tech).unwrap();

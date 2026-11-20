@@ -4,7 +4,7 @@
 //! Token usage (cache hits etc.) is logged by the client to muthur.log; cache
 //! hits are not asserted because short chats sit under the 512-token minimum.
 
-use muthur::chatlog::{Assistant, ChatLog};
+use muthur::chatlog::{Assistant, ChatLog, Lane};
 use muthur::ops::AgentId;
 use muthur::config::{MuthurSection, Provider};
 use muthur::llm::client::LlmClient;
@@ -15,7 +15,7 @@ const SYSTEM: &str = "You are a terse test responder. Answer in at most ten word
 /// One turn: stream the window, assert text and a clean end, return (text, raw, model).
 async fn turn(client: &LlmClient, cfg: &MuthurSection, log: &mut ChatLog, user: &str) -> Assistant {
     log.append_user(user, "2026-11-18T00:00:00Z", AgentId::Muthur).unwrap();
-    let messages = log.window(AgentId::Muthur, cfg.provider, cfg.model().unwrap_or_default(), SYSTEM, "", cfg.context_tokens, false).unwrap();
+    let messages = log.window(&Lane::Muthur, cfg.provider, cfg.model().unwrap_or_default(), SYSTEM, "", cfg.context_tokens, false).unwrap();
     let mut text = String::new();
     let mut done = None;
     client
@@ -31,7 +31,7 @@ async fn turn(client: &LlmClient, cfg: &MuthurSection, log: &mut ChatLog, user: 
     let stop = stop.log_str().to_string();
     assert!(!text.trim().is_empty(), "empty reply");
     println!("--- reply: {text}");
-    Assistant { provider: cfg.provider, model: model.unwrap_or_default(), text, stop, raw, agent: AgentId::Muthur }
+    Assistant { provider: cfg.provider, model: model.unwrap_or_default(), text, stop, raw, lane: Lane::Muthur }
 }
 
 async fn round_trip(cfg: MuthurSection, first: &str) {
@@ -115,7 +115,7 @@ mod agentic {
         let mut final_stop = None;
         let mut final_text = String::new();
         for _ in 0..4 {
-            let messages = log.window(agent, cfg.provider, cfg.model().unwrap_or_default(), system, &defs.json(), cfg.context_tokens, agent == AgentId::Tech).unwrap();
+            let messages = log.window(&agent.into(), cfg.provider, cfg.model().unwrap_or_default(), system, &defs.json(), cfg.context_tokens, agent == AgentId::Tech).unwrap();
             let mut text = String::new();
             let mut calls = Vec::new();
             let mut done = None;
@@ -137,7 +137,7 @@ mod agentic {
                 let tool = blocks.iter().position(|b| b["type"] == "tool_use");
                 println!("--- thinking block precedes tool_use: {}", matches!((think, tool), (Some(a), Some(b)) if a < b));
             }
-            let a = Assistant { provider: cfg.provider, model: model.unwrap_or_default(), text: text.clone(), stop: stop.log_str().to_string(), raw, agent };
+            let a = Assistant { provider: cfg.provider, model: model.unwrap_or_default(), text: text.clone(), stop: stop.log_str().to_string(), raw, lane: agent.into() };
             log.append_assistant(a, "2026-11-18T00:00:01Z").unwrap();
             if stop != Stop::ToolUse || calls.is_empty() {
                 final_stop = Some(stop);
@@ -159,7 +159,7 @@ mod agentic {
                     ToolResult { id, name, content, is_error, label: String::new() }
                 })
                 .collect();
-            log.append_tool(&results, "2026-11-18T00:00:02Z", agent).unwrap();
+            log.append_tool(&results, "2026-11-18T00:00:02Z", &agent.into()).unwrap();
         }
         println!("--- final text: {final_text}");
         assert!(rounds >= 1, "no tool round happened");

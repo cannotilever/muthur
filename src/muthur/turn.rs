@@ -274,7 +274,7 @@ impl MuthurTab {
                 }
                 Effect::LogTool(results) => {
                     let ts = (self.deps.timestamp)();
-                    if let Err(e) = self.log.append_tool(&results, &ts, self.agent()) {
+                    if let Err(e) = self.log.append_tool(&results, &ts, &self.agent().into()) {
                         tracing::error!("chat log: cannot record tool results: {e}");
                     }
                 }

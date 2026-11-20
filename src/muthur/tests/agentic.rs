@@ -215,7 +215,7 @@ fn history_shows_tool_notes() {
     let mut h = harness_with(cfg(), |l| {
         l.append_user("[SHIP TIME X] STATUS", "ts", AgentId::Muthur).unwrap();
         let raw = vec![json!({"type":"tool_use","id":"c1","name":"ship_status","input":{}})];
-        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "".into(), stop: "tool_use".into(), raw: Some(raw), agent: AgentId::Muthur };
+        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "".into(), stop: "tool_use".into(), raw: Some(raw), lane: Lane::Muthur };
         l.append_assistant(a, "ts").unwrap();
         let r = |id: &str, content: &str, label: &str| ToolResult {
             id: id.into(),
@@ -224,8 +224,8 @@ fn history_shows_tool_notes() {
             is_error: false,
             label: label.into(),
         };
-        l.append_tool(&[r("c1", "ok", "SHIP STATUS"), r("c2", "NOT AUTHORIZED: UNKNOWN CONTAINER", "CONTAINER LOGS web 50")], "ts", AgentId::Muthur).unwrap();
-        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "NOMINAL.".into(), stop: "end_turn".into(), raw: None, agent: AgentId::Muthur };
+        l.append_tool(&[r("c1", "ok", "SHIP STATUS"), r("c2", "NOT AUTHORIZED: UNKNOWN CONTAINER", "CONTAINER LOGS web 50")], "ts", &Lane::Muthur).unwrap();
+        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "NOMINAL.".into(), stop: "end_turn".into(), raw: None, lane: Lane::Muthur };
         l.append_assistant(a, "ts").unwrap();
     });
     let rows = screen(&mut h.t, 61, 40);
@@ -712,11 +712,11 @@ fn redisplay_interleaves_with_banners() {
         exchange(l, "[SHIP TIME X] HI", "HELLO", "end_turn");
         l.append_user("[SHIP TIME X] list files", "ts", AgentId::Tech).unwrap();
         let raw = vec![json!({"type":"tool_use","id":"c1","name":"run","input":run_call("ls", false)})];
-        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "".into(), stop: "tool_use".into(), raw: Some(raw), agent: AgentId::Tech };
+        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "".into(), stop: "tool_use".into(), raw: Some(raw), lane: Lane::Tech };
         l.append_assistant(a, "ts").unwrap();
         let r = ToolResult { id: "c1".into(), name: "run".into(), content: "EXIT 0\na".into(), is_error: false, label: "RUN  ls  [ALLOW]".into() };
-        l.append_tool(&[r], "ts", AgentId::Tech).unwrap();
-        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "Found: one file.".into(), stop: "end_turn".into(), raw: None, agent: AgentId::Tech };
+        l.append_tool(&[r], "ts", &Lane::Tech).unwrap();
+        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "Found: one file.".into(), stop: "end_turn".into(), raw: None, lane: Lane::Tech };
         l.append_assistant(a, "ts").unwrap();
         exchange(l, "[SHIP TIME X] BYE", "GOODBYE", "end_turn");
     });
@@ -739,7 +739,7 @@ fn redisplay_interleaves_with_banners() {
 fn redisplay_closes_a_trailing_direct_link() {
     let h = harness_with(cfg(), |l| {
         l.append_user("[SHIP TIME X] uptime", "ts", AgentId::Tech).unwrap();
-        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "Up.".into(), stop: "end_turn".into(), raw: None, agent: AgentId::Tech };
+        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "Up.".into(), stop: "end_turn".into(), raw: None, lane: Lane::Tech };
         l.append_assistant(a, "ts").unwrap();
     });
     // MUTHUR starts in persona mode, so the screen says the link is closed.

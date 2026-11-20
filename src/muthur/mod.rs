@@ -449,7 +449,7 @@ impl MuthurTab {
             text: self.partial_raw.clone(),
             stop: stop.into(),
             raw,
-            agent: self.agent(),
+            lane: self.agent().into(),
         }
     }
 
@@ -638,7 +638,7 @@ impl MuthurTab {
         let (provider, budget) = (cfg.provider, cfg.context_tokens);
         let model = cfg.model().unwrap_or_default().to_string();
         let agent = self.agent();
-        let messages = match self.log.window(agent, provider, &model, &system, &tools_json, budget, report_only_past) {
+        let messages = match self.log.window(&agent.into(), provider, &model, &system, &tools_json, budget, report_only_past) {
             Ok(m) => m,
             Err(e) => {
                 tracing::error!("chat log: cannot build message window: {e}");

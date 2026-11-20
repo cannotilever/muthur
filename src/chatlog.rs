@@ -25,7 +25,43 @@ pub struct Assistant {
     pub text: String,
     pub stop: String,
     pub raw: Option<Vec<Value>>,
-    pub agent: AgentId,
+    pub lane: Lane,
+}
+
+/// Which stretch of the log a record belongs to. `Delegated` carries the
+/// persona tool call id; its records are stored apart from `/DIRECT`'s.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Lane {
+    Muthur,
+    Tech,
+    Delegated(String),
+}
+
+impl Lane {
+    pub fn agent(&self) -> AgentId {
+        match self {
+            Lane::Muthur => AgentId::Muthur,
+            Lane::Tech | Lane::Delegated(_) => AgentId::Tech,
+        }
+    }
+}
+
+impl From<AgentId> for Lane {
+    fn from(a: AgentId) -> Self {
+        match a {
+            AgentId::Muthur => Lane::Muthur,
+            AgentId::Tech => Lane::Tech,
+        }
+    }
+}
+
+/// One delegated technical exchange, folded into the persona exchange it sits in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Delegation {
+    pub call_id: String,
+    pub verbatim: bool,
+    pub tools: Vec<ToolResult>,
+    pub report: Option<String>,
 }
 
 /// One past exchange, for redisplay.
@@ -35,6 +71,7 @@ pub struct Exchange {
     pub user: String,
     pub tools: Vec<ToolResult>,
     pub reply: Option<(String, String)>,
+    pub delegations: Vec<Delegation>,
 }
 
 pub struct ChatLog {
@@ -56,6 +93,21 @@ fn text(r: &Value) -> &str {
 /// A record's agent: its `agent` field, or Muthur when absent (legacy records).
 fn agent_of(r: &Value) -> AgentId {
     r.get("agent").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or(AgentId::Muthur)
+}
+/// A record's lane: `Delegated` when it has a `delegated` id (whatever its agent), else by agent.
+fn lane_of(r: &Value) -> Lane {
+    match r.get("delegated").and_then(Value::as_str) {
+        Some(id) => Lane::Delegated(id.to_string()),
+        None => agent_of(r).into(),
+    }
+}
+/// Stamp a record with its lane's `agent` (and `delegated`) fields.
+fn with_lane(mut rec: Value, lane: &Lane) -> Value {
+    rec["agent"] = json!(lane.agent());
+    if let Lane::Delegated(id) = lane {
+        rec["delegated"] = json!(id);
+    }
+    rec
 }
 fn stop(r: &Value) -> &str {
     r.get("stop").and_then(Value::as_str).unwrap_or("")
@@ -116,33 +168,39 @@ impl ChatLog {
     }
 
     pub fn append_assistant(&mut self, a: Assistant, ts: &str) -> std::io::Result<()> {
-        let mut r = json!({"kind":"assistant","ts":ts,"agent":a.agent,"provider":a.provider,"model":a.model,"text":a.text,"stop":a.stop});
+        let mut r = json!({"kind":"assistant","ts":ts,"provider":a.provider,"model":a.model,"text":a.text,"stop":a.stop});
         if let Some(raw) = a.raw {
             r["raw"] = Value::Array(raw);
         }
-        self.write(r).map(|_| ())
+        self.write(with_lane(r, &a.lane)).map(|_| ())
     }
 
-    pub fn append_tool(&mut self, results: &[ToolResult], ts: &str, agent: AgentId) -> std::io::Result<()> {
-        self.write(json!({"kind":"tool","ts":ts,"agent":agent,"results":results})).map(|_| ())
+    /// The user record that opens a delegated exchange: the persona's task.
+    pub fn append_delegation(&mut self, call_id: &str, task: &str, verbatim: bool, ts: &str) -> std::io::Result<u64> {
+        let report = if verbatim { "verbatim" } else { "relayed" };
+        self.write(json!({"kind":"user","ts":ts,"agent":"tech","delegated":call_id,"report":report,"text":task}))
     }
 
-    fn append_epoch(&mut self, agent: AgentId, from: u64, reason: &str, hash: &str) -> std::io::Result<()> {
-        self.write(json!({"kind":"epoch","agent":agent,"from":from,"reason":reason,"system_hash":hash})).map(|_| ())
+    pub fn append_tool(&mut self, results: &[ToolResult], ts: &str, lane: &Lane) -> std::io::Result<()> {
+        self.write(with_lane(json!({"kind":"tool","ts":ts,"results":results}), lane)).map(|_| ())
     }
 
-    fn agent_records(&self, agent: AgentId) -> impl DoubleEndedIterator<Item = &Value> {
-        self.records.iter().filter(move |r| agent_of(r) == agent)
+    fn append_epoch(&mut self, lane: &Lane, from: u64, reason: &str, hash: &str) -> std::io::Result<()> {
+        self.write(with_lane(json!({"kind":"epoch","from":from,"reason":reason,"system_hash":hash}), lane)).map(|_| ())
     }
 
-    fn latest_epoch(&self, agent: AgentId) -> Option<&Value> {
-        self.agent_records(agent).rev().find(|r| kind(r) == "epoch")
+    fn lane_records<'a>(&'a self, lane: &'a Lane) -> impl DoubleEndedIterator<Item = &'a Value> {
+        self.records.iter().filter(move |r| lane_of(r) == *lane)
+    }
+
+    fn latest_epoch<'a>(&'a self, lane: &'a Lane) -> Option<&'a Value> {
+        self.lane_records(lane).rev().find(|r| kind(r) == "epoch")
     }
 
     /// Seq below which assistant turns lose thinking. The very first epoch
     /// (initial system hash, no predecessor) changes no prefix, so it counts as 0.
-    fn strip_boundary(&self, agent: AgentId) -> u64 {
-        let mut it = self.agent_records(agent).filter(|r| kind(r) == "epoch");
+    fn strip_boundary(&self, lane: &Lane) -> u64 {
+        let mut it = self.lane_records(lane).filter(|r| kind(r) == "epoch");
         let first = it.next().map(seq);
         match it.next_back() {
             Some(e) => seq(e),
@@ -151,9 +209,9 @@ impl ChatLog {
     }
 
     /// Exchanges: each user record plus the assistant/tool records up to the next user.
-    fn exchanges(&self, agent: AgentId) -> Vec<Vec<&Value>> {
+    fn exchanges<'a>(&'a self, lane: &'a Lane) -> Vec<Vec<&'a Value>> {
         let mut out: Vec<Vec<&Value>> = Vec::new();
-        for r in self.agent_records(agent) {
+        for r in self.lane_records(lane) {
             match kind(r) {
                 "user" => out.push(vec![r]),
                 "assistant" | "tool" => {
@@ -217,12 +275,12 @@ impl ChatLog {
 
     /// Build the window from user seq `from`. Returns (messages, candidate trim starts).
     /// Records at or after the current exchange's start never lose thinking.
-    fn build(&self, agent: AgentId, provider: Provider, from: u64, e_seq: u64, report_only_past: bool) -> (Vec<Message>, Vec<u64>) {
-        let exs = self.exchanges(agent);
+    fn build(&self, lane: &Lane, provider: Provider, from: u64, e_seq: u64, report_only_past: bool) -> (Vec<Message>, Vec<u64>) {
+        let exs = self.exchanges(lane);
         let mut msgs = Vec::new();
         let mut starts = Vec::new();
         // Never an assistant-last request.
-        if self.agent_records(agent).rev().find(|r| matches!(kind(r), "user" | "assistant" | "tool")).is_none_or(|r| kind(r) == "assistant") {
+        if self.lane_records(lane).rev().find(|r| matches!(kind(r), "user" | "assistant" | "tool")).is_none_or(|r| kind(r) == "assistant") {
             return (msgs, starts);
         }
         let Some(last) = exs.len().checked_sub(1) else { return (msgs, starts) };
@@ -259,22 +317,22 @@ impl ChatLog {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn window(&mut self, agent: AgentId, provider: Provider, model: &str, system: &str, tools_json: &str, budget_tokens: usize, report_only_past: bool) -> std::io::Result<Vec<Message>> {
+    pub fn window(&mut self, lane: &Lane, provider: Provider, model: &str, system: &str, tools_json: &str, budget_tokens: usize, report_only_past: bool) -> std::io::Result<Vec<Message>> {
         let h = fnv64(&format!("{provider:?}\n{model}\n{system}\n{tools_json}"));
-        let last = self.latest_epoch(agent).map(|e| (e["from"].as_u64().unwrap_or(0), e["system_hash"].as_str().unwrap_or("").to_string()));
+        let last = self.latest_epoch(lane).map(|e| (e["from"].as_u64().unwrap_or(0), e["system_hash"].as_str().unwrap_or("").to_string()));
         if last.as_ref().map(|l| l.1.as_str()) != Some(h.as_str()) {
-            self.append_epoch(agent, last.map(|l| l.0).unwrap_or(0), "system_changed", &h)?;
+            self.append_epoch(lane, last.map(|l| l.0).unwrap_or(0), "system_changed", &h)?;
         }
-        let e = self.latest_epoch(agent).unwrap();
+        let e = self.latest_epoch(lane).unwrap();
         let from = e["from"].as_u64().unwrap_or(0);
-        let e_seq = self.strip_boundary(agent);
-        let (msgs, starts) = self.build(agent, provider, from, e_seq, report_only_past);
+        let e_seq = self.strip_boundary(lane);
+        let (msgs, starts) = self.build(lane, provider, from, e_seq, report_only_past);
         if Self::estimate(system, &msgs) <= budget_tokens {
             return Ok(msgs);
         }
         let Some(&current) = starts.last() else { return Ok(msgs) };
         // Only trim at the start of an inquiry: mid-chain the prefix must stay stable.
-        let exs = self.exchanges(agent);
+        let exs = self.exchanges(lane);
         if exs.last().is_some_and(|ex| ex.iter().any(|r| kind(r) == "assistant")) {
             return Ok(msgs);
         }
@@ -283,32 +341,64 @@ impl ChatLog {
         let new_from = starts
             .iter()
             .copied()
-            .find(|&c| Self::estimate(system, &self.build(agent, provider, c, new_e, report_only_past).0) <= budget_tokens / 2)
+            .find(|&c| Self::estimate(system, &self.build(lane, provider, c, new_e, report_only_past).0) <= budget_tokens / 2)
             .unwrap_or(current);
         if new_from == from {
             return Ok(msgs);
         }
-        self.append_epoch(agent, new_from, "trim", &h)?;
-        Ok(self.build(agent, provider, new_from, new_e, report_only_past).0)
+        self.append_epoch(lane, new_from, "trim", &h)?;
+        Ok(self.build(lane, provider, new_from, new_e, report_only_past).0)
     }
 
     pub fn history(&self) -> Vec<Exchange> {
-        let mut all: Vec<(AgentId, Vec<&Value>)> = [AgentId::Muthur, AgentId::Tech]
+        let tools_of = |ex: &[&Value]| -> Vec<ToolResult> {
+            ex.iter().filter(|r| kind(r) == "tool").flat_map(|r| Self::tool_results(r).unwrap_or_default()).collect()
+        };
+        let (muthur, tech) = (Lane::Muthur, Lane::Tech);
+        let mut all: Vec<(AgentId, Vec<&Value>)> = [(AgentId::Muthur, &muthur), (AgentId::Tech, &tech)]
             .into_iter()
-            .flat_map(|a| self.exchanges(a).into_iter().map(move |ex| (a, ex)))
+            .flat_map(|(a, lane)| self.exchanges(lane).into_iter().map(move |ex| (a, ex)))
             .collect();
         all.sort_by_key(|(_, ex)| seq(ex[0]));
-        all.into_iter()
+        let mut out: Vec<Exchange> = all
+            .iter()
             .map(|(agent, ex)| {
-                let tools = ex
-                    .iter()
-                    .filter(|r| kind(r) == "tool")
-                    .flat_map(|r| Self::tool_results(r).unwrap_or_default())
-                    .collect();
                 let reply = ex.iter().rev().find(|r| kind(r) == "assistant").map(|a| (text(a).to_string(), stop(a).to_string()));
-                Exchange { agent, user: text(ex[0]).into(), tools, reply }
+                Exchange { agent: *agent, user: text(ex[0]).into(), tools: tools_of(ex), reply, delegations: vec![] }
             })
-            .collect()
+            .collect();
+        // Delegated exchanges, in log order, fold into the persona exchange they sit in.
+        let mut ids: Vec<&str> = Vec::new();
+        for id in self.records.iter().filter_map(|r| r.get("delegated").and_then(Value::as_str)) {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        for id in ids {
+            for ex in self.exchanges(&Lane::Delegated(id.to_string())) {
+                let report = ex
+                    .iter()
+                    .rev()
+                    .find(|r| kind(r) == "assistant" && !matches!(stop(r), "tool_use" | "error"))
+                    .map(|r| text(r).to_string());
+                let d = Delegation {
+                    call_id: id.to_string(),
+                    verbatim: ex[0].get("report").and_then(Value::as_str) == Some("verbatim"),
+                    tools: tools_of(&ex),
+                    report,
+                };
+                let host = all
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (a, e))| *a == AgentId::Muthur && seq(e[0]) < seq(ex[0]))
+                    .max_by_key(|(_, (_, e))| seq(e[0]))
+                    .map(|(i, _)| i);
+                if let Some(i) = host {
+                    out[i].delegations.push(d);
+                }
+            }
+        }
+        out
     }
 
     pub fn purge(&mut self) -> std::io::Result<()> {
@@ -334,7 +424,7 @@ mod tests {
         (d, l)
     }
     fn asst(text: &str, raw: Option<Vec<Value>>) -> Assistant {
-        Assistant { provider: Provider::Anthropic, model: "m".into(), text: text.into(), stop: "end_turn".into(), raw, agent: AgentId::Muthur }
+        Assistant { provider: Provider::Anthropic, model: "m".into(), text: text.into(), stop: "end_turn".into(), raw, lane: Lane::Muthur }
     }
     fn t(s: &str) -> MessageContent {
         MessageContent::Text(s.into())
@@ -352,7 +442,7 @@ mod tests {
         l.append_user("[SHIP TIME X] HI", "t", AgentId::Muthur).unwrap();
         l.append_assistant(asst("HELLO", None), "t").unwrap();
         let l2 = ChatLog::open(d.path().join("chat.jsonl")).unwrap();
-        assert_eq!(l2.history(), vec![Exchange { agent: AgentId::Muthur, user: "[SHIP TIME X] HI".into(), tools: vec![], reply: Some(("HELLO".into(), "end_turn".into())) }]);
+        assert_eq!(l2.history(), vec![Exchange { agent: AgentId::Muthur, user: "[SHIP TIME X] HI".into(), tools: vec![], reply: Some(("HELLO".into(), "end_turn".into())), delegations: vec![] }]);
         assert_eq!(std::fs::metadata(d.path().join("chat.jsonl")).unwrap().permissions().mode() & 0o777, 0o600);
     }
 
@@ -363,7 +453,7 @@ mod tests {
         let raw = thinking_raw("B");
         l.append_assistant(asst("B", Some(raw.clone())), "t").unwrap();
         l.append_user("C", "t", AgentId::Muthur).unwrap();
-        let w = l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
         assert_eq!(w.len(), 3);
         assert_eq!(w[1].content, MessageContent::Blocks(raw));
         assert_eq!(w[2].content, t("C"));
@@ -383,7 +473,7 @@ mod tests {
     #[test]
     fn failed_pairs_and_orphans_excluded() {
         let (_d, mut l) = failed_log();
-        let w = l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
         assert_eq!(w, vec![Message { role: Role::User, content: t("C") }]);
     }
 
@@ -393,7 +483,7 @@ mod tests {
         l.append_user("A", "t", AgentId::Muthur).unwrap();
         l.append_assistant(asst("B", Some(thinking_raw("B"))), "t").unwrap();
         l.append_user("C", "t", AgentId::Muthur).unwrap();
-        let w = l.window(AgentId::Muthur, Provider::Openai, "m", "SYS", "", 200000, false).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Openai, "m", "SYS", "", 200000, false).unwrap();
         assert_eq!(w.len(), 3);
         assert_eq!(w[1].content, t("B"));
     }
@@ -402,14 +492,14 @@ mod tests {
     fn system_change_strips_thinking_once() {
         let (_d, mut l) = log();
         l.append_user("A", "t", AgentId::Muthur).unwrap();
-        l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS1", "", 200000, false).unwrap();
+        l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS1", "", 200000, false).unwrap();
         l.append_assistant(asst("B", Some(thinking_raw("B"))), "t").unwrap();
         l.append_user("C", "t", AgentId::Muthur).unwrap();
-        let w = l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS2", "", 200000, false).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS2", "", 200000, false).unwrap();
         assert!(!has_thinking(&w[1].content));
         l.append_assistant(asst("D", Some(thinking_raw("D"))), "t").unwrap();
         l.append_user("E", "t", AgentId::Muthur).unwrap();
-        let w = l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS2", "", 200000, false).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS2", "", 200000, false).unwrap();
         assert!(!has_thinking(&w[1].content));
         assert!(has_thinking(&w[3].content));
     }
@@ -427,13 +517,13 @@ mod tests {
             l.append_assistant(asst(&big, None), "t").unwrap();
         }
         l.append_user("now", "t", AgentId::Muthur).unwrap();
-        let w = l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "", 1000, false).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 1000, false).unwrap();
         assert!(ChatLog::estimate("SYS", &w) <= 500);
         assert_eq!(epochs(&l, "trim"), 1);
         l.append_assistant(asst("ok", None), "t").unwrap();
         l.append_user("next", "t", AgentId::Muthur).unwrap();
         let n = l.records.iter().filter(|r| kind(r) == "epoch").count();
-        l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "", 1000, false).unwrap();
+        l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 1000, false).unwrap();
         assert_eq!(l.records.iter().filter(|r| kind(r) == "epoch").count(), n);
     }
 
@@ -467,7 +557,7 @@ mod tests {
         a.stop = "refusal".into();
         l.append_assistant(a, "t").unwrap();
         l.append_user("C", "t", AgentId::Muthur).unwrap();
-        let w = l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
         assert_eq!(w, vec![Message { role: Role::User, content: t("C") }]);
         assert_eq!(l.history()[0].reply, Some(("PARTIAL".into(), "refusal".into())));
     }
@@ -478,7 +568,7 @@ mod tests {
         l.append_user("A", "t", AgentId::Muthur).unwrap();
         l.append_assistant(asst(" \n\t", Some(vec![json!({"type":"text","text":" \n\t"})])), "t").unwrap();
         l.append_user("C", "t", AgentId::Muthur).unwrap();
-        let w = l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
         assert_eq!(w, vec![Message { role: Role::User, content: t("C") }]);
     }
 
@@ -486,15 +576,15 @@ mod tests {
     fn model_change_starts_epoch_and_strips_thinking_once() {
         let (_d, mut l) = log();
         l.append_user("A", "t", AgentId::Muthur).unwrap();
-        l.window(AgentId::Muthur, Provider::Anthropic, "m1", "SYS", "", 200000, false).unwrap();
+        l.window(&Lane::Muthur, Provider::Anthropic, "m1", "SYS", "", 200000, false).unwrap();
         l.append_assistant(asst("B", Some(thinking_raw("B"))), "t").unwrap();
         l.append_user("C", "t", AgentId::Muthur).unwrap();
-        let w = l.window(AgentId::Muthur, Provider::Anthropic, "m2", "SYS", "", 200000, false).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Anthropic, "m2", "SYS", "", 200000, false).unwrap();
         assert_eq!(epochs(&l, "system_changed"), 2);
         assert!(!has_thinking(&w[1].content));
         l.append_assistant(asst("D", Some(thinking_raw("D"))), "t").unwrap();
         l.append_user("E", "t", AgentId::Muthur).unwrap();
-        let w = l.window(AgentId::Muthur, Provider::Anthropic, "m2", "SYS", "", 200000, false).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Anthropic, "m2", "SYS", "", 200000, false).unwrap();
         assert_eq!(epochs(&l, "system_changed"), 2);
         assert!(!has_thinking(&w[1].content));
         assert!(has_thinking(&w[3].content));
@@ -504,8 +594,8 @@ mod tests {
     fn provider_change_starts_epoch() {
         let (_d, mut l) = log();
         l.append_user("A", "t", AgentId::Muthur).unwrap();
-        l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
-        l.window(AgentId::Muthur, Provider::Openai, "m", "SYS", "", 200000, false).unwrap();
+        l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
+        l.window(&Lane::Muthur, Provider::Openai, "m", "SYS", "", 200000, false).unwrap();
         assert_eq!(epochs(&l, "system_changed"), 2);
     }
 
@@ -536,11 +626,11 @@ mod tests {
         let (_d, mut l) = log();
         l.append_user("Q", "t", AgentId::Muthur).unwrap();
         l.append_assistant(asst_stop("CHECKING", "tool_use", Some(tool_use_raw())), "t").unwrap();
-        l.append_tool(&[r1()], "t", AgentId::Muthur).unwrap();
+        l.append_tool(&[r1()], "t", &Lane::Muthur).unwrap();
         let done_raw = vec![json!({"type":"text","text":"DONE"})];
         l.append_assistant(asst("DONE", Some(done_raw.clone())), "t").unwrap();
         l.append_user("Q2", "t", AgentId::Muthur).unwrap();
-        let w = l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
         assert_eq!(
             w,
             vec![
@@ -559,7 +649,7 @@ mod tests {
         l.append_user("Q", "t", AgentId::Muthur).unwrap();
         l.append_assistant(asst_stop("CHECKING", "tool_use", Some(tool_use_raw())), "t").unwrap();
         l.append_user("Q2", "t", AgentId::Muthur).unwrap();
-        let w = l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
         assert_eq!(w, vec![user("Q2")]);
     }
 
@@ -569,10 +659,10 @@ mod tests {
         l.append_user("Q", "t", AgentId::Muthur).unwrap();
         l.append_assistant(asst_stop("CHECKING", "tool_use", Some(tool_use_raw())), "t").unwrap();
         let aborted = ToolResult { content: "ABORTED".into(), is_error: true, ..r1() };
-        l.append_tool(&[aborted], "t", AgentId::Muthur).unwrap();
+        l.append_tool(&[aborted], "t", &Lane::Muthur).unwrap();
         l.append_assistant(asst_stop("", "interrupted", None), "t").unwrap();
         l.append_user("Q2", "t", AgentId::Muthur).unwrap();
-        let w = l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
         assert_eq!(w, vec![user("Q2")]);
     }
 
@@ -581,8 +671,8 @@ mod tests {
         let (_d, mut l) = log();
         l.append_user("Q", "t", AgentId::Muthur).unwrap();
         l.append_assistant(asst_stop("CHECKING", "tool_use", Some(tool_use_raw())), "t").unwrap();
-        l.append_tool(&[r1()], "t", AgentId::Muthur).unwrap();
-        let w = l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
+        l.append_tool(&[r1()], "t", &Lane::Muthur).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
         assert_eq!(w.len(), 3);
         assert_eq!(w[0], user("Q"));
         assert_eq!(w[1].content, MessageContent::Blocks(tool_use_raw()));
@@ -596,10 +686,10 @@ mod tests {
         l.append_user("Q", "t", AgentId::Muthur).unwrap();
         let a = Assistant { provider: Provider::Openai, ..asst_stop("CHECKING", "tool_use", Some(vec![call.clone()])) };
         l.append_assistant(a, "t").unwrap();
-        l.append_tool(&[r1()], "t", AgentId::Muthur).unwrap();
+        l.append_tool(&[r1()], "t", &Lane::Muthur).unwrap();
         l.append_assistant(Assistant { provider: Provider::Openai, ..asst("DONE", None) }, "t").unwrap();
         l.append_user("Q2", "t", AgentId::Muthur).unwrap();
-        let w = l.window(AgentId::Muthur, Provider::Openai, "m", "SYS", "", 200000, false).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Openai, "m", "SYS", "", 200000, false).unwrap();
         assert_eq!(w.len(), 5);
         assert_eq!(w[1], Message { role: Role::Assistant, content: MessageContent::ToolCalls { text: "CHECKING".into(), calls: vec![call] } });
         assert_eq!(w[2].content, MessageContent::ToolResults(vec![r1()]));
@@ -611,15 +701,15 @@ mod tests {
     fn tools_change_writes_epoch() {
         let (_d, mut l) = log();
         l.append_user("A", "t", AgentId::Muthur).unwrap();
-        l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "T1", 200000, false).unwrap();
+        l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "T1", 200000, false).unwrap();
         l.append_assistant(asst("B", Some(thinking_raw("B"))), "t").unwrap();
         l.append_user("C", "t", AgentId::Muthur).unwrap();
-        let w = l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "T1", 200000, false).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "T1", 200000, false).unwrap();
         assert!(has_thinking(&w[1].content));
-        let w = l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "T2", 200000, false).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "T2", 200000, false).unwrap();
         assert_eq!(epochs(&l, "system_changed"), 2);
         assert!(!has_thinking(&w[1].content));
-        l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "T2", 200000, false).unwrap();
+        l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "T2", 200000, false).unwrap();
         assert_eq!(epochs(&l, "system_changed"), 2);
     }
 
@@ -630,12 +720,12 @@ mod tests {
         for _ in 0..10 {
             l.append_user(&big, "t", AgentId::Muthur).unwrap();
             l.append_assistant(asst_stop(&big, "tool_use", Some(tool_use_raw())), "t").unwrap();
-            l.append_tool(&[ToolResult { content: big.clone(), ..r1() }], "t", AgentId::Muthur).unwrap();
+            l.append_tool(&[ToolResult { content: big.clone(), ..r1() }], "t", &Lane::Muthur).unwrap();
             l.append_assistant(asst(&big, None), "t").unwrap();
         }
         l.append_user("now", "t", AgentId::Muthur).unwrap();
         // Trim happens at the start of the inquiry.
-        let w = l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "", 1600, false).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 1600, false).unwrap();
         assert_eq!(epochs(&l, "trim"), 1);
         assert!(w.len() > 1 && w.len() < 41);
         assert!(matches!(&w[0], Message { role: Role::User, content: MessageContent::Text(_) }));
@@ -643,9 +733,9 @@ mod tests {
         // Mid-chain the current exchange grows past budget/2; it is sent whole with no new epoch.
         l.append_assistant(asst_stop("CHECKING", "tool_use", Some(tool_use_raw())), "t").unwrap();
         let huge = ToolResult { content: "y".repeat(8000), ..r1() };
-        l.append_tool(std::slice::from_ref(&huge), "t", AgentId::Muthur).unwrap();
+        l.append_tool(std::slice::from_ref(&huge), "t", &Lane::Muthur).unwrap();
         let n_ep = l.records.iter().filter(|r| kind(r) == "epoch").count();
-        let w = l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "", 1600, false).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 1600, false).unwrap();
         assert_eq!(l.records.iter().filter(|r| kind(r) == "epoch").count(), n_ep);
         assert!(matches!(&w[0], Message { role: Role::User, content: MessageContent::Text(_) }));
         assert_eq!((w.len() - 3) % 4, 0);
@@ -666,10 +756,10 @@ mod tests {
         let (_d, mut l) = log();
         l.append_user("Q", "t", AgentId::Muthur).unwrap();
         l.append_assistant(asst_stop("CHECKING", "tool_use", Some(thinking_tool_use_raw())), "t").unwrap();
-        l.append_tool(&[r1()], "t", AgentId::Muthur).unwrap();
+        l.append_tool(&[r1()], "t", &Lane::Muthur).unwrap();
         l.append_assistant(asst("FINAL", Some(thinking_raw("FINAL"))), "t").unwrap();
         l.append_user("Q2", "t", AgentId::Muthur).unwrap();
-        let w = l.window(AgentId::Muthur, Provider::Openai, "m", "SYS", "", 200000, false).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Openai, "m", "SYS", "", 200000, false).unwrap();
         assert_eq!(w, vec![user("Q"), Message { role: Role::Assistant, content: t("FINAL") }, user("Q2")]);
     }
 
@@ -679,10 +769,10 @@ mod tests {
         let call = json!({"id":"t1","type":"function","function":{"name":"ship_status","arguments":"{}"}});
         l.append_user("Q", "t", AgentId::Muthur).unwrap();
         l.append_assistant(Assistant { provider: Provider::Openai, ..asst_stop("CHECKING", "tool_use", Some(vec![call])) }, "t").unwrap();
-        l.append_tool(&[r1()], "t", AgentId::Muthur).unwrap();
+        l.append_tool(&[r1()], "t", &Lane::Muthur).unwrap();
         l.append_assistant(Assistant { provider: Provider::Openai, ..asst("FINAL", None) }, "t").unwrap();
         l.append_user("Q2", "t", AgentId::Muthur).unwrap();
-        let w = l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
         assert_eq!(w, vec![user("Q"), Message { role: Role::Assistant, content: t("FINAL") }, user("Q2")]);
     }
 
@@ -690,12 +780,12 @@ mod tests {
     fn mid_chain_tiny_budget_writes_no_epoch_and_keeps_thinking() {
         let (_d, mut l) = log();
         l.append_user("Q", "t", AgentId::Muthur).unwrap();
-        l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
+        l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
         l.append_assistant(asst_stop("CHECKING", "tool_use", Some(thinking_tool_use_raw())), "t").unwrap();
-        l.append_tool(&[r1()], "t", AgentId::Muthur).unwrap();
+        l.append_tool(&[r1()], "t", &Lane::Muthur).unwrap();
         let n_ep = l.records.iter().filter(|r| kind(r) == "epoch").count();
         for _ in 0..2 {
-            let w = l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "", 1, false).unwrap();
+            let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 1, false).unwrap();
             assert_eq!(l.records.iter().filter(|r| kind(r) == "epoch").count(), n_ep);
             assert_eq!(w.len(), 3);
             assert!(has_thinking(&w[1].content));
@@ -706,13 +796,13 @@ mod tests {
     fn mid_chain_system_change_keeps_current_thinking() {
         let (_d, mut l) = log();
         l.append_user("A", "t", AgentId::Muthur).unwrap();
-        l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "T1", 200000, false).unwrap();
+        l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "T1", 200000, false).unwrap();
         l.append_assistant(asst("B", Some(thinking_raw("B"))), "t").unwrap();
         l.append_user("Q", "t", AgentId::Muthur).unwrap();
-        l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "T1", 200000, false).unwrap();
+        l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "T1", 200000, false).unwrap();
         l.append_assistant(asst_stop("CHECKING", "tool_use", Some(thinking_tool_use_raw())), "t").unwrap();
-        l.append_tool(&[r1()], "t", AgentId::Muthur).unwrap();
-        let w = l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "T2", 200000, false).unwrap();
+        l.append_tool(&[r1()], "t", &Lane::Muthur).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "T2", 200000, false).unwrap();
         assert_eq!(epochs(&l, "system_changed"), 2);
         assert!(!has_thinking(&w[1].content));
         assert!(has_thinking(&w[3].content));
@@ -727,9 +817,9 @@ mod tests {
             l.append_assistant(asst(&big, None), "t").unwrap();
         }
         l.append_user(&"z".repeat(6000), "t", AgentId::Muthur).unwrap();
-        l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "", 1000, false).unwrap();
+        l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 1000, false).unwrap();
         assert_eq!(epochs(&l, "trim"), 1);
-        let w = l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "", 1000, false).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 1000, false).unwrap();
         assert_eq!(epochs(&l, "trim"), 1);
         assert_eq!(w.len(), 1);
     }
@@ -742,7 +832,7 @@ mod tests {
         l.write(json!({"kind":"tool","ts":"t","results":"garbage"})).unwrap();
         l.append_assistant(asst("DONE", None), "t").unwrap();
         l.append_user("Q2", "t", AgentId::Muthur).unwrap();
-        let w = l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
         assert_eq!(w, vec![user("Q2")]);
     }
 
@@ -751,7 +841,7 @@ mod tests {
         let (_d, mut l) = log();
         l.append_user("Q", "t", AgentId::Muthur).unwrap();
         l.append_assistant(asst("DONE", None), "t").unwrap();
-        assert!(l.window(AgentId::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap().is_empty());
+        assert!(l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap().is_empty());
     }
 
     #[test]
@@ -759,7 +849,7 @@ mod tests {
         let (_d, mut l) = log();
         l.append_user("Q", "t", AgentId::Muthur).unwrap();
         l.append_assistant(asst_stop("CHECKING", "tool_use", Some(tool_use_raw())), "t").unwrap();
-        l.append_tool(&[r1()], "t", AgentId::Muthur).unwrap();
+        l.append_tool(&[r1()], "t", &Lane::Muthur).unwrap();
         l.append_assistant(asst("DONE", None), "t").unwrap();
         let h = l.history();
         assert_eq!(h.len(), 1);
@@ -776,7 +866,7 @@ mod tests {
     const M: AgentId = AgentId::Muthur;
     const T: AgentId = AgentId::Tech;
     fn asst_for(agent: AgentId, text: &str) -> Assistant {
-        Assistant { agent, ..asst(text, None) }
+        Assistant { lane: agent.into(), ..asst(text, None) }
     }
     fn texts(w: &[Message]) -> Vec<String> {
         w.iter().filter_map(|m| if let MessageContent::Text(s) = &m.content { Some(s.clone()) } else { None }).collect()
@@ -791,9 +881,9 @@ mod tests {
         l.append_assistant(asst_for(T, "ta1"), "t").unwrap();
         l.append_user("m2", "t", M).unwrap();
         l.append_user("t2", "t", T).unwrap();
-        let wm = l.window(M, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
+        let wm = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
         assert_eq!(texts(&wm), vec!["m1", "ma1", "m2"]);
-        let wt = l.window(T, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
+        let wt = l.window(&Lane::Tech, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
         assert_eq!(texts(&wt), vec!["t1", "ta1", "t2"]);
     }
 
@@ -807,22 +897,22 @@ mod tests {
         )
         .unwrap();
         let mut l = ChatLog::open(p).unwrap();
-        assert_eq!(texts(&l.window(M, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap()), vec!["A", "B", "C"]);
-        assert!(l.window(T, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap().is_empty());
+        assert_eq!(texts(&l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap()), vec!["A", "B", "C"]);
+        assert!(l.window(&Lane::Tech, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap().is_empty());
     }
 
     #[test]
     fn separate_epochs() {
         let (_d, mut l) = log();
         l.append_user("t1", "t", T).unwrap();
-        l.window(T, Provider::Anthropic, "m", "TECH SYS", "", 200000, false).unwrap();
+        l.window(&Lane::Tech, Provider::Anthropic, "m", "TECH SYS", "", 200000, false).unwrap();
         l.append_user("m1", "t", M).unwrap();
-        l.window(M, Provider::Anthropic, "m", "MUTHUR SYS", "", 200000, false).unwrap();
+        l.window(&Lane::Muthur, Provider::Anthropic, "m", "MUTHUR SYS", "", 200000, false).unwrap();
         assert_eq!(epochs(&l, "system_changed"), 2);
-        l.window(M, Provider::Anthropic, "m", "MUTHUR SYS", "", 200000, false).unwrap();
-        l.window(T, Provider::Anthropic, "m", "TECH SYS", "", 200000, false).unwrap();
+        l.window(&Lane::Muthur, Provider::Anthropic, "m", "MUTHUR SYS", "", 200000, false).unwrap();
+        l.window(&Lane::Tech, Provider::Anthropic, "m", "TECH SYS", "", 200000, false).unwrap();
         assert_eq!(epochs(&l, "system_changed"), 2);
-        let mine = |a: AgentId| l.records.iter().filter(|r| kind(r) == "epoch" && agent_of(r) == a).count();
+        let mine = |a: AgentId| l.records.iter().filter(|r| kind(r) == "epoch" && lane_of(r) == Lane::from(a)).count();
         assert_eq!((mine(M), mine(T)), (1, 1));
     }
 
@@ -830,15 +920,15 @@ mod tests {
     fn report_only_drops_tool_rounds() {
         let (_d, mut l) = log();
         l.append_user("Q", "t", T).unwrap();
-        l.append_assistant(Assistant { agent: T, ..asst_stop("CHECKING", "tool_use", Some(tool_use_raw())) }, "t").unwrap();
-        l.append_tool(&[r1()], "t", T).unwrap();
+        l.append_assistant(Assistant { lane: Lane::Tech, ..asst_stop("CHECKING", "tool_use", Some(tool_use_raw())) }, "t").unwrap();
+        l.append_tool(&[r1()], "t", &Lane::Tech).unwrap();
         l.append_assistant(asst_for(T, "DONE"), "t").unwrap();
         l.append_user("Q2", "t", T).unwrap();
-        let w = l.window(T, Provider::Anthropic, "m", "SYS", "", 200000, true).unwrap();
+        let w = l.window(&Lane::Tech, Provider::Anthropic, "m", "SYS", "", 200000, true).unwrap();
         assert_eq!(w, vec![user("Q"), Message { role: Role::Assistant, content: t("DONE") }, user("Q2")]);
-        l.append_assistant(Assistant { agent: T, ..asst_stop("CHECKING", "tool_use", Some(tool_use_raw())) }, "t").unwrap();
-        l.append_tool(&[r1()], "t", T).unwrap();
-        let w = l.window(T, Provider::Anthropic, "m", "SYS", "", 200000, true).unwrap();
+        l.append_assistant(Assistant { lane: Lane::Tech, ..asst_stop("CHECKING", "tool_use", Some(tool_use_raw())) }, "t").unwrap();
+        l.append_tool(&[r1()], "t", &Lane::Tech).unwrap();
+        let w = l.window(&Lane::Tech, Provider::Anthropic, "m", "SYS", "", 200000, true).unwrap();
         assert_eq!(w.len(), 5);
         assert!(matches!(w[4].content, MessageContent::ToolResults(_)));
     }
@@ -864,5 +954,126 @@ mod tests {
         assert!(!d.path().join("chat.jsonl").exists());
         assert!(l.history().is_empty());
         assert_eq!(l.append_user("x", "t", T).unwrap(), 0);
+    }
+
+    fn d(id: &str) -> Lane {
+        Lane::Delegated(id.into())
+    }
+    fn tool_use_asst(lane: Lane) -> Assistant {
+        Assistant { lane, ..asst_stop("CHECKING", "tool_use", Some(tool_use_raw())) }
+    }
+
+    /// tech A, then persona (tool_use) wrapping delegation d1, then tech B.
+    fn delegated_log() -> (tempfile::TempDir, ChatLog) {
+        let (dir, mut l) = log();
+        l.append_user("A", "t", T).unwrap();
+        l.append_assistant(asst_for(T, "ta"), "t").unwrap();
+        l.append_user("P", "t", M).unwrap();
+        l.append_assistant(tool_use_asst(Lane::Muthur), "t").unwrap();
+        l.append_delegation("d1", "task", false, "t").unwrap();
+        l.append_assistant(tool_use_asst(d("d1")), "t").unwrap();
+        l.append_tool(&[r1()], "t", &d("d1")).unwrap();
+        (dir, l)
+    }
+
+    fn full_log() -> (tempfile::TempDir, ChatLog) {
+        let (dir, mut l) = delegated_log();
+        l.append_assistant(Assistant { lane: d("d1"), ..asst("FINDINGS", None) }, "t").unwrap();
+        l.append_tool(&[r1()], "t", &Lane::Muthur).unwrap();
+        l.append_assistant(asst_for(M, "PERSONA DONE"), "t").unwrap();
+        l.append_user("B", "t", T).unwrap();
+        (dir, l)
+    }
+
+    #[test]
+    fn lane_of_records() {
+        assert_eq!(lane_of(&json!({"agent":"tech","delegated":"d1"})), d("d1"));
+        assert_eq!(lane_of(&json!({"agent":"muthur","delegated":"d1"})), d("d1"));
+        assert_eq!(lane_of(&json!({"kind":"user"})), Lane::Muthur);
+        assert_eq!(lane_of(&json!({"agent":"tech"})), Lane::Tech);
+        assert_eq!(d("x").agent(), AgentId::Tech);
+    }
+
+    #[test]
+    fn direct_window_skips_delegations() {
+        let (_d, mut l) = full_log();
+        let w = l.window(&Lane::Tech, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
+        assert_eq!(texts(&w), vec!["A", "ta", "B"]);
+        assert_eq!(w.len(), 3);
+        assert!(!format!("{w:?}").contains("task"));
+    }
+
+    #[test]
+    fn delegated_window_is_task_only() {
+        let (_d, mut l) = delegated_log();
+        let w = l.window(&d("d1"), Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
+        assert_eq!(w.len(), 3);
+        assert_eq!(w[0], user("task"));
+        assert_eq!(w[1].role, Role::Assistant);
+        assert!(matches!(w[2].content, MessageContent::ToolResults(_)));
+        assert!(!format!("{w:?}").contains("\"ta\""));
+        // Its epoch carries the delegated id, so the Tech lane never sees it.
+        assert!(l.records.iter().any(|r| kind(r) == "epoch" && lane_of(r) == d("d1") && agent_of(r) == AgentId::Tech));
+        assert!(l.latest_epoch(&Lane::Tech).is_none());
+    }
+
+    #[test]
+    fn persona_window_unaffected_by_delegation() {
+        let (_d, mut l) = full_log();
+        let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
+        let (_d2, mut l2) = log();
+        l2.append_user("A", "t", T).unwrap();
+        l2.append_assistant(asst_for(T, "ta"), "t").unwrap();
+        l2.append_user("P", "t", M).unwrap();
+        l2.append_assistant(tool_use_asst(Lane::Muthur), "t").unwrap();
+        l2.append_tool(&[r1()], "t", &Lane::Muthur).unwrap();
+        l2.append_assistant(asst_for(M, "PERSONA DONE"), "t").unwrap();
+        l2.append_user("B", "t", T).unwrap();
+        assert_eq!(w, l2.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap());
+    }
+
+    #[test]
+    fn history_folds_delegations() {
+        let (_d, l) = full_log();
+        let h = l.history();
+        assert_eq!(h.iter().map(|e| (e.agent, e.user.as_str())).collect::<Vec<_>>(), vec![(T, "A"), (M, "P"), (T, "B")]);
+        assert_eq!(h[1].delegations, vec![Delegation { call_id: "d1".into(), verbatim: false, tools: vec![r1()], report: Some("FINDINGS".into()) }]);
+        assert!(h[0].delegations.is_empty() && h[2].delegations.is_empty());
+    }
+
+    #[test]
+    fn verbatim_flag_and_no_report() {
+        let (_d, mut l) = log();
+        l.append_user("P", "t", M).unwrap();
+        l.append_delegation("d1", "task", true, "t").unwrap();
+        l.append_assistant(tool_use_asst(d("d1")), "t").unwrap();
+        let h = l.history();
+        assert_eq!(h[0].delegations, vec![Delegation { call_id: "d1".into(), verbatim: true, tools: vec![], report: None }]);
+        assert!(l.records.iter().any(|r| r["report"] == "verbatim" && r["delegated"] == "d1"));
+    }
+
+    #[test]
+    fn orphan_delegation_records_are_ignored() {
+        let (dir, mut l) = delegated_log();
+        l.append_assistant(Assistant { lane: d("d1"), ..asst("FINDINGS", None) }, "t").unwrap();
+        let mut l = ChatLog::open(dir.path().join("chat.jsonl")).unwrap();
+        let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
+        // M5 rules: the persona lane ends in its assistant tool_use record, so it is
+        // assistant-last (empty), exactly as without the delegated records.
+        let (_d2, mut l2) = log();
+        l2.append_user("A", "t", T).unwrap();
+        l2.append_assistant(asst_for(T, "ta"), "t").unwrap();
+        l2.append_user("P", "t", M).unwrap();
+        l2.append_assistant(tool_use_asst(Lane::Muthur), "t").unwrap();
+        assert_eq!(w, l2.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap());
+        assert_eq!(l.history()[1].delegations.len(), 1);
+    }
+
+    #[test]
+    fn feature_off_history_still_skips_delegations() {
+        let (_d, l) = full_log();
+        let shown: Vec<_> = l.history().into_iter().filter(|ex| ex.agent == AgentId::Muthur).collect();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].user, "P");
     }
 }
