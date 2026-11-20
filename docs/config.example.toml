@@ -119,3 +119,18 @@ uppercase = true
 # restart = ["nginx.service"]
 # start = []
 # stop = []
+
+# ── Technical agent ──────────────────────────────────────────────────────────
+# [agent]
+# label = "SCIENCE OFFICER"
+# max_rounds = 24
+# default_timeout_secs = 30
+# max_timeout_secs = 300
+# deny = []               # extra regexes, case-insensitive
+# net_allow = []          # hosts the network tools may target without Y/N
+# system_prompt = "..."
+
+# [muthur.technical]      # any unset key inherits from [muthur]
+# provider / base_url / model / api_key / max_tokens / effort / cache_ttl / fallbacks / context_tokens
+
+# [muthur.reviewer]       # same inheritance; model defaults to claude-haiku-5-5 when the provider is anthropic

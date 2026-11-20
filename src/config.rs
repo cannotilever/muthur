@@ -119,6 +119,10 @@ pub struct MuthurSection {
     pub reveal_cps: u32,
     pub uppercase: bool,
     pub system_prompt: Option<String>,
+    /// Overrides for the technical agent; unset keys inherit from `[muthur]`.
+    pub technical: LlmOverrides,
+    /// Overrides for the command reviewer; unset keys inherit from `[muthur]`.
+    pub reviewer: LlmOverrides,
 }
 
 impl Default for MuthurSection {
@@ -136,11 +140,62 @@ impl Default for MuthurSection {
             reveal_cps: 50,
             uppercase: true,
             system_prompt: None,
+            technical: LlmOverrides::default(),
+            reviewer: LlmOverrides::default(),
         }
     }
 }
 
+/// Per-agent overrides of the connection and budget keys of `[muthur]`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(default)]
+pub struct LlmOverrides {
+    pub provider: Option<Provider>,
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+    pub api_key: Option<String>,
+    pub effort: Option<String>,
+    pub cache_ttl: Option<String>,
+    pub max_tokens: Option<u32>,
+    pub fallbacks: Option<bool>,
+    pub context_tokens: Option<usize>,
+}
+
 impl MuthurSection {
+    fn with_overrides(&self, o: &LlmOverrides) -> MuthurSection {
+        let mut c = self.clone();
+        if let Some(v) = o.provider { c.provider = v; }
+        if let Some(v) = &o.base_url { c.base_url = Some(v.clone()); }
+        if let Some(v) = &o.model { c.model = Some(v.clone()); }
+        if let Some(v) = &o.api_key { c.api_key = Some(v.clone()); }
+        if let Some(v) = &o.effort { c.effort = v.clone(); }
+        if let Some(v) = &o.cache_ttl { c.cache_ttl = v.clone(); }
+        if let Some(v) = o.max_tokens { c.max_tokens = v; }
+        if let Some(v) = o.fallbacks { c.fallbacks = v; }
+        if let Some(v) = o.context_tokens { c.context_tokens = v; }
+        c.system_prompt = None;
+        c.technical = LlmOverrides::default();
+        c.reviewer = LlmOverrides::default();
+        c
+    }
+
+    /// The effective settings for the technical agent.
+    pub fn technical_cfg(&self) -> MuthurSection {
+        self.with_overrides(&self.technical)
+    }
+
+    /// The effective settings for the reviewer: short replies, and Haiku on Anthropic.
+    pub fn reviewer_cfg(&self) -> MuthurSection {
+        let mut c = self.with_overrides(&self.reviewer);
+        if self.reviewer.max_tokens.is_none() {
+            c.max_tokens = 512;
+        }
+        if c.provider == Provider::Anthropic && self.reviewer.model.is_none() {
+            c.model = Some("claude-haiku-5-5".into());
+        }
+        c
+    }
+
     /// Explicit `base_url` (trimmed, trailing '/' removed), else the Anthropic default;
     /// a blank explicit value counts as unset. `None` for Openai.
     pub fn base_url(&self) -> Option<&str> {
@@ -222,9 +277,43 @@ impl Default for ToolsSection {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct AgentSection {
+    pub label: String,
+    pub max_rounds: u32,
+    pub default_timeout_secs: u32,
+    pub max_timeout_secs: u32,
+    pub deny: Vec<String>,
+    pub net_allow: Vec<String>,
+    pub system_prompt: Option<String>,
+}
+
+impl Default for AgentSection {
+    fn default() -> Self {
+        Self {
+            label: "SCIENCE OFFICER".into(),
+            max_rounds: 24,
+            default_timeout_secs: 30,
+            max_timeout_secs: 300,
+            deny: Vec::new(),
+            net_allow: Vec::new(),
+            system_prompt: None,
+        }
+    }
+}
+
+impl AgentSection {
+    /// The system prompt, or `None` when unset or blank.
+    pub fn system_prompt(&self) -> Option<&str> {
+        self.system_prompt.as_deref().filter(|s| !s.trim().is_empty())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    pub agent: AgentSection,
     pub shell: ShellSection,
     pub utility: UtilitySection,
     pub muthur: MuthurSection,
@@ -234,6 +323,47 @@ pub struct Config {
     pub chrome: ChromeConfig,
     /// Key-name → byte-sequence overrides for the WY-60 keymap.
     pub keys: BTreeMap<String, String>,
+}
+
+impl Config {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let a = &self.agent;
+        if !(1..=3600).contains(&a.max_timeout_secs) {
+            bail!("[agent] max_timeout_secs must be 1..=3600 (got {})", a.max_timeout_secs);
+        }
+        if !(1..=a.max_timeout_secs).contains(&a.default_timeout_secs) {
+            bail!(
+                "[agent] default_timeout_secs must be 1..=max_timeout_secs (got {} with max {})",
+                a.default_timeout_secs,
+                a.max_timeout_secs
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Startup warnings for the raw config text: removed keys, and sections ignored
+/// because the `agent` feature is not built.
+pub fn warnings(text: &str, agent_built: bool) -> Vec<String> {
+    let Ok(v) = toml::from_str::<toml::Value>(text) else { return Vec::new() };
+    let mut out = Vec::new();
+    let tools = v.get("tools");
+    for key in ["services", "elevate", "journal_max_lines"] {
+        if tools.and_then(|t| t.get(key)).is_some() {
+            out.push(format!("removed config key [tools.{key}] ignored"));
+        }
+    }
+    if !agent_built {
+        let muthur = v.get("muthur");
+        let present = tools.and_then(|t| t.get("enabled")).and_then(|e| e.as_bool()) == Some(true)
+            || v.get("agent").is_some()
+            || muthur.and_then(|m| m.get("technical")).is_some()
+            || muthur.and_then(|m| m.get("reviewer")).is_some();
+        if present {
+            out.push("agent feature not built; [tools] [agent] [muthur.technical] [muthur.reviewer] ignored".into());
+        }
+    }
+    out
 }
 
 pub fn default_path() -> PathBuf {
@@ -258,7 +388,12 @@ pub fn load(path: &Path) -> anyhow::Result<Config> {
         );
     }
     let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+    for w in warnings(&text, cfg!(feature = "agent")) {
+        tracing::warn!("{w}");
+    }
+    let cfg: Config = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    cfg.validate().with_context(|| format!("validating {}", path.display()))?;
+    Ok(cfg)
 }
 
 #[cfg(test)]
@@ -287,6 +422,64 @@ mod tests {
         want.muthur.model = Some("claude-sonnet-5-5".into());
         want.muthur.api_key = Some("sk-ant-REPLACE-ME".into());
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn agent_defaults() {
+        let a = Config::default().agent;
+        assert_eq!(a.label, "SCIENCE OFFICER");
+        assert_eq!((a.max_rounds, a.default_timeout_secs, a.max_timeout_secs), (24, 30, 300));
+        assert!(a.deny.is_empty() && a.net_allow.is_empty() && a.system_prompt().is_none());
+        let b = AgentSection { system_prompt: Some("  ".into()), ..AgentSection::default() };
+        assert_eq!(b.system_prompt(), None);
+    }
+
+    #[test]
+    fn technical_inherits_and_overrides() {
+        let c: Config = toml::from_str(
+            "[muthur]\nmodel = \"claude-sonnet-5-5\"\napi_key = \"k\"\nsystem_prompt = \"p\"\n[muthur.technical]\nmodel = \"local\"\nprovider = \"openai\"\nbase_url = \"http://h\"\n",
+        )
+        .unwrap();
+        let t = c.muthur.technical_cfg();
+        assert_eq!(t.model.as_deref(), Some("local"));
+        assert_eq!(t.provider, Provider::Openai);
+        assert_eq!(t.base_url.as_deref(), Some("http://h"));
+        assert_eq!(t.api_key.as_deref(), Some("k"));
+        assert_eq!(t.system_prompt, None);
+        assert_eq!(t.technical, LlmOverrides::default());
+    }
+
+    #[test]
+    fn reviewer_defaults_to_haiku_on_anthropic() {
+        let r = Config::default().muthur.reviewer_cfg();
+        assert_eq!(r.model.as_deref(), Some("claude-haiku-5-5"));
+        assert_eq!(r.max_tokens, 512);
+        let c: Config =
+            toml::from_str("[muthur]\nprovider = \"openai\"\nmodel = \"q\"\nbase_url = \"http://h\"\n").unwrap();
+        assert_eq!(c.muthur.reviewer_cfg().model.as_deref(), Some("q"));
+    }
+
+    #[test]
+    fn validate_rejects_bad_timeouts() {
+        for (d, m) in [(30, 0), (30, 3601), (301, 300), (0, 300)] {
+            let mut c = Config::default();
+            c.agent.default_timeout_secs = d;
+            c.agent.max_timeout_secs = m;
+            assert!(c.validate().is_err(), "{d} {m}");
+        }
+        assert!(Config::default().validate().is_ok());
+    }
+
+    #[test]
+    fn warnings_for_removed_and_unbuilt() {
+        let w = warnings("[tools.services]\nrestart=[]\n[tools]\nelevate=\"sudo\"\n", true);
+        assert_eq!(w.len(), 2);
+        assert!(w.iter().any(|l| l.contains("tools.services")));
+        assert!(w.iter().any(|l| l.contains("tools.elevate")));
+        let w = warnings("[agent]\nlabel=\"X\"\n", false);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].starts_with("agent feature not built"));
+        assert!(warnings("[agent]\nlabel=\"X\"\n", true).is_empty());
     }
 
     #[test]

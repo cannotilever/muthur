@@ -26,6 +26,10 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls-no-p
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 serde_json = "1"
 
+[features]
+default = ["agent"]
+agent = []
+
 [dev-dependencies]
 tempfile = "3"
 
