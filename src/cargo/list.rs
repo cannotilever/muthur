@@ -7,8 +7,9 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Widget;
 
-/// Narrowest the STATUS column gets (its heading).
-const MIN_STATUS_W: usize = 6;
+/// The STATUS column: fixed, so a status changing width (an in-flight
+/// `RESTARTING`) never shifts every row. Fits every runtime state word.
+pub(super) const STATUS_W: usize = 10;
 /// Inner rows that are not containers: heading, message line, hint line.
 const CHROME_ROWS: u16 = 3;
 
@@ -19,13 +20,14 @@ pub(super) struct Selection {
     index: usize,
     /// First container row shown.
     scroll: usize,
-    /// Container rows the last render had room for.
-    page: usize,
+    /// Container rows the last render had room for; `None` before the first
+    /// render, when the viewport is not known and must not be moved.
+    page: Option<usize>,
 }
 
 impl Selection {
     pub(super) fn new() -> Self {
-        Self { id: None, index: 0, scroll: 0, page: 1 }
+        Self { id: None, index: 0, scroll: 0, page: None }
     }
 
     /// After the list changed: find the selected ID again, or keep the row
@@ -47,15 +49,19 @@ impl Selection {
         self.settle(list);
     }
 
+    fn page(&self) -> usize {
+        self.page.unwrap_or(1)
+    }
+
     pub(super) fn page_up(&mut self, list: &[Container]) {
-        self.index = self.index.saturating_sub(self.page);
-        self.scroll = self.scroll.saturating_sub(self.page);
+        self.index = self.index.saturating_sub(self.page());
+        self.scroll = self.scroll.saturating_sub(self.page());
         self.settle(list);
     }
 
     pub(super) fn page_down(&mut self, list: &[Container]) {
-        self.index += self.page;
-        self.scroll += self.page;
+        self.index += self.page();
+        self.scroll += self.page();
         self.settle(list);
     }
 
@@ -73,13 +79,14 @@ impl Selection {
     /// remember which container it is.
     fn settle(&mut self, list: &[Container]) {
         self.index = self.index.min(list.len().saturating_sub(1));
-        self.scroll = self.scroll.min(list.len().saturating_sub(self.page));
+        self.id = list.get(self.index).map(|c| c.id.clone());
+        let Some(page) = self.page else { return };
+        self.scroll = self.scroll.min(list.len().saturating_sub(page));
         if self.index < self.scroll {
             self.scroll = self.index;
-        } else if self.index >= self.scroll + self.page {
-            self.scroll = self.index + 1 - self.page;
+        } else if self.index >= self.scroll + page {
+            self.scroll = self.index + 1 - page;
         }
-        self.id = list.get(self.index).map(|c| c.id.clone());
     }
 }
 
@@ -95,9 +102,10 @@ pub(super) fn draw_list(
     area: Rect,
     buf: &mut Buffer,
 ) {
-    sel.page = area.height.saturating_sub(2 + CHROME_ROWS).max(1) as usize;
+    let page = area.height.saturating_sub(2 + CHROME_ROWS).max(1) as usize;
+    sel.page = Some(page);
     sel.settle(list);
-    let shown = &list[sel.scroll..list.len().min(sel.scroll + sel.page)];
+    let shown = &list[sel.scroll..list.len().min(sel.scroll + page)];
     let noun = if list.len() == 1 { "CONTAINER" } else { "CONTAINERS" };
     let mut title = format!("CARGO - {} {noun}", list.len());
     if shown.len() < list.len() {
@@ -115,7 +123,7 @@ pub(super) fn draw_list(
         Some((id, s)) if id == k.id => s.to_string(),
         _ => k.status.clone(),
     };
-    let status_w = list.iter().map(|k| status_of(k).chars().count()).max().unwrap_or(0).clamp(MIN_STATUS_W, w / 2);
+    let status_w = STATUS_W.min(w / 2);
     let name_w = w.saturating_sub(1 + status_w + 1);
     let cut = |s: &str, n: usize| s.chars().take(n).collect::<String>();
     let status_x = inner.x + (1 + name_w + 1) as u16;

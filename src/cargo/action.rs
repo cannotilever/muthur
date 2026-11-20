@@ -98,13 +98,35 @@ impl Prompt {
         Self { verb, id: id.into(), name: name.into(), drawn: false, armed_at: None }
     }
 
-    pub(super) fn text(&self) -> String {
-        format!("{} {}? Y/N", self.verb.word(), self.name).to_uppercase()
+    /// `STOP <NAME> (<ID>)? Y/N`, at most `max` wide: a long name is cut in
+    /// the middle so the question and the ID always show.
+    pub(super) fn text(&self, max: usize) -> String {
+        let tail = format!(" ({})? Y/N", self.id);
+        let head = format!("{} ", self.verb.word());
+        let room = max.saturating_sub(head.chars().count() + tail.chars().count());
+        format!("{head}{}{tail}", middle_cut(&self.name, room)).to_uppercase()
     }
 
     pub(super) fn armed(&self, now: Instant) -> bool {
         self.armed_at.is_some_and(|t| now >= t)
     }
+}
+
+/// `s` in at most `max` characters, cut in the middle with `~`.
+fn middle_cut(s: &str, max: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max {
+        return s.to_string();
+    }
+    if max < 3 {
+        return chars[..max].iter().collect();
+    }
+    let keep = max - 1;
+    let (front, back) = (keep - keep / 2, keep / 2);
+    let mut out: String = chars[..front].iter().collect();
+    out.push('~');
+    out.extend(&chars[chars.len() - back..]);
+    out
 }
 
 /// The message-line text for a failed command; `None` when it succeeded.

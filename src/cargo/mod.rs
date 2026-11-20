@@ -166,9 +166,9 @@ impl CargoTab {
         }
     }
 
-    fn message_line(&self) -> (String, bool) {
+    fn message_line(&self, width: usize) -> (String, bool) {
         if let Some(p) = &self.prompt {
-            return (p.text(), false);
+            return (p.text(width), false);
         }
         if let Some(m) = &self.message {
             return m.clone();
@@ -264,9 +264,8 @@ impl CargoTab {
 
     fn action_done(&mut self, p: Pending, out: RunOutput, ms: u64) {
         let audited = self.record_audit(&p, &out, ms);
-        if self.obscured {
-            self.activity = true;
-        }
+        // The App lights `*` only when CARGO is not the folder on screen.
+        self.activity = true;
         if p.verb == Verb::Logs {
             match (failure(p.verb, &out), out) {
                 (None, RunOutput::Exited { stdout, .. }) => {
@@ -296,13 +295,13 @@ impl CargoTab {
 
 impl Tab for CargoTab {
     fn render(&mut self, area: Rect, buf: &mut Buffer) {
-        let (message, reverse) = self.message_line();
+        let (message, reverse) = self.message_line(area.width.saturating_sub(2) as usize);
         let hint = if self.runtime.is_some() { HINT } else { NO_RUNTIME };
         let busy = self
             .action
             .as_ref()
             .filter(|p| p.verb != Verb::Logs)
-            .map(|p| (p.id.clone(), format!("{}...", p.verb.progress())));
+            .map(|p| (p.id.clone(), p.verb.progress().to_string()));
         let lines: Vec<Line<'static>> = match &self.state {
             State::Awaiting => vec![Line::from("AWAITING TELEMETRY")],
             State::Offline(why) => vec![Line::from("TELEMETRY OFFLINE"), Line::from(why.clone())],

@@ -6,7 +6,6 @@ use crate::input::Key;
 use crate::llm::{LlmError, Stop, ToolResult};
 use crate::tools::exec::ToolOutcome;
 
-/// Y/N/Esc sooner than this after an override prompt is seen (see `State::Override`) are ignored.
 const AUDIT_OFFLINE: &str = "AUDIT LOG OFFLINE";
 
 /// The transcript note redisplayed for a logged tool result.

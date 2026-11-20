@@ -97,7 +97,7 @@ fn long_names_are_cut() {
     let (_, y) = find(&buf, "XXXX").unwrap();
     let row = text(&buf).lines().nth(y as usize).unwrap().to_string();
     // 59 inner columns: the '>' gutter, a 6-wide STATUS, one space, the name gets the rest.
-    assert_eq!(row.matches('X').count(), 59 - 1 - 6 - 1, "{row}");
+    assert_eq!(row.matches('X').count(), 59 - 1 - 10 - 1, "{row}");
     assert!(row.contains("X UP "), "{row}");
 }
 
@@ -321,14 +321,14 @@ fn start_runs_at_once_with_id_and_runtime() {
     let (_, argv, timeout, merged) = h.last();
     assert_eq!((argv, timeout, merged), (v(&["docker", "start", "a1"]), Duration::from_secs(30), false));
     let s = h.screen();
-    assert!(s.contains("STARTING WEB ...") && s.contains("STARTING..."), "{s}");
+    assert!(s.contains("STARTING WEB ...") && s.contains(" STARTING "), "{s}");
 }
 
 #[test]
 fn restart_and_stop_need_armed_y() {
     let mut h = harness(vec![c("a1", "web", "UP")]);
     h.key(Key::Char('r'));
-    assert!(h.screen().contains("RESTART WEB? Y/N"));
+    assert!(h.screen().contains("RESTART WEB (A1)? Y/N"));
     assert_eq!(h.n_calls(), 0);
     h.key(Key::Char('y'));
     assert_eq!(h.n_calls(), 0, "Y before arming");
@@ -337,7 +337,7 @@ fn restart_and_stop_need_armed_y() {
     assert_eq!(h.argv(), v(&["docker", "restart", "a1"]));
     h.done(exited(0, "a1\n", ""));
     h.key(Key::Char('d'));
-    assert!(h.screen().contains("STOP WEB? Y/N"));
+    assert!(h.screen().contains("STOP WEB (A1)? Y/N"));
     h.arm();
     h.key(Key::Char('y'));
     assert_eq!(h.argv(), v(&["docker", "stop", "a1"]));
@@ -377,7 +377,7 @@ fn confirm_targets_pinned_id_after_resort() {
     let mut h = harness(vec![c("a1", "web", "UP"), c("b2", "db", "UP")]);
     h.key(Key::Down);
     h.key(Key::Char('d'));
-    assert!(h.screen().contains("STOP DB? Y/N"));
+    assert!(h.screen().contains("STOP DB (B2)? Y/N"));
     h.arm();
     h.t.on_metrics(&snap(Some(vec![c("c3", "new", "EXITED"), c("a1", "web", "UP"), c("b2", "db", "UP")])));
     h.key(Key::Char('Y'));
@@ -413,7 +413,7 @@ fn success_message_then_refresh() {
     h.key(Key::Char('U'));
     h.done(exited(0, "a1\n", ""));
     let s = h.screen();
-    assert!(s.contains("WEB STARTED") && !s.contains("STARTING..."), "{s}");
+    assert!(s.contains("WEB STARTED") && !s.contains(" STARTING "), "{s}");
     let (_, argv, timeout, merged) = h.last();
     assert_eq!((argv, timeout, merged), (ps_argv("docker"), Duration::from_secs(2), false));
     h.done(exited(0, "a1\tweb\tUp 1 second\n", ""));
@@ -507,7 +507,7 @@ fn offline_keeps_list_and_actions() {
 fn background_done_lights_activity() {
     let mut h = harness(vec![c("a1", "web", "UP")]);
     h.key(Key::Char('U'));
-    assert!(!h.t.take_activity());
+    assert!(!h.t.take_activity(), "nothing finished yet");
     h.t.set_obscured(true);
     h.done(exited(0, "a1\n", ""));
     assert!(h.t.take_activity());
@@ -692,4 +692,47 @@ fn audit_offline_at_y_refuses() {
     h.key(Key::Char('y'));
     assert_eq!(h.n_calls(), 0);
     assert!(h.screen().contains("AUDIT LOG OFFLINE"));
+}
+
+// --- Minor fixes -----------------------------------------------------------
+
+#[test]
+fn long_name_prompt_keeps_question_and_id() {
+    let name = format!("{}-alpha", "x".repeat(80));
+    let mut h = harness(vec![c("a1b2c3d4e5f6", &name, "UP")]);
+    h.key(Key::Char('d'));
+    let s = h.screen();
+    let line = s.lines().find(|l| l.contains("Y/N")).unwrap_or_else(|| panic!("{s}"));
+    assert!(line.contains("STOP XXX") && line.contains("~") && line.contains("-ALPHA (A1B2C3D4E5F6)? Y/N"), "{line}");
+}
+
+#[test]
+fn status_column_does_not_move_while_busy() {
+    let mut h = harness(vec![c("a1", "web", "UP"), c("b2", "db", "UP")]);
+    let x = |h: &mut H| find(&render(&mut h.t, WINDOWED), "STATUS").unwrap().0;
+    let before = x(&mut h);
+    h.key(Key::Char('R'));
+    h.arm();
+    h.key(Key::Char('Y'));
+    let buf = render(&mut h.t, WINDOWED);
+    assert_eq!(find(&buf, "STATUS").unwrap().0, before);
+    assert_eq!(find(&buf, "RESTARTING").unwrap().0, before, "{}", text(&buf));
+}
+
+#[test]
+fn activity_even_when_switched_away_before_a_render() {
+    let mut h = harness(vec![c("a1", "web", "UP")]);
+    h.key(Key::Char('U'));
+    h.done(exited(0, "a1\n", "")); // the App ignores it for the folder on screen
+    assert!(h.t.take_activity());
+}
+
+#[test]
+fn keys_before_first_render_do_not_scroll() {
+    let mut t = CargoTab::detached();
+    t.on_metrics(&snap(Some(ship(50))));
+    t.handle_key(&Key::Down);
+    t.handle_key(&Key::Down);
+    let s = text(&render(&mut t, WINDOWED));
+    assert!(s.contains("(1-35)") && s.contains(">CRATE002"), "{s}");
 }
