@@ -9,6 +9,7 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 anyhow = "1"
+regex = "1"
 dirs = "6"
 ratatui = { version = "0.30", default-features = false, features = ["std", "layout-cache"] }
 tokio = { version = "1", features = ["rt", "macros", "sync", "time", "net", "io-util"] }

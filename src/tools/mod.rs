@@ -2,6 +2,7 @@
 
 use crate::config::{Elevate, ToolsSection};
 use crate::llm::ToolSpec;
+pub mod deny;
 pub mod exec;
 
 use serde_json::{Value, json};
