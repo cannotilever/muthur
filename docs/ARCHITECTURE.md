@@ -274,6 +274,19 @@ The model sees at most 8 KB of `run` output (first 4 KB and last 4 KB); fixed
 tools are capped at 4 KB. Tool turns are recorded in the chat log, tagged by
 agent, and redisplayed as `RUN` lines.
 
+**Delegation.** In persona mode MU/TH/UR also has `delegate(task)`, which hands
+a self-contained task to the technical agent as a fresh child turn: the child
+sees only the task (an untrusted `DELEGATED TASK` section for the reviewer;
+authority still comes only from the operator's own message) and runs through
+the same gates, prompts and audit as `/DIRECT`. The screen shows
+`DELEGATING TO <LABEL>` and one condensed `<LABEL>: <command>  [<verdict>]` line
+per command; with `[tools] delegate_report = "verbatim"` the report is printed
+after `<LABEL> REPORTS:`. The persona gets `COMMANDS:` and `REPORT:` as the tool
+result and answers in its own voice. The child's records live in their own chat
+log lane, and redisplay folds each delegation back into the persona exchange.
+Ctrl-C aborts the child and the persona turn. Spec:
+docs/superpowers/specs/2026-11-20-m8-delegate-design.md
+
 **The `agent` feature.** All LLM tool use, for both agents, sits behind the
 Cargo feature `agent`, on by default. `make AGENT=0 build` (or
 `cargo build --no-default-features`) builds MUTHUR as a plain chat: requests

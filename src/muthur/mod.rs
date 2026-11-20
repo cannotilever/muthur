@@ -893,7 +893,17 @@ fn redisplay(log: &ChatLog, cfg: &MuthurSection, label: &str) -> Vec<Entry> {
             transcript.extend(ex.tools.iter().map(|r| Entry::Harness(r.label.clone())));
         } else {
             transcript.push(Entry::User(user));
-            transcript.extend(ex.tools.iter().map(|r| Entry::Note(turn::tool_note(r))));
+            for r in &ex.tools {
+                #[cfg(feature = "agent")]
+                if r.name == "delegate" {
+                    // A delegation with no logged child records is not shown.
+                    if let Some(d) = ex.delegations.iter().find(|d| d.call_id == r.id) {
+                        push_delegation(&mut transcript, d, label);
+                    }
+                    continue;
+                }
+                transcript.push(Entry::Note(turn::tool_note(r)));
+            }
         }
         push_reply(&mut transcript, ex.reply, cfg.uppercase && !tech);
     }
@@ -901,6 +911,19 @@ fn redisplay(log: &ChatLog, cfg: &MuthurSection, label: &str) -> Vec<Entry> {
         transcript.push(Entry::Note(LINK_CLOSED.into()));
     }
     transcript
+}
+
+/// A delegation as the live screen showed it: the hand-off, the condensed
+/// commands and, in verbatim mode, the officer's report.
+#[cfg(feature = "agent")]
+fn push_delegation(transcript: &mut Vec<Entry>, d: &crate::chatlog::Delegation, label: &str) {
+    transcript.push(Entry::Harness(format!("DELEGATING TO {label}")));
+    transcript.extend(d.tools.iter().map(|r| Entry::Harness(crate::agent::condensed(label, &r.label))));
+    let report = d.report.as_deref().map(str::trim_end).filter(|r| !r.trim().is_empty());
+    if let (true, Some(report)) = (d.verbatim, report) {
+        transcript.push(Entry::Harness(format!("{label} REPORTS:")));
+        transcript.extend(report.lines().map(|l| Entry::Harness(l.to_string())));
+    }
 }
 
 /// A logged reply as redisplayed, with its note; nothing for a failed request.

@@ -14,7 +14,7 @@ type Clock = std::rc::Rc<std::cell::Cell<std::time::Instant>>;
 /// The MU/TH/UR tab on a log at `path`, optionally prefilled with one exchange.
 fn muthur_tab(path: &std::path::Path, prefill: Option<(&str, &str)>) -> (muthur::muthur::MuthurTab, Clock) {
     #[cfg(feature = "agent")]
-    return muthur_tab_probe(path, prefill, muthur::tools::shell::Probe::Ready, true);
+    return muthur_tab_probe(path, prefill, muthur::tools::shell::Probe::Ready, true, muthur::config::DelegateReport::Relayed);
     #[cfg(not(feature = "agent"))]
     {
         let (cfg, log, audit, deps, clock) = muthur_parts(path, prefill);
@@ -61,6 +61,7 @@ fn muthur_tab_probe(
     prefill: Option<(&str, &str)>,
     probe: muthur::tools::shell::Probe,
     reviewer_ready: bool,
+    report: muthur::config::DelegateReport,
 ) -> (muthur::muthur::MuthurTab, Clock) {
     use muthur::config::{AgentSection, ToolsSection};
     use muthur::muthur::{AgentDeps, MuthurTab};
@@ -84,7 +85,7 @@ fn muthur_tab_probe(
         },
         label: agent.label.clone(),
         max_rounds: agent.max_rounds,
-        delegate_report: muthur::config::DelegateReport::Relayed,
+        delegate_report: report,
         probe,
         reviewer_ready,
     };
@@ -360,7 +361,7 @@ mod direct {
     /// An app with the MU/TH/UR tab focused, in direct mode, and a cleared terminal.
     fn direct_app(probe: muthur::tools::shell::Probe, reviewer_ready: bool) -> (App, Clock, Term, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let (tab, clock) = muthur_tab_probe(&dir.path().join("chat.jsonl"), None, probe, reviewer_ready);
+        let (tab, clock) = muthur_tab_probe(&dir.path().join("chat.jsonl"), None, probe, reviewer_ready, muthur::config::DelegateReport::Relayed);
         let mut app = App::new(ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 })
             .with_tab(muthur::app::TabId::Muthur, Box::new(tab));
         app.handle_key(Key::F(1));
@@ -482,6 +483,79 @@ mod direct {
         assert!(text.contains("AGENT ACCOUNT OFFLINE -- SEE DEPLOY"), "{text}");
         assert!(text.contains("REVIEWER OFFLINE"), "{text}");
         assert!(text.lines().any(|l| l.contains("x $ ")), "{text}");
+    }
+
+    /// A persona-mode app (no /direct) in the given report mode.
+    fn persona_app(report: muthur::config::DelegateReport) -> (App, Clock, Term, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let (tab, clock) = muthur_tab_probe(&dir.path().join("chat.jsonl"), None, muthur::tools::shell::Probe::Ready, true, report);
+        let mut app = App::new(ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 })
+            .with_tab(muthur::app::TabId::Muthur, Box::new(tab));
+        app.handle_key(Key::F(1));
+        let mut t = Terminal::new(Wy60Backend::new(StrictWriter::new(Vec::new(), Vt100Dialect), Vt100Dialect, 80, 43)).unwrap();
+        t.clear().unwrap();
+        (app, clock, t, dir)
+    }
+
+    /// The persona delegates (request 1); the officer runs `uptime` (allowed),
+    /// then a root restart that is reviewed and waits for the password (request 3).
+    fn delegated_restart(app: &mut App, t: &mut Term, clock: &Clock) {
+        use muthur::llm::{Stop, StreamEvent};
+        use muthur::review::{Risk, Verdict};
+        type_line(app, "check why nginx keeps restarting");
+        let input = serde_json::json!({"task": "find out why nginx keeps restarting and restart it if needed"});
+        app.on_llm(1, StreamEvent::ToolCall { id: "d1".into(), name: "delegate".into(), input: input.clone() });
+        let raw = vec![serde_json::json!({"type":"tool_use","id":"d1","name":"delegate","input":input})];
+        app.on_llm(1, StreamEvent::Done { stop: Stop::ToolUse, model: Some("m".into()), raw: Some(raw) });
+        run_call(app, 2, "c1", "systemctl status nginx --no-pager", false);
+        app.on_review(2, "c1".into(), verdict(Verdict::Allow, Risk::Low, "read-only status check"));
+        app.on_tool_done(2, "c1".into(), exited(3, 12, 100));
+        run_call(app, 3, "c2", "systemctl restart nginx", true);
+        app.on_review(3, "c2".into(), verdict(Verdict::Allow, Risk::Medium, "restarts a service the operator asked about"));
+        arm(app, t, clock);
+    }
+
+    #[test]
+    fn muthur_delegate_relayed() {
+        let (mut app, clock, mut t, _dir) = persona_app(muthur::config::DelegateReport::Relayed);
+        delegated_restart(&mut app, &mut t, &clock);
+        let p = check_golden("muthur_delegate_relayed", &mut app, &mut t);
+        let text = p.screen().contents();
+        for want in [
+            "DELEGATING TO SCIENCE OFFICER",
+            "SCIENCE OFFICER: systemctl status nginx --no-pager",
+            "     [ALLOW]",
+            "CLEARANCE REQUIRED -- systemctl restart ... -- PASSWORD:",
+        ] {
+            assert!(text.contains(want), "{want}: {text}");
+        }
+        assert!(!text.contains("REPORTS:") && !text.contains("RUN "), "{text}");
+    }
+
+    #[test]
+    fn muthur_delegate_verbatim() {
+        use muthur::llm::{Stop, StreamEvent};
+        let (mut app, clock, mut t, _dir) = persona_app(muthur::config::DelegateReport::Verbatim);
+        delegated_restart(&mut app, &mut t, &clock);
+        for c in "pw".chars() {
+            app.handle_key(Key::Char(c));
+        }
+        app.handle_key(Key::Enter);
+        app.on_tool_done(3, "c2".into(), exited(0, 0, 1400));
+        app.on_llm(4, StreamEvent::Text("Found: nginx failed its config test.\nChanged: restarted nginx.".into()));
+        app.on_llm(4, StreamEvent::Done { stop: Stop::End, model: Some("m".into()), raw: None });
+        app.on_llm(5, StreamEvent::Text("Nginx was failing its config test. The science officer restarted it.".into()));
+        app.on_llm(5, StreamEvent::Done { stop: Stop::End, model: Some("m".into()), raw: None });
+        app.handle_key(Key::Esc); // skip the reveal
+        let p = check_golden("muthur_delegate_verbatim", &mut app, &mut t);
+        let text = p.screen().contents();
+        for want in [
+            "SCIENCE OFFICER REPORTS:",
+            "Found: nginx failed its config test.",
+            "NGINX WAS FAILING ITS CONFIG TEST.",
+        ] {
+            assert!(text.contains(want), "{want}: {text}");
+        }
     }
 
     #[test]

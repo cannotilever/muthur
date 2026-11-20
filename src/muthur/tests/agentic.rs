@@ -1066,6 +1066,50 @@ fn delegate_verbatim_prints_report() {
     assert_eq!(records(&h).iter().find(|r| r["delegated"] == "d1").unwrap()["report"], "verbatim");
 }
 
+/// The entries of the reopened log, as redisplay shows them.
+fn redisplayed(h: &H) -> Vec<Entry> {
+    redisplay(&h.reopen(), &cfg(), "SCIENCE OFFICER")
+}
+
+fn harness_texts(entries: &[Entry]) -> Vec<String> {
+    entries.iter().filter_map(|e| if let Entry::Harness(s) = e { Some(s.clone()) } else { None }).collect()
+}
+
+#[test]
+fn redisplay_folds_delegation() {
+    let mut h = harness();
+    delegated_uptime(&mut h);
+    h.tick(2000);
+    h.t.on_llm(4, StreamEvent::Text("NGINX UP.".into()));
+    h.t.on_llm(4, done(Stop::End));
+    let e = redisplayed(&h);
+    assert_eq!(harness_texts(&e), ["DELEGATING TO SCIENCE OFFICER", "SCIENCE OFFICER: uptime  [ALLOW]"], "{e:#?}");
+    let at = |want: &Entry| e.iter().position(|x| x == want).unwrap_or_else(|| panic!("{want:?}: {e:#?}"));
+    assert!(at(&Entry::User("WHY IS NGINX DOWN".into())) < at(&Entry::Harness("DELEGATING TO SCIENCE OFFICER".into())));
+    assert!(e.iter().all(|x| !matches!(x, Entry::Note(n) if n.contains("DIRECT LINK") || n.contains("ACCESSING"))), "{e:#?}");
+}
+
+#[test]
+fn redisplay_verbatim_delegation() {
+    let mut h = harness_report(crate::config::DelegateReport::Verbatim);
+    delegated_uptime(&mut h);
+    let e = redisplayed(&h);
+    let want = ["DELEGATING TO SCIENCE OFFICER", "SCIENCE OFFICER: uptime  [ALLOW]", "SCIENCE OFFICER REPORTS:", "Up 3 days."];
+    assert_eq!(harness_texts(&e), want, "{e:#?}");
+}
+
+#[test]
+fn redisplay_orphan_delegation_hidden() {
+    let h = harness_with(cfg(), |l| {
+        exchange(l, "[SHIP TIME X] HI", "HELLO", "end_turn");
+        l.append_delegation("d9", "check nginx", true, "ts").unwrap();
+        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "Up.".into(), stop: "end_turn".into(), raw: None, lane: Lane::Delegated("d9".into()) };
+        l.append_assistant(a, "ts").unwrap();
+    });
+    let e = redisplayed(&h);
+    assert!(harness_texts(&e).is_empty(), "{e:#?}");
+}
+
 #[test]
 fn delegate_child_password_prompt() {
     let mut h = harness();
