@@ -19,7 +19,7 @@ udev starts the getty when the adapter appears and stops it when the adapter goe
 
 Override the host with `make HOST=other deploy`. `make deploy` keeps the previous binary as `~/.local/bin/muthur.old`. Run `make check-deploy` first to lint the udev rule and the getty drop-in locally.
 
-To tune the boot logo, edit `assets/wy-logo.txt` and run `muthur splash` on the WY-60.
+To tune the boot logo, edit `assets/wy-logo.txt` and run `muthur splash` on the WY-60. A line starting with `^` is drawn double height (DECDHL, so also double width: at most 40 characters) and centred on the screen.
 
 ## 3. Check the result
 

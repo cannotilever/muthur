@@ -7,10 +7,14 @@
 //! compare then repairs anything the full-width scroll disturbed, so a wrong
 //! hint costs bytes, never correctness.
 //!
+//! Line attributes (DECDHL) are kept the same way, per row: a row whose
+//! attribute changes is re-sent whole, and a double row only sends its
+//! left half (it holds `cols / 2` double-width cells).
+//!
 //! Cursor, attributes and charset are tracked so each is only emitted on
 //! change. After the last column the cursor is unknown (VT100 pending wrap).
 
-use crate::dialect::{Attrs, Charset, Dialect, Glyph, map_glyph};
+use crate::dialect::{Attrs, Charset, Dialect, Glyph, LineAttr, map_glyph};
 use crate::scroll::{HintSlot, ScrollHint};
 use ratatui::backend::{Backend, ClearType, WindowSize};
 use ratatui::buffer::Cell;
@@ -46,6 +50,9 @@ pub struct Wy60Backend<W: Write, D: Dialect> {
     /// `None` = unknown (always re-sent).
     shown: Vec<Option<CellState>>,
     hints: Option<HintSlot>,
+    want_lines: Vec<LineAttr>,
+    /// `None` = unknown (always re-sent).
+    shown_lines: Vec<Option<LineAttr>>,
     /// (row, col); `None` = unknown.
     cursor: Option<(u16, u16)>,
     attrs: Option<Attrs>,
@@ -65,6 +72,8 @@ impl<W: Write, D: Dialect> Wy60Backend<W, D> {
             want: vec![BLANK; n],
             shown: vec![Some(BLANK); n],
             hints: None,
+            want_lines: vec![LineAttr::Single; rows as usize],
+            shown_lines: vec![Some(LineAttr::Single); rows as usize],
             cursor: None,
             attrs: None,
             charset: None,
@@ -74,6 +83,25 @@ impl<W: Write, D: Dialect> Wy60Backend<W, D> {
     pub fn with_hints(mut self, slot: HintSlot) -> Self {
         self.hints = Some(slot);
         self
+    }
+
+    /// Line attributes for the next frame: the listed rows, every other row
+    /// single. Cells past `cols / 2` on a double row are not shown.
+    pub fn set_line_attrs(&mut self, rows: &[(u16, LineAttr)]) {
+        self.want_lines.fill(LineAttr::Single);
+        for &(row, a) in rows {
+            if let Some(l) = self.want_lines.get_mut(row as usize) {
+                *l = a;
+            }
+        }
+    }
+
+    /// Columns a row can show under its current line attribute.
+    fn row_width(&self, row: u16) -> u16 {
+        match self.want_lines[row as usize] {
+            LineAttr::Single => self.cols,
+            LineAttr::DoubleTop | LineAttr::DoubleBottom => self.cols / 2,
+        }
     }
 
     pub fn writer(&self) -> &W {
@@ -124,7 +152,7 @@ impl<W: Write, D: Dialect> Wy60Backend<W, D> {
         }
     }
 
-    fn put(&mut self, row: u16, col: u16, st: CellState) {
+    fn put(&mut self, row: u16, col: u16, width: u16, st: CellState) {
         let mut attrs = st.attrs;
         let (charset, byte) = match st.glyph {
             Glyph::Ascii(b) => (Charset::Ascii, b),
@@ -138,7 +166,7 @@ impl<W: Write, D: Dialect> Wy60Backend<W, D> {
         self.set_attrs(attrs);
         self.set_charset(charset);
         self.out.push(byte);
-        self.cursor = if col + 1 >= self.cols { None } else { Some((row, col + 1)) };
+        self.cursor = if col + 1 >= width { None } else { Some((row, col + 1)) };
     }
 
     /// Scroll a band of full-width lines on the terminal and in `shown`.
@@ -179,6 +207,13 @@ impl<W: Write, D: Dialect> Wy60Backend<W, D> {
                 self.shown[(h.top as usize + r as usize) * cols + c] = v;
             }
         }
+        // Line attributes travel with their lines; new lines come in single.
+        let lines: Vec<Option<LineAttr>> = self.shown_lines[h.top as usize..bottom as usize].to_vec();
+        for r in 0..rows {
+            let src = r + k as isize;
+            self.shown_lines[h.top as usize + r as usize] =
+                if (0..rows).contains(&src) { lines[src as usize] } else { Some(LineAttr::Single) };
+        }
     }
 }
 
@@ -199,11 +234,26 @@ impl<W: Write, D: Dialect> Backend for Wy60Backend<W, D> {
             self.scroll(h);
         }
         for row in 0..self.rows {
+            let line = self.want_lines[row as usize];
+            if self.shown_lines[row as usize] != Some(line) {
+                // The row's characters change size: repaint all of it.
+                self.dialect.cup(&mut self.out, row, 0);
+                self.dialect.line_attr(&mut self.out, line);
+                self.cursor = Some((row, 0));
+                self.shown_lines[row as usize] = Some(line);
+                let start = self.idx(row, 0);
+                self.shown[start..start + self.cols as usize].fill(None);
+            }
+            let width = self.row_width(row);
             for col in 0..self.cols {
                 let i = self.idx(row, col);
                 let want = self.want[i];
                 if self.shown[i] != Some(want) {
-                    self.put(row, col, want);
+                    // Past the right margin of a double row there is nothing to
+                    // write to; a single row repaints it after the attribute change.
+                    if col < width {
+                        self.put(row, col, width, want);
+                    }
                     self.shown[i] = Some(want);
                 }
             }
@@ -240,6 +290,12 @@ impl<W: Write, D: Dialect> Backend for Wy60Backend<W, D> {
         self.dialect.clear(&mut self.out);
         self.want.fill(BLANK);
         self.shown.fill(Some(BLANK));
+        // ED 2 should make every line single; re-assert any that weren't.
+        for l in &mut self.shown_lines {
+            if *l != Some(LineAttr::Single) {
+                *l = None;
+            }
+        }
         self.cursor = Some((0, 0));
         self.attrs = Some(Attrs::default());
         self.charset = Some(Charset::Ascii);
@@ -257,6 +313,7 @@ impl<W: Write, D: Dialect> Backend for Wy60Backend<W, D> {
         self.out.extend_from_slice(seq);
         // Don't model partial clears: forget what is shown so it is all re-sent.
         self.shown.fill(None);
+        self.shown_lines.fill(None);
         Ok(())
     }
 
@@ -559,4 +616,64 @@ mod tests {
         .unwrap();
         assert!(t.backend().writer().violations.is_empty(), "{:?}", t.backend().writer().violations);
     }
+
+    #[test]
+    fn double_height_rows_send_decdhl_and_only_the_left_half() {
+        let mut t = term();
+        take(&mut t);
+        t.backend_mut().set_line_attrs(&[(5, LineAttr::DoubleTop), (6, LineAttr::DoubleBottom)]);
+        t.draw(|f| {
+            for y in [5, 6] {
+                f.render_widget(Paragraph::new("HI"), Rect::new(10, y, 2, 1));
+                f.render_widget(Paragraph::new("Z"), Rect::new(60, y, 1, 1));
+            }
+        })
+        .unwrap();
+        let out = String::from_utf8(take(&mut t)).unwrap();
+        assert!(out.contains("\x1b[6;1H\x1b#3"), "{out:?}");
+        assert!(out.contains("\x1b[7;1H\x1b#4"), "{out:?}");
+        assert_eq!(out.matches("HI").count(), 2);
+        assert!(!out.contains('Z'), "cells past the half are not sent: {out:?}");
+
+        // Unchanged: nothing more to send.
+        t.backend_mut().set_line_attrs(&[(5, LineAttr::DoubleTop), (6, LineAttr::DoubleBottom)]);
+        t.draw(|f| {
+            for y in [5, 6] {
+                f.render_widget(Paragraph::new("HI"), Rect::new(10, y, 2, 1));
+                f.render_widget(Paragraph::new("Z"), Rect::new(60, y, 1, 1));
+            }
+        })
+        .unwrap();
+        let out = String::from_utf8(take(&mut t)).unwrap();
+        assert!(!out.contains("HI") && !out.contains('#'), "{out:?}");
+
+        // Back to single: ESC#5 and the whole row again, right half included.
+        t.backend_mut().set_line_attrs(&[]);
+        t.draw(|f| {
+            for y in [5, 6] {
+                f.render_widget(Paragraph::new("HI"), Rect::new(10, y, 2, 1));
+                f.render_widget(Paragraph::new("Z"), Rect::new(60, y, 1, 1));
+            }
+        })
+        .unwrap();
+        let out = String::from_utf8(take(&mut t)).unwrap();
+        assert_eq!(out.matches("\x1b#5").count(), 2, "{out:?}");
+        assert_eq!(out.matches("HI").count(), 2);
+        assert_eq!(out.matches('Z').count(), 2);
+    }
+
+    #[test]
+    fn clear_reasserts_single_on_double_rows() {
+        let mut t = term();
+        t.backend_mut().set_line_attrs(&[(3, LineAttr::DoubleTop), (4, LineAttr::DoubleBottom)]);
+        t.draw(|_| {}).unwrap();
+        t.clear().unwrap();
+        take(&mut t);
+        t.backend_mut().set_line_attrs(&[]);
+        t.draw(|_| {}).unwrap();
+        let out = String::from_utf8(take(&mut t)).unwrap();
+        assert!(out.contains("\x1b[4;1H\x1b#5") && out.contains("\x1b[5;1H\x1b#5"), "{out:?}");
+        assert_eq!(out.matches("\x1b#5").count(), 2, "{out:?}");
+    }
+
 }

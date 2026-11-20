@@ -32,6 +32,18 @@ pub enum Charset {
     Graphics,
 }
 
+/// A row's DEC line attribute. Double rows are double width too: they hold
+/// half as many columns.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum LineAttr {
+    #[default]
+    Single,
+    /// Top half of a double-height pair (DECDHL).
+    DoubleTop,
+    /// Bottom half of a double-height pair (DECDHL).
+    DoubleBottom,
+}
+
 /// What a cell's symbol becomes on the wire.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Glyph {
@@ -115,6 +127,8 @@ pub trait Dialect {
     fn clear(&self, out: &mut Vec<u8>);
     fn set_scroll_region(&self, out: &mut Vec<u8>, top: u16, bottom: u16);
     fn reset_scroll_region(&self, out: &mut Vec<u8>);
+    /// Set the cursor row's line attribute.
+    fn line_attr(&self, out: &mut Vec<u8>, a: LineAttr);
     /// Line feed: at the bottom margin, scrolls the region up one line.
     fn index(&self, out: &mut Vec<u8>);
     /// Reverse index: at the top margin, scrolls the region down one line.
@@ -165,6 +179,13 @@ impl Dialect for Vt100Dialect {
     }
     fn reset_scroll_region(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(b"\x1b[r");
+    }
+    fn line_attr(&self, out: &mut Vec<u8>, a: LineAttr) {
+        out.extend_from_slice(match a {
+            LineAttr::Single => b"\x1b#5",
+            LineAttr::DoubleTop => b"\x1b#3",
+            LineAttr::DoubleBottom => b"\x1b#4",
+        });
     }
     fn index(&self, out: &mut Vec<u8>) {
         out.push(b'\n');

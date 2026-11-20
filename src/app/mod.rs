@@ -341,6 +341,11 @@ impl App {
         }
     }
 
+    /// DECDHL rows for the next frame (only the splash uses them).
+    pub fn line_attrs(&self, area: ratatui::layout::Rect) -> Vec<(u16, crate::dialect::LineAttr)> {
+        self.splash.as_ref().map(|s| s.line_attrs(area)).unwrap_or_default()
+    }
+
     pub fn render(&mut self, frame: &mut Frame, now: NaiveDateTime) {
         let area = frame.area();
         if let Some(sp) = &mut self.splash {

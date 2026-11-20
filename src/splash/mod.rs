@@ -3,6 +3,7 @@
 pub mod logo;
 
 use crate::config::FlowControl;
+use crate::dialect::LineAttr;
 use crate::metrics::{Snapshot, human_bytes, human_uptime};
 use crate::muthur::reveal::Reveal;
 use logo::{Cell, Logo};
@@ -242,6 +243,33 @@ impl Splash {
         self.done
     }
 
+    /// Each logo row with its screen row (relative to the area). A double row
+    /// that would not fit whole is left out.
+    fn logo_rows(&self, area: Rect) -> Vec<(usize, i32)> {
+        let mut y = i32::from(LOGO_TOP) + (LOGO_BAND.saturating_sub(self.logo.height()) / 2) as i32;
+        let mut out = Vec::new();
+        for r in 0..self.logo.rows().len() {
+            let h = if self.logo.is_double(r) { 2 } else { 1 };
+            if h == 1 || y + 1 < i32::from(area.height) {
+                out.push((r, y));
+            }
+            y += h;
+        }
+        out
+    }
+
+    /// The DECDHL rows this frame needs (absolute screen rows).
+    pub fn line_attrs(&self, area: Rect) -> Vec<(u16, LineAttr)> {
+        self.logo_rows(area)
+            .into_iter()
+            .filter(|&(r, y)| self.logo.is_double(r) && y >= 0)
+            .flat_map(|(_, y)| {
+                let y = area.y + y as u16;
+                [(y, LineAttr::DoubleTop), (y + 1, LineAttr::DoubleBottom)]
+            })
+            .collect()
+    }
+
     pub fn render(&self, area: Rect, buf: &mut Buffer) {
         let put = |buf: &mut Buffer, x: i32, y: i32, s: &str| {
             if y < 0 || y >= i32::from(area.height) {
@@ -256,17 +284,23 @@ impl Splash {
                 buf[(area.x + cx as u16, area.y + y as u16)].set_symbol(ch.encode_utf8(&mut b));
             }
         };
-        // Logo.
-        let lx = (i32::from(area.width) - self.logo.width() as i32) / 2;
-        let top = i32::from(LOGO_TOP) + (LOGO_BAND.saturating_sub(self.logo.height()) / 2) as i32;
-        for (r, row) in self.logo.rows().iter().enumerate() {
+        // Logo. A double row's cells are double width, so it is laid out on
+        // half the columns and drawn into both of its screen rows.
+        let lx = (i32::from(area.width) - self.logo.single_width() as i32) / 2;
+        for (r, y) in self.logo_rows(area) {
+            let row = &self.logo.rows()[r];
+            let double = self.logo.is_double(r);
+            let x0 = if double { (i32::from(area.width / 2) - row.len() as i32) / 2 } else { lx };
             for (c, cell) in row.iter().enumerate() {
                 let s = match cell {
                     Cell::Block => "█".to_string(),
                     Cell::Char(' ') => continue,
                     Cell::Char(ch) => ch.to_string(),
                 };
-                put(buf, lx + c as i32, top + r as i32, &s);
+                put(buf, x0 + c as i32, y, &s);
+                if double {
+                    put(buf, x0 + c as i32, y + 1, &s);
+                }
             }
         }
         // Header.

@@ -362,8 +362,12 @@ fn splash() {
     let w = StrictWriter::new(Vec::new(), Vt100Dialect);
     let mut t = Terminal::new(Wy60Backend::new(w, Vt100Dialect, 80, 43)).unwrap();
     t.clear().unwrap();
+    let lines = s.line_attrs(ratatui::layout::Rect::new(0, 0, 80, 43));
+    assert_eq!(lines.len(), 2, "wordmark is one double-height pair");
+    t.backend_mut().set_line_attrs(&lines);
     t.draw(|f| s.render(f.area(), f.buffer_mut())).unwrap();
     let strict = t.backend().writer();
+    // The emulator below ignores DECDHL: the wordmark shows as two half-width rows.
     assert!(strict.violations.is_empty(), "{:?}", strict.violations);
     let mut p = vt100::Parser::new(NonZeroU16::new(43).unwrap(), NonZeroU16::new(80).unwrap(), 0);
     p.process(&strict.inner);

@@ -364,3 +364,31 @@ fn one_late_advance_still_rings() {
     assert!(s.is_done());
     assert!(s.take_bell());
 }
+
+#[test]
+fn wordmark_is_a_double_height_pair_centred_on_half_width() {
+    let t0 = Instant::now();
+    let s = Splash::with_logo(info(), Logo::parse("██\n^W Y\nAB\n"), t0);
+    let area = Rect::new(0, 0, 80, 43);
+    // 4 screen rows in the 22-row band from row 1: top at row 10.
+    assert_eq!(s.line_attrs(area), vec![(11, LineAttr::DoubleTop), (12, LineAttr::DoubleBottom)]);
+    let out = text(&s);
+    let r: Vec<&str> = out.lines().collect();
+    assert_eq!(r[10].trim(), "██");
+    // "W Y" centred in 40 double-width columns: x = 18.
+    assert_eq!(&r[11][..21], &format!("{}W Y", " ".repeat(18)));
+    assert_eq!(r[11], r[12], "both halves carry the text");
+    assert_eq!(r[13].trim(), "AB");
+}
+
+#[test]
+fn double_row_that_does_not_fit_is_dropped() {
+    let t0 = Instant::now();
+    let s = Splash::with_logo(info(), Logo::parse("^W Y\n"), t0);
+    // Top lands on row 11; a 12-row area has no room for its bottom half.
+    let area = Rect::new(0, 0, 80, 12);
+    assert!(s.line_attrs(area).is_empty());
+    let mut buf = Buffer::empty(area);
+    s.render(area, &mut buf);
+    assert!(!rows(&buf, area).concat().contains('W'));
+}

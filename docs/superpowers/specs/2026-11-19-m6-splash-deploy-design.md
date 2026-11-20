@@ -243,12 +243,13 @@ TDD, as in M3–M5.
 ## Changes after operator review (2026-11-19)
 
 - Logo redrawn as ASCII art; pauses lengthened to 400 ms per line and 2.5 s on `READY.`; one BEL at `READY.` (BEL added to the `--strict` allowlist).
+- Wordmark drawn double height (DECDHL, 2026-11-20): `^` marks such a line in `assets/wy-logo.txt`; the backend tracks line attributes per row and resets them to single when the splash ends.
 - Shell tab answers Primary Device Attributes (`ESC[c` / `ESC[0c`) with `ESC[?1;2c`, except in passthrough. fish 4 otherwise waits 10 s for a reply at startup.
 
 ## Out of scope
 
 - Polish items (a later milestone).
-- DECDHL / double-width text.
+- DECDHL / double-width text (except the wordmark, above).
 - OpenRC / Alpine deploy files.
 - Installing the sudoers file.
 - A once-per-boot splash.

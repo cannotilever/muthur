@@ -153,6 +153,9 @@ pub async fn event_loop<W: Write>(
         // resizes its PTY to the whole screen), then stop drawing.
         let entering = app.passthrough && !was_passthrough && dirty;
         if (entering || !app.passthrough) && !app.settling() && should_draw(dirty, outq()) {
+            let size = terminal.size()?;
+            let lines = app.line_attrs(ratatui::layout::Rect::new(0, 0, size.width, size.height));
+            terminal.backend_mut().set_line_attrs(&lines);
             terminal.draw(|f| app.render(f, clock()))?;
             dirty = false;
             was_passthrough = app.passthrough;
