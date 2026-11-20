@@ -199,12 +199,12 @@ fn wrap_hanging_indents_continuations() {
 
 #[test]
 fn system_prompt_override_and_ship() {
-    let s = system_prompt(&cfg(), "USCSS NOSTROMO");
+    let s = system_prompt(&cfg(), "USCSS NOSTROMO", "");
     assert!(s.starts_with("You are MU/TH/UR 6000, the mainframe computer of the USCSS NOSTROMO."), "{s}");
     let blank = MuthurSection { system_prompt: Some("  ".into()), ..cfg() };
-    assert_eq!(system_prompt(&blank, "X"), system_prompt(&cfg(), "X"));
+    assert_eq!(system_prompt(&blank, "X", ""), system_prompt(&cfg(), "X", ""));
     let own = MuthurSection { system_prompt: Some("Computer of {SHIP}.".into()), ..cfg() };
-    assert_eq!(system_prompt(&own, "X"), "Computer of X.");
+    assert_eq!(system_prompt(&own, "X", ""), "Computer of X.");
 }
 
 #[test]
@@ -511,7 +511,7 @@ mod plain {
 
     #[test]
     fn persona_has_no_tool_lines() {
-        let s = system_prompt(&cfg(), "X");
+        let s = system_prompt(&cfg(), "X", "");
         assert!(s.ends_with("Never invent readings."), "{s}");
         assert!(!s.contains("tools") && !s.contains("/DIRECT"), "{s}");
     }

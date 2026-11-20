@@ -497,6 +497,7 @@ fn build_muthur(
         policy: startup.policy,
         label: cfg.agent.label.clone(),
         max_rounds: cfg.agent.max_rounds,
+        delegate_report: cfg.tools.delegate_report,
         probe: startup.probe,
         reviewer_ready: startup.reviewer_ready,
     };

@@ -360,6 +360,7 @@ pub(crate) fn fake_tech(cfg: &crate::config::MuthurSection) -> crate::muthur::Ag
         policy: crate::agent::Policy { deny: Some(crate::tools::deny::test_rules()), net_allow: Vec::new() },
         label: agent.label.clone(),
         max_rounds: agent.max_rounds,
+        delegate_report: crate::config::DelegateReport::Relayed,
         probe: crate::tools::shell::Probe::Ready,
         reviewer_ready: true,
     }

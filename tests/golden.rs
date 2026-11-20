@@ -84,6 +84,7 @@ fn muthur_tab_probe(
         },
         label: agent.label.clone(),
         max_rounds: agent.max_rounds,
+        delegate_report: muthur::config::DelegateReport::Relayed,
         probe,
         reviewer_ready,
     };

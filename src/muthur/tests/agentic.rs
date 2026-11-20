@@ -24,6 +24,7 @@ fn tech_deps(cfg: &MuthurSection, probe: Probe, reviewer_ready: bool) -> AgentDe
         policy: Policy { deny: Some(crate::tools::deny::test_rules()), net_allow: Vec::new() },
         label: agent.label.clone(),
         max_rounds: agent.max_rounds,
+        delegate_report: crate::config::DelegateReport::Relayed,
         probe,
         reviewer_ready,
     }
@@ -236,9 +237,12 @@ fn history_shows_tool_notes() {
 
 #[test]
 fn persona_mentions_tools() {
-    assert!(PERSONA.contains("You cannot change the ship. For changes, tell the operator to open a direct link with /DIRECT."));
-    assert!(!PERSONA.contains("operator override"));
-    assert!(!PERSONA.contains("do not yet have access"));
+    let s = system_prompt(&cfg(), "X", "SCIENCE OFFICER");
+    let tail = "You can query the ship's systems with your tools. Use them instead of guessing.\nFor diagnostics or changes, delegate to the SCIENCE OFFICER with a complete,\nself-contained task. It sees nothing of this conversation. Report its findings\nfaithfully: never claim something was done that was not.";
+    assert!(s.ends_with(tail), "{s}");
+    assert!(!s.contains("/DIRECT") && !s.contains("{OFFICER}"), "{s}");
+    let own = MuthurSection { system_prompt: Some("Mine for {SHIP}.".into()), ..cfg() };
+    assert_eq!(system_prompt(&own, "X", "SCIENCE OFFICER"), "Mine for X.");
 }
 
 #[test]

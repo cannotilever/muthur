@@ -44,20 +44,22 @@ Answer in short, declarative statements, like a 1970s ship computer printing to 
 Use plain text only: no markdown, no headings, no bold, no code blocks. If a list is needed, put each item on its own short line.
 No greetings, pleasantries, apologies or filler.
 If you cannot or will not do something, reply "UNABLE TO COMPLY." followed by a short reason.
-If you do not know, reply "DATA INSUFFICIENT." Never invent readings.
-You can query the ship's systems with your tools. Use them instead of guessing.
-You cannot change the ship. For changes, tell the operator to open a direct link with /DIRECT."#;
+If you do not know, reply "DATA INSUFFICIENT." Never invent readings."#;
 
-/// The default persona prompt. Without the `agent` feature its last two
-/// lines, about the tools and `/DIRECT`, are left out.
+/// The persona's tool lines, appended to `PERSONA` in agent builds;
+/// `{OFFICER}` is filled with `[agent] label`.
 #[cfg(feature = "agent")]
-fn persona() -> &'static str {
-    PERSONA
-}
+const PERSONA_TOOLS: &str = "You can query the ship's systems with your tools. Use them instead of guessing.
+For diagnostics or changes, delegate to the {OFFICER} with a complete,
+self-contained task. It sees nothing of this conversation. Report its findings
+faithfully: never claim something was done that was not.";
 
-#[cfg(not(feature = "agent"))]
-fn persona() -> &'static str {
-    PERSONA.rsplitn(3, '\n').last().unwrap_or(PERSONA)
+/// The default persona prompt, with the tool lines in agent builds.
+fn persona() -> String {
+    #[cfg(feature = "agent")]
+    return format!("{PERSONA}\n{PERSONA_TOOLS}");
+    #[cfg(not(feature = "agent"))]
+    PERSONA.to_string()
 }
 
 #[cfg(feature = "agent")]
@@ -91,9 +93,10 @@ const REVIEWER_OFFLINE: &str = "REVIEWER OFFLINE";
 const MIN_PART: usize = 8;
 const TICK: Duration = Duration::from_millis(100);
 
-/// The configured system prompt (blank counts as unset) or `PERSONA`, with "{SHIP}" filled in.
-pub fn system_prompt(cfg: &MuthurSection, ship: &str) -> String {
-    cfg.system_prompt().unwrap_or(persona()).replace("{SHIP}", ship)
+/// The configured system prompt (blank counts as unset) or the persona, with
+/// "{SHIP}" and "{OFFICER}" filled in.
+pub fn system_prompt(cfg: &MuthurSection, ship: &str, officer: &str) -> String {
+    cfg.system_prompt().map_or_else(persona, str::to_string).replace("{SHIP}", ship).replace("{OFFICER}", officer)
 }
 
 #[cfg(feature = "agent")]
@@ -159,6 +162,8 @@ pub struct AgentDeps {
     /// `[agent] label`, for the banner.
     pub label: String,
     pub max_rounds: u32,
+    /// `[tools] delegate_report`: how the science officer's report reaches the operator.
+    pub delegate_report: crate::config::DelegateReport,
     pub probe: Probe,
     pub reviewer_ready: bool,
 }
@@ -318,7 +323,16 @@ impl MuthurTab {
         #[cfg(feature = "agent")] tech: AgentDeps,
     ) -> Self {
         let mut tab = Self {
-            system: system_prompt(&cfg, ship),
+            system: system_prompt(&cfg, ship, {
+                #[cfg(feature = "agent")]
+                {
+                    &tech.label
+                }
+                #[cfg(not(feature = "agent"))]
+                {
+                    ""
+                }
+            }),
             reveal: Reveal::new(cfg.reveal_cps),
             cfg,
             log,
