@@ -327,15 +327,96 @@ pub(crate) fn fake_muthur() -> (crate::muthur::MuthurTab, tempfile::TempDir) {
     let log = crate::chatlog::ChatLog::open(dir.path().join("chat.jsonl")).unwrap();
     let cfg = crate::config::MuthurSection { api_key: Some("sk-test".into()), ..Default::default() };
     let deps = MuthurDeps {
-        spawn: Box::new(|_, _| Box::new(|| {})),
+        spawn: Box::new(|_, _, _| Box::new(|| {})),
         now: Box::new(Instant::now),
         ship_time: Box::new(|| "18 NOV 2137 14:02".into()),
         timestamp: Box::new(|| "2026-11-18T14:02:00Z".into()),
-        run_tool: Box::new(|_, _, _| {}),
+        run_tool: Box::new(|_, _, _, _, _| {}),
+        review: Box::new(|_, _, _| Box::new(|| {})),
     };
     let tools = crate::tools::ToolDefs::persona(&crate::config::ToolsSection::default());
     let audit = crate::ops::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap();
-    (MuthurTab::new(cfg, tools, "USCSS TEST", log, crate::ops::audit::shared(audit), deps), dir)
+    let tech = fake_tech(&cfg);
+    (MuthurTab::new(cfg, tools, "USCSS TEST", log, crate::ops::audit::shared(audit), deps, tech), dir)
+}
+
+/// A technical agent with `run`, the default `[agent]`, a passing probe and reviewer.
+pub(crate) fn fake_tech(cfg: &crate::config::MuthurSection) -> crate::muthur::AgentDeps {
+    let agent = crate::config::AgentSection::default();
+    crate::muthur::AgentDeps {
+        defs: crate::tools::ToolDefs::technical(&agent, true),
+        cfg: cfg.technical_cfg(),
+        prompt: crate::muthur::tech_prompt(&agent),
+        facts: Box::new(|| "HOST: test".into()),
+        policy: crate::agent::Policy { deny: None, net_allow: Vec::new() },
+        label: agent.label.clone(),
+        max_rounds: agent.max_rounds,
+        probe: crate::tools::shell::Probe::Ready,
+        reviewer_ready: true,
+    }
+}
+
+type Ran = std::rc::Rc<std::cell::RefCell<Vec<String>>>;
+
+/// `fake_muthur` with a hand-driven clock and a record of started tool calls.
+fn fake_muthur_clocked() -> (crate::muthur::MuthurTab, tempfile::TempDir, std::rc::Rc<std::cell::Cell<Instant>>, Ran) {
+    use crate::muthur::{MuthurDeps, MuthurTab};
+    let dir = tempfile::tempdir().unwrap();
+    let log = crate::chatlog::ChatLog::open(dir.path().join("chat.jsonl")).unwrap();
+    let cfg = crate::config::MuthurSection { api_key: Some("sk-test".into()), ..Default::default() };
+    let clock = std::rc::Rc::new(std::cell::Cell::new(Instant::now()));
+    let ran: Ran = Default::default();
+    let (c, r) = (clock.clone(), ran.clone());
+    let deps = MuthurDeps {
+        spawn: Box::new(|_, _, _| Box::new(|| {})),
+        now: Box::new(move || c.get()),
+        ship_time: Box::new(|| "18 NOV 2137 14:02".into()),
+        timestamp: Box::new(|| "2026-11-18T14:02:00Z".into()),
+        run_tool: Box::new(move |_, id, _, _, _| r.borrow_mut().push(id)),
+        review: Box::new(|_, _, _| Box::new(|| {})),
+    };
+    let tools = crate::tools::ToolDefs::persona(&crate::config::ToolsSection::default());
+    let audit = crate::ops::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap();
+    let tech = fake_tech(&cfg);
+    (MuthurTab::new(cfg, tools, "USCSS TEST", log, crate::ops::audit::shared(audit), deps, tech), dir, clock, ran)
+}
+
+#[test]
+fn prompt_under_help_overlay_rearms_after_dismissal() {
+    use crate::llm::{Stop, StreamEvent};
+    use crate::review::{Review, Risk, Verdict};
+    let (m, _dir, clock, ran) = fake_muthur_clocked();
+    let mut app = App::new(chrome()).with_tab(TabId::Muthur, Box::new(m));
+    let tick = |ms: u64| clock.set(clock.get() + Duration::from_millis(ms));
+    keys(&mut app, &[Key::F(1)]);
+    for line in ["/direct", "restart nginx"] {
+        keys(&mut app, &line.chars().map(Key::Char).collect::<Vec<_>>());
+        keys(&mut app, &[Key::Enter]);
+    }
+    keys(&mut app, &[Key::Ctrl(']'), Key::Char('?')]);
+    let input = serde_json::json!({"command": "systemctl restart nginx", "reason": "asked", "as_root": false, "timeout_secs": 0});
+    app.on_llm(1, StreamEvent::ToolCall { id: "c1".into(), name: "run".into(), input: input.clone() });
+    let raw = vec![serde_json::json!({"type":"tool_use","id":"c1","name":"run","input":input})];
+    app.on_llm(1, StreamEvent::Done { stop: Stop::ToolUse, model: Some("m".into()), raw: Some(raw) });
+    let ask = Review { verdict: Verdict::Ask, risk: Risk::Medium, note: "restarts a service".into(), model: "r".into(), ms: 1, error: None };
+    app.on_review(1, "c1".into(), ask);
+    // The Y/N prompt is raised under the help overlay and rendered there for a while.
+    for _ in 0..30 {
+        draw(&mut app);
+        tick(100);
+    }
+    keys(&mut app, &[Key::Esc]); // dismisses the overlay only
+    keys(&mut app, &[Key::Char('y')]);
+    assert!(ran.borrow().is_empty(), "prompt never seen must not be armed");
+    draw(&mut app);
+    tick(100);
+    draw(&mut app);
+    tick(500);
+    keys(&mut app, &[Key::Char('y')]);
+    assert!(ran.borrow().is_empty(), "y inside the arming delay after dismissal");
+    tick(600);
+    keys(&mut app, &[Key::Char('y')]);
+    assert_eq!(*ran.borrow(), vec!["c1".to_string()]);
 }
 
 #[test]

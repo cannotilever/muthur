@@ -36,6 +36,7 @@ pub enum Event {
     Tick,
     Llm { req_id: u64, ev: crate::llm::StreamEvent },
     ToolDone { req_id: u64, call_id: String, outcome: crate::tools::ToolOutcome },
+    Review { req_id: u64, call_id: String, review: crate::review::Review },
     CargoDone { seq: u64, output: crate::ops::runner::RunOutput, ms: u64 },
 }
 
@@ -201,6 +202,10 @@ pub async fn event_loop<W: Write>(
                     app.on_tool_done(req_id, call_id, outcome);
                     dirty = true;
                 }
+                Some(Event::Review { req_id, call_id, review }) => {
+                    app.on_review(req_id, call_id, review);
+                    dirty = true;
+                }
                 Some(Event::CargoDone { seq, output, ms }) => {
                     app.on_cargo_done(seq, output, ms);
                     dirty = true;
@@ -303,20 +308,22 @@ fn build_muthur(
     audit: crate::ops::audit::SharedAudit,
 ) -> anyhow::Result<crate::muthur::MuthurTab> {
     use crate::llm::{LlmError, StreamEvent, client::LlmClient};
-    use crate::muthur::{Abort, MuthurDeps, MuthurTab};
+    use crate::muthur::{Abort, AgentDeps, MuthurDeps, MuthurTab};
     let log = open_chat_log()?;
     let tool_tx = tx.clone();
-    let spawn: Box<dyn FnMut(u64, crate::llm::ChatRequest) -> Abort> = match LlmClient::new(cfg.muthur.clone()) {
+    let review_tx = tx.clone();
+    // Until Task 13: one client (the persona's) for both agents.
+    let spawn: Box<dyn FnMut(u64, crate::ops::AgentId, crate::llm::ChatRequest) -> Abort> = match LlmClient::new(cfg.muthur.clone()) {
         Ok(client) => {
             let client = std::sync::Arc::new(client);
-            Box::new(move |id, req| {
+            Box::new(move |id, _agent, req| {
                 let h = client.spawn(id, req, tx.clone());
                 Box::new(move || h.abort())
             })
         }
         Err(e) => {
             tracing::error!("llm client unavailable: {e:#}");
-            Box::new(move |req_id, _| {
+            Box::new(move |req_id, _, _| {
                 let _ = tx.send(Event::Llm { req_id, ev: StreamEvent::Error(LlmError::NoCarrier) });
                 Box::new(|| {})
             })
@@ -330,31 +337,51 @@ fn build_muthur(
         now: Box::new(std::time::Instant::now),
         ship_time: Box::new(move || crate::app::chrome::format_date(chrono::Local::now().naive_local(), year_offset)),
         timestamp: Box::new(|| chrono::Local::now().to_rfc3339()),
-        run_tool: Box::new(move |req_id, call_id, inv| {
+        run_tool: Box::new(move |req_id, call_id, inv, secret, cancel| {
             let ctx = ctx.clone();
             let tx = tool_tx.clone();
             tokio::task::spawn_blocking(move || {
-                let outcome = persona_tool(&inv, &ctx);
+                let outcome = execute_tool(&inv, &ctx, secret, &cancel);
                 let _ = tx.send(Event::ToolDone { req_id, call_id, outcome });
             });
         }),
+        // Until Task 13: no reviewer; every verdict is REVIEWER OFFLINE (ask).
+        review: Box::new(move |req_id, call_id, _input| {
+            let review = crate::review::Review::offline("not wired".into(), String::new(), 0);
+            let _ = review_tx.send(Event::Review { req_id, call_id, review });
+            Box::new(|| {})
+        }),
     };
-    Ok(MuthurTab::new(cfg.muthur.clone(), tools, ship, log, audit, deps))
+    // Until Task 13: no startup probe or deny rules.
+    let tech = AgentDeps {
+        defs: crate::tools::ToolDefs::technical(&cfg.agent, false),
+        cfg: cfg.muthur.technical_cfg(),
+        prompt: crate::muthur::tech_prompt(&cfg.agent),
+        facts: Box::new(|| crate::tools::facts::host_facts(None)),
+        policy: crate::agent::Policy { deny: None, net_allow: cfg.agent.net_allow.clone() },
+        label: cfg.agent.label.clone(),
+        max_rounds: cfg.agent.max_rounds,
+        probe: crate::tools::shell::Probe::AccountOffline,
+        reviewer_ready: false,
+    };
+    Ok(MuthurTab::new(cfg.muthur.clone(), tools, ship, log, audit, deps, tech))
 }
 
-/// Runs one persona tool. The persona has no `run` tool; one arriving here is refused.
-fn persona_tool(inv: &crate::tools::Invocation, ctx: &crate::tools::fixed::FixedCtx) -> crate::tools::ToolOutcome {
-    if matches!(inv, crate::tools::Invocation::Run { .. }) {
-        return crate::tools::ToolOutcome {
-            content: "NOT AUTHORIZED: NOT AVAILABLE".into(),
-            is_error: true,
-            argv: None,
-            exit: None,
-            ms: 0,
-            audit_output: None,
-        };
+/// Runs one tool call: `run` through the shell runner (the password, if any,
+/// is dropped and wiped when it returns), the others as fixed tools.
+fn execute_tool(
+    inv: &crate::tools::Invocation,
+    ctx: &crate::tools::fixed::FixedCtx,
+    secret: Option<crate::secret::Secret>,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> crate::tools::ToolOutcome {
+    match inv {
+        crate::tools::Invocation::Run { command, as_root, timeout_secs, .. } => {
+            let timeout = Duration::from_secs(u64::from(*timeout_secs));
+            crate::tools::shell::run(&crate::ops::runner::SystemRunner, command, *as_root, timeout, secret.as_ref(), cancel)
+        }
+        _ => crate::tools::fixed::execute(inv, ctx),
     }
-    crate::tools::fixed::execute(inv, ctx)
 }
 
 /// The CARGO tab, running container commands on blocking tasks.
@@ -789,15 +816,14 @@ mod tests {
     }
 
     #[test]
-    fn persona_tool_refuses_run() {
+    fn execute_tool_runs_fixed_tools() {
         let ctx = crate::tools::fixed::FixedCtx {
             runner: std::sync::Arc::new(crate::ops::runner::SystemRunner),
             snapshot: crate::tools::SnapshotSlot::default(),
         };
-        let run = crate::tools::Invocation::Run { command: "id".into(), reason: "r".into(), as_root: false, timeout_secs: 1 };
-        let o = persona_tool(&run, &ctx);
-        assert_eq!((o.content.as_str(), o.is_error, o.argv), ("NOT AUTHORIZED: NOT AVAILABLE", true, None));
-        assert_eq!(persona_tool(&crate::tools::Invocation::ShipStatus, &ctx).content, "TELEMETRY NOT YET AVAILABLE");
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let o = execute_tool(&crate::tools::Invocation::ShipStatus, &ctx, None, &cancel);
+        assert_eq!(o.content, "TELEMETRY NOT YET AVAILABLE");
     }
 
     #[tokio::test]
@@ -812,18 +838,20 @@ mod tests {
         let spawned = std::rc::Rc::new(std::cell::Cell::new(0u32));
         let sp = spawned.clone();
         let deps = MuthurDeps {
-            spawn: Box::new(move |_, _| {
+            spawn: Box::new(move |_, _, _| {
                 sp.set(sp.get() + 1);
                 Box::new(|| {})
             }),
             now: Box::new(std::time::Instant::now),
             ship_time: Box::new(|| "18 NOV 2137 14:02".into()),
             timestamp: Box::new(|| "2026-11-18T14:02:00Z".into()),
-            run_tool: Box::new(|_, _, _| {}),
+            run_tool: Box::new(|_, _, _, _, _| {}),
+            review: Box::new(|_, _, _| Box::new(|| {})),
         };
         let tools = crate::tools::ToolDefs::persona(&Default::default());
         let audit = crate::ops::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap();
-        let m = MuthurTab::new(cfg, tools, "USCSS TEST", log, crate::ops::audit::shared(audit), deps);
+        let tech = crate::app::tests::fake_tech(&cfg);
+        let m = MuthurTab::new(cfg, tools, "USCSS TEST", log, crate::ops::audit::shared(audit), deps, tech);
         let shell = crate::shell::ShellTab::new(
             crate::shell::ShellConfig { command: "sh".into(), args: vec!["-c".into(), "sleep 2".into()], scrollback: 10 },
             crate::scroll::HintSlot::default(),

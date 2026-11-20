@@ -1,0 +1,43 @@
+l MU/TH/UR 6000 qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqk
+x INTERFACE 2037 READY.                                                        x
+x                                                                              x
+x DIRECT LINK: SCIENCE OFFICER                                                 x
+x                                                                              x
+x $ free some disk space                                                       x
+x                                                                              x
+x      DENIED BY REVIEWER: deletes the whole system journal                    x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+x                                                                              x
+tqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqu
+x DENIED BY REVIEWER -- deletes th... -- TYPE OVERRIDE TO FORCE, ESC TO REFUSE x
+x $                                                                            x
+mqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqj

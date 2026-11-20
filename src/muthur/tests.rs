@@ -1,27 +1,43 @@
-use super::view::wrap;
+use super::view::{wrap, wrap_hanging};
 use super::*;
+use crate::agent::Policy;
 use crate::chatlog::{Assistant, ChatLog};
-use crate::config::{MuthurSection, Provider, ToolsSection};
+use crate::config::{AgentSection, MuthurSection, Provider, ToolsSection};
 use crate::input::Key;
 use crate::llm::{ChatRequest, LlmError, MessageContent, Stop, StreamEvent, ToolResult};
 use crate::ops::audit::AuditLog;
 use crate::ops::AgentId;
+use crate::review::{Review, ReviewInput, Risk, Verdict};
+use crate::secret::Secret;
+use crate::tools::shell::Probe;
 use crate::tools::{Invocation, ToolDefs, ToolOutcome};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use serde_json::json;
 use std::time::{Duration, Instant};
 
 type Sent = Rc<RefCell<Vec<(u64, ChatRequest)>>>;
 type Ran = Rc<RefCell<Vec<(u64, String, Invocation)>>>;
+type Secrets = Rc<RefCell<Vec<Option<Secret>>>>;
+type Cancels = Rc<RefCell<Vec<Arc<AtomicBool>>>>;
+type Reviews = Rc<RefCell<Vec<(u64, String, ReviewInput)>>>;
 
 struct H {
     t: MuthurTab,
     sent: Sent,
+    /// The agent of each spawned request, in order.
+    agents: Rc<RefCell<Vec<AgentId>>>,
     ran: Ran,
+    /// The password handed to each `run_tool` call, in order.
+    secrets: Secrets,
+    cancels: Cancels,
+    reviews: Reviews,
+    review_aborted: Rc<Cell<bool>>,
     aborted: Rc<Cell<bool>>,
     clock: Rc<Cell<Instant>>,
     path: PathBuf,
@@ -47,11 +63,38 @@ fn tools_cfg() -> ToolsSection {
     ToolsSection::default()
 }
 
+/// The technical agent's deps: `run` available, the default `[agent]`.
+fn tech_deps(cfg: &MuthurSection, probe: Probe, reviewer_ready: bool) -> AgentDeps {
+    let agent = AgentSection::default();
+    AgentDeps {
+        defs: ToolDefs::technical(&agent, true),
+        cfg: cfg.technical_cfg(),
+        prompt: tech_prompt(&agent),
+        facts: Box::new(|| "HOST: testhost".into()),
+        policy: Policy { deny: None, net_allow: Vec::new() },
+        label: agent.label.clone(),
+        max_rounds: agent.max_rounds,
+        probe,
+        reviewer_ready,
+    }
+}
+
 fn harness_with(cfg: MuthurSection, prefill: impl FnOnce(&mut ChatLog)) -> H {
     harness_full(cfg, tools_cfg(), true, prefill)
 }
 
 fn harness_full(cfg: MuthurSection, tools: ToolsSection, audit_online: bool, prefill: impl FnOnce(&mut ChatLog)) -> H {
+    harness_tech(cfg, tools, audit_online, Probe::Ready, true, prefill)
+}
+
+fn harness_tech(
+    cfg: MuthurSection,
+    tools: ToolsSection,
+    audit_online: bool,
+    probe: Probe,
+    reviewer_ready: bool,
+    prefill: impl FnOnce(&mut ChatLog),
+) -> H {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("muthur/chat.jsonl");
     let audit_path = dir.path().join("muthur/audit.jsonl");
@@ -60,23 +103,55 @@ fn harness_full(cfg: MuthurSection, tools: ToolsSection, audit_online: bool, pre
     let audit = crate::ops::audit::shared(if audit_online { AuditLog::open(audit_path.clone()).unwrap() } else { AuditLog::offline() });
     let shared_audit = audit.clone();
     let sent: Sent = Rc::default();
+    let agents: Rc<RefCell<Vec<AgentId>>> = Rc::default();
     let ran: Ran = Rc::default();
+    let secrets: Secrets = Rc::default();
+    let cancels: Cancels = Rc::default();
+    let reviews: Reviews = Rc::default();
+    let review_aborted = Rc::new(Cell::new(false));
     let aborted = Rc::new(Cell::new(false));
     let clock = Rc::new(Cell::new(Instant::now()));
-    let (s, a, c, r) = (sent.clone(), aborted.clone(), clock.clone(), ran.clone());
+    let (s, g, a, c, r) = (sent.clone(), agents.clone(), aborted.clone(), clock.clone(), ran.clone());
+    let (sec, can, rev, ra) = (secrets.clone(), cancels.clone(), reviews.clone(), review_aborted.clone());
     let deps = MuthurDeps {
-        spawn: Box::new(move |id, req| {
+        spawn: Box::new(move |id, agent, req| {
             s.borrow_mut().push((id, req));
+            g.borrow_mut().push(agent);
             let a = a.clone();
             Box::new(move || a.set(true))
         }),
         now: Box::new(move || c.get()),
         ship_time: Box::new(|| "18 NOV 2137 14:02".into()),
         timestamp: Box::new(|| "2026-11-18T14:02:00Z".into()),
-        run_tool: Box::new(move |req, id, inv| r.borrow_mut().push((req, id, inv))),
+        run_tool: Box::new(move |req, id, inv, secret, cancel| {
+            r.borrow_mut().push((req, id, inv));
+            sec.borrow_mut().push(secret);
+            can.borrow_mut().push(cancel);
+        }),
+        review: Box::new(move |req, id, input| {
+            rev.borrow_mut().push((req, id, input));
+            let ra = ra.clone();
+            Box::new(move || ra.set(true))
+        }),
     };
-    let t = MuthurTab::new(cfg, ToolDefs::persona(&tools), "USCSS NOSTROMO", log, audit, deps);
-    H { t, sent, ran, aborted, clock, path, audit_path, audit: shared_audit, _dir: dir }
+    let tech = tech_deps(&cfg, probe, reviewer_ready);
+    let t = MuthurTab::new(cfg, ToolDefs::persona(&tools), "USCSS NOSTROMO", log, audit, deps, tech);
+    H {
+        t,
+        sent,
+        agents,
+        ran,
+        secrets,
+        cancels,
+        reviews,
+        review_aborted,
+        aborted,
+        clock,
+        path,
+        audit_path,
+        audit: shared_audit,
+        _dir: dir,
+    }
 }
 
 fn harness() -> H {
@@ -119,6 +194,13 @@ fn exchange(log: &mut ChatLog, user: &str, reply: &str, stop: &str) {
 fn wrap_breaks_long_words() {
     assert_eq!(wrap("AB CDEFGHIJ K", 4), vec!["AB", "CDEF", "GHIJ", "K"]);
     assert_eq!(wrap("A\n\nB", 10), vec!["A", "", "B"]);
+}
+
+#[test]
+fn wrap_hanging_indents_continuations() {
+    assert_eq!(wrap_hanging("RUN  ls -la /var/log", 13, 5), vec!["RUN  ls -la", "     /var/log"]);
+    assert_eq!(wrap_hanging("ABCDEFGHIJKLMN", 8, 5), vec!["ABCDEFGH", "     IJK", "     LMN"]);
+    assert_eq!(wrap_hanging("RUN  a\nb", 20, 5), vec!["RUN  a", "     b"]);
 }
 
 #[test]
@@ -276,7 +358,8 @@ fn help_and_unknown_command() {
     let mut h = harness();
     submit(&mut h, "/help");
     let s = text(&mut h.t);
-    assert!(s.contains("/PURGE  CLEAR MEMORY BANKS") && s.contains("PGUP/PGDN SCROLL"), "{s}");
+    assert!(s.contains("/PURGE   CLEAR MEMORY BANKS") && s.contains("PGUP/PGDN SCROLL"), "{s}");
+    assert!(s.contains("/DIRECT  OPEN DIRECT LINK") && s.contains("/MUTHUR  CLOSE DIRECT LINK"), "{s}");
     h.t.handle_key(&Key::Ctrl('u'));
     submit(&mut h, "/frob");
     assert!(text(&mut h.t).contains("UNKNOWN COMMAND"));
@@ -672,4 +755,577 @@ fn unknown_tool_is_refused_without_running() {
     assert!(text(&mut h.t).contains("ACCESS DENIED: RUN"));
     assert_eq!(last_results(&h)[0].content, "NOT AUTHORIZED: unknown tool run");
     assert_eq!(audit_records(&h)[0]["decision"], "rejected");
+}
+
+// ---- Direct mode: the technical agent ----
+
+fn direct(h: &mut H) {
+    submit(h, "/direct");
+}
+
+fn review(verdict: Verdict, note: &str) -> Review {
+    Review { verdict, risk: Risk::Low, note: note.into(), model: "reviewer".into(), ms: 3, error: None }
+}
+
+fn run_call(command: &str, as_root: bool) -> serde_json::Value {
+    json!({"command": command, "reason": "operator asked", "as_root": as_root, "timeout_secs": 0})
+}
+
+/// Direct mode, one `run` call for request 1, sent to review.
+fn raise_run(h: &mut H, command: &str, as_root: bool) {
+    direct(h);
+    submit(h, "please check");
+    tool_use(h, 1, &[("c1", "run", run_call(command, as_root))]);
+    assert_eq!(h.reviews.borrow().len(), 1, "the call goes to review");
+}
+
+/// Renders twice: the first render draws a prompt, the second starts arming.
+fn seen(h: &mut H) {
+    screen(&mut h.t, 80, 40);
+    screen(&mut h.t, 80, 40);
+}
+
+fn row_text(row: &str) -> &str {
+    row.trim_end_matches('│').trim_end()
+}
+
+fn exit_outcome(code: i64, lines: usize) -> ToolOutcome {
+    let text: String = (0..lines).map(|i| format!("line {i}\n")).collect();
+    ToolOutcome {
+        content: format!("EXIT {code}\n{text}"),
+        is_error: false,
+        argv: None,
+        exit: Some(json!(code)),
+        ms: 100,
+        audit_output: Some(text),
+    }
+}
+
+#[test]
+fn direct_toggle_and_banner() {
+    let mut h = harness();
+    direct(&mut h);
+    assert_eq!(h.t.transcript.last(), Some(&Entry::Note("DIRECT LINK: SCIENCE OFFICER".into())));
+    let rows = screen(&mut h.t, 61, 40);
+    assert!(rows[38].starts_with("│ $ "), "{}", rows[38]);
+    // The technical agent gets its own prompt (with the host facts), tools and records.
+    submit(&mut h, "uptime please");
+    {
+        let s = h.sent.borrow();
+        assert_eq!(*h.agents.borrow(), vec![AgentId::Tech]);
+        assert!(s[0].1.system.contains("HOST: testhost"), "{}", s[0].1.system);
+        assert!(s[0].1.tools.iter().any(|t| t.name == "run"));
+    }
+    h.t.on_llm(1, StreamEvent::Text("Up 3 days.".into()));
+    h.t.on_llm(1, done(Stop::End));
+    let hist = h.reopen().history();
+    assert_eq!((hist[0].agent, hist[0].reply.as_ref().unwrap().0.as_str()), (AgentId::Tech, "Up 3 days."));
+    submit(&mut h, "/MUTHUR");
+    assert_eq!(h.t.transcript.last(), Some(&Entry::Note("DIRECT LINK CLOSED".into())));
+    let rows = screen(&mut h.t, 61, 40);
+    assert!(rows[38].starts_with("│ > "), "{}", rows[38]);
+    submit(&mut h, "status");
+    assert_eq!(*h.agents.borrow(), vec![AgentId::Tech, AgentId::Muthur]);
+    assert!(h.sent.borrow()[1].1.system.contains("MU/TH/UR 6000"));
+}
+
+#[test]
+fn toggle_refused_mid_turn() {
+    let mut h = harness();
+    submit(&mut h, "status");
+    submit(&mut h, "/direct");
+    assert!(status_row(&mut h).contains("INQUIRY IN PROGRESS"));
+    assert_eq!(h.t.mode, Mode::Persona);
+    // And back: refused while the technical agent works.
+    h.t.handle_key(&Key::Ctrl('c'));
+    h.t.handle_key(&Key::Ctrl('u'));
+    direct(&mut h);
+    submit(&mut h, "uptime");
+    submit(&mut h, "/muthur");
+    assert!(status_row(&mut h).contains("INQUIRY IN PROGRESS"));
+    assert_eq!(h.t.mode, Mode::Direct);
+}
+
+#[test]
+fn probe_failure_in_banner() {
+    let mut h = harness_tech(cfg(), tools_cfg(), true, Probe::NotIsolated, false, |_| {});
+    direct(&mut h);
+    assert_eq!(
+        h.t.transcript.last(),
+        Some(&Entry::Note("DIRECT LINK: SCIENCE OFFICER\nAGENT NETWORK NOT ISOLATED — SEE DEPLOY\nREVIEWER OFFLINE".into()))
+    );
+    let rows = screen(&mut h.t, 61, 40);
+    let banner = rows.iter().position(|r| r.contains("DIRECT LINK: SCIENCE OFFICER")).unwrap();
+    assert!(rows[banner + 1].contains("AGENT NETWORK NOT ISOLATED -- SEE DEPLOY"), "{rows:#?}");
+    assert!(rows[banner + 2].contains("REVIEWER OFFLINE"), "{rows:#?}");
+}
+
+#[test]
+fn direct_mode_keeps_case() {
+    let mut h = harness_with(MuthurSection { uppercase: true, ..cfg() }, |_| {});
+    direct(&mut h);
+    type_str(&mut h.t, "ls -la /Var");
+    assert_eq!(h.t.input, "ls -la /Var");
+    h.t.handle_key(&Key::Enter);
+    let s = h.sent.borrow();
+    let MessageContent::Text(u) = &s[0].1.messages.last().unwrap().content else { panic!() };
+    assert_eq!(u, "[SHIP TIME 18 NOV 2137 14:02] ls -la /Var");
+    assert_eq!(h.t.transcript.last(), Some(&Entry::Command("ls -la /Var".into())));
+    drop(s);
+    // Replies keep their case too.
+    h.t.on_llm(1, StreamEvent::Text("Found /Var.".into()));
+    h.t.on_llm(1, done(Stop::End));
+    h.t.handle_key(&Key::Esc);
+    let shown = text(&mut h.t);
+    assert!(shown.contains("$ ls -la /Var") && shown.contains("Found /Var."), "{shown}");
+}
+
+#[test]
+fn password_flow() {
+    let mut h = harness();
+    raise_run(&mut h, "id", true);
+    h.t.on_review(1, "c1".into(), review(Verdict::Allow, "read-only identity check"));
+    let row = status_row(&mut h);
+    assert!(row.contains("CLEARANCE REQUIRED -- id -- PASSWORD: "), "{row}");
+    assert!(h.ran.borrow().is_empty());
+    seen(&mut h);
+    h.tick(1100);
+    type_str(&mut h.t, "hunter2");
+    assert_eq!(h.t.input, "", "password chars never reach the input line");
+    let row = status_row(&mut h);
+    assert!(row_text(&row).ends_with("PASSWORD: *******"), "{row}");
+    assert!(!row.contains("hunter2"));
+    h.t.handle_key(&Key::Backspace);
+    assert!(row_text(&status_row(&mut h)).ends_with("PASSWORD: ******"));
+    h.t.handle_key(&Key::Char('2'));
+    h.t.handle_key(&Key::Enter);
+    assert_eq!(h.ran.borrow().len(), 1);
+    {
+        let secrets = h.secrets.borrow();
+        assert_eq!(secrets[0].as_ref().map(Secret::expose), Some("hunter2"));
+    }
+    assert!(status_row(&mut h).contains("EXECUTING"));
+    h.t.on_tool_done(1, "c1".into(), exit_outcome(0, 1));
+    assert_eq!(h.sent.borrow().len(), 2);
+    let shown = text(&mut h.t);
+    assert!(shown.contains("RUN# id  [ROOT, ALLOW]") && shown.contains("EXIT 0  1 LINES  0.1 S"), "{shown}");
+    let chat = std::fs::read_to_string(&h.path).unwrap();
+    let audit = std::fs::read_to_string(&h.audit_path).unwrap();
+    assert!(!chat.contains("hunter2"), "{chat}");
+    assert!(!audit.contains("hunter2"), "{audit}");
+    assert_eq!(audit_records(&h)[0]["decision"], "confirmed");
+    // The secret is not kept anywhere in the tab.
+    assert!(!format!("{:?}", h.t.state).contains("hunter2"));
+}
+
+#[test]
+fn password_enter_with_nothing_typed_is_ignored() {
+    let mut h = harness();
+    raise_run(&mut h, "id", true);
+    h.t.on_review(1, "c1".into(), review(Verdict::Allow, "ok"));
+    seen(&mut h);
+    h.tick(1100);
+    h.t.handle_key(&Key::Enter);
+    assert!(h.ran.borrow().is_empty());
+    assert!(matches!(h.t.state, State::Password { .. }));
+}
+
+#[test]
+fn password_esc_denies() {
+    let mut h = harness();
+    raise_run(&mut h, "id", true);
+    h.t.on_review(1, "c1".into(), review(Verdict::Allow, "ok"));
+    seen(&mut h);
+    h.tick(1100);
+    type_str(&mut h.t, "abc");
+    h.t.handle_key(&Key::Esc);
+    assert!(h.ran.borrow().is_empty());
+    assert_eq!(h.sent.borrow().len(), 2);
+    let r = last_results(&h);
+    assert_eq!((r[0].content.as_str(), r[0].is_error), ("DENIED BY OPERATOR", true));
+    assert_eq!(audit_records(&h)[0]["decision"], "denied");
+    assert!(text(&mut h.t).contains("RUN# id  [ROOT, DENIED BY OPERATOR]"));
+}
+
+#[test]
+fn ctrl_c_at_password_wipes_and_aborts() {
+    let mut h = harness();
+    raise_run(&mut h, "id", true);
+    h.t.on_review(1, "c1".into(), review(Verdict::Allow, "ok"));
+    seen(&mut h);
+    h.tick(1100);
+    type_str(&mut h.t, "abc");
+    let State::Password { secret, .. } = &h.t.state else { panic!("{:?}", h.t.state) };
+    assert_eq!(secret.chars(), 3);
+    h.t.handle_key(&Key::Ctrl('c'));
+    assert!(h.ran.borrow().is_empty());
+    assert_eq!(h.t.state, State::Ready);
+    let a = audit_records(&h);
+    assert_eq!(a.last().unwrap()["decision"], "aborted");
+    let recs = records(&h);
+    let n = recs.len();
+    assert_eq!(recs[n - 2]["results"][0]["content"], "ABORTED BY OPERATOR");
+    assert_eq!(recs[n - 1]["stop"], "interrupted");
+    // Typing now goes to the input line again.
+    type_str(&mut h.t, "x");
+    assert_eq!(h.t.input, "x");
+}
+
+#[test]
+fn override_requires_exact_word() {
+    let mut h = harness();
+    raise_run(&mut h, "rm -rf /tmp/cache", false);
+    h.t.on_review(1, "c1".into(), review(Verdict::Deny, "deletes files"));
+    let row = status_row(&mut h);
+    assert!(row_text(&row).ends_with("DENIED BY REVIEWER -- deletes files -- TYPE OVERRIDE TO FORCE, ESC TO REFUSE"), "{row}");
+    assert!(text(&mut h.t).contains("     DENIED BY REVIEWER: deletes files"), "the whole note is shown above");
+    seen(&mut h);
+    h.tick(1100);
+    type_str(&mut h.t, "OVERRID");
+    assert!(row_text(&status_row(&mut h)).ends_with("REFUSE OVERRID"));
+    h.t.handle_key(&Key::Enter);
+    assert!(h.ran.borrow().is_empty());
+    let State::OverridePrompt { typed, .. } = &h.t.state else { panic!("{:?}", h.t.state) };
+    assert_eq!(typed, "");
+    type_str(&mut h.t, "overridx");
+    h.t.handle_key(&Key::Backspace);
+    type_str(&mut h.t, "e");
+    assert!(row_text(&status_row(&mut h)).ends_with("REFUSE OVERRIDE"));
+    h.t.handle_key(&Key::Enter);
+    assert_eq!(h.ran.borrow().len(), 1);
+    assert!(h.secrets.borrow()[0].is_none(), "unprivileged runs get no password");
+    h.t.on_tool_done(1, "c1".into(), exit_outcome(0, 0));
+    assert_eq!(audit_records(&h)[0]["decision"], "overridden");
+    assert!(text(&mut h.t).contains("RUN  rm -rf /tmp/cache  [OVERRIDDEN]"));
+}
+
+#[test]
+fn override_esc_refuses() {
+    let mut h = harness();
+    raise_run(&mut h, "rm -rf /tmp/cache", false);
+    h.t.on_review(1, "c1".into(), review(Verdict::Deny, "deletes files"));
+    seen(&mut h);
+    h.tick(1100);
+    h.t.handle_key(&Key::Esc);
+    assert!(h.ran.borrow().is_empty());
+    assert_eq!(last_results(&h)[0].content, "DENIED BY REVIEWER: deletes files");
+}
+
+#[test]
+fn ask_prompt_confirms_after_arming() {
+    let mut h = harness();
+    raise_run(&mut h, "touch /tmp/x", false);
+    h.t.on_review(1, "c1".into(), review(Verdict::Ask, "creates a file"));
+    assert!(h.t.take_activity());
+    let row = status_row(&mut h);
+    assert!(row.contains("CONFIRM -- touch /tmp/x -- Y/N"), "{row}");
+    // The reviewer's note is shown while the operator decides.
+    assert!(text(&mut h.t).contains("REVIEW: creates a file"));
+    assert_eq!(h.t.tick_interval(), Some(Duration::from_millis(100)));
+    seen(&mut h);
+    h.tick(1100);
+    h.t.handle_key(&Key::Char('x'));
+    assert!(matches!(h.t.state, State::Ask { .. }));
+    assert_eq!(h.t.input, "");
+    h.t.handle_key(&Key::Char('y'));
+    assert_eq!(*h.ran.borrow(), vec![(1, "c1".to_string(), Invocation::Run {
+        command: "touch /tmp/x".into(),
+        reason: "operator asked".into(),
+        as_root: false,
+        timeout_secs: 30,
+    })]);
+    let rows = screen(&mut h.t, 61, 40);
+    let run = rows.iter().position(|r| r.contains("RUN  touch /tmp/x  [ASK: LOW]")).unwrap_or_else(|| panic!("{rows:#?}"));
+    assert!(rows[run + 1].starts_with("│      REVIEW: LOW -- creates a file"), "{rows:#?}");
+    assert!(!rows.iter().any(|r| r.contains("REVIEW: creates a file")), "the provisional note is gone: {rows:#?}");
+}
+
+#[test]
+fn prompt_row_truncates_to_width() {
+    let long = format!("find / -name {}", "x".repeat(120));
+    for verdict in [Verdict::Ask, Verdict::Deny] {
+        let mut h = harness();
+        raise_run(&mut h, &long, false);
+        h.t.on_review(1, "c1".into(), review(verdict, &"n".repeat(120)));
+        let row = status_row(&mut h);
+        let shown = row_text(&row);
+        assert!(shown.contains("..."), "{row}");
+        assert!(shown.ends_with("-- Y/N") || shown.ends_with("ESC TO REFUSE"), "{row}");
+    }
+    let mut h = harness();
+    raise_run(&mut h, &long, true);
+    h.t.on_review(1, "c1".into(), review(Verdict::Allow, "ok"));
+    let row = status_row(&mut h);
+    assert!(row_text(&row).ends_with("... -- PASSWORD:"), "{row}");
+}
+
+#[test]
+fn narrow_prompt_rows_drop_the_part_then_the_head() {
+    let row = |h: &mut H, w: u16| row_text(&screen(&mut h.t, w, 40)[37]).to_string();
+    let mut h = harness();
+    raise_run(&mut h, "rm -rf /var/log/journal", false);
+    h.t.on_review(1, "c1".into(), review(Verdict::Deny, "deletes the journal"));
+    // The windowed tab (61 wide): only the instructions fit.
+    assert_eq!(row(&mut h, 61), "│ TYPE OVERRIDE TO FORCE, ESC TO REFUSE");
+    assert_eq!(row(&mut h, 67), "│ DENIED BY REVIEWER -- TYPE OVERRIDE TO FORCE, ESC TO REFUSE");
+    assert_eq!(row(&mut h, 80), "│ DENIED BY REVIEWER -- deletes th... -- TYPE OVERRIDE TO FORCE, ESC TO REFUSE");
+    for w in [61, 67, 80, 120] {
+        assert!(screen(&mut h.t, w, 40)[37].ends_with('│'), "row overflows at {w}");
+    }
+}
+
+#[test]
+fn ctrl_c_running_sets_cancel_flag() {
+    let mut h = harness();
+    raise_run(&mut h, "sleep 100", false);
+    h.t.on_review(1, "c1".into(), review(Verdict::Allow, "harmless"));
+    assert_eq!(h.ran.borrow().len(), 1);
+    let flag = h.cancels.borrow()[0].clone();
+    assert!(!flag.load(Ordering::SeqCst));
+    h.t.handle_key(&Key::Ctrl('c'));
+    assert!(flag.load(Ordering::SeqCst));
+    assert_eq!(h.t.state, State::Ready);
+    // The late outcome is audited under its real decision.
+    h.t.on_tool_done(1, "c1".into(), exit_outcome(0, 0));
+    let a = audit_records(&h);
+    assert_eq!((a[0]["decision"].as_str(), a[1]["decision"].as_str()), (Some("aborted"), Some("auto")));
+}
+
+#[test]
+fn reviewing_status_and_abort() {
+    let mut h = harness();
+    raise_run(&mut h, "uptime", false);
+    assert_eq!(h.reviews.borrow()[0].0, 1);
+    assert_eq!(h.reviews.borrow()[0].1, "c1");
+    assert!(status_row(&mut h).contains("REVIEWING"));
+    assert_eq!(h.t.tick_interval(), Some(Duration::from_millis(100)));
+    // Stale or unknown verdicts are ignored.
+    h.t.on_review(7, "c1".into(), review(Verdict::Allow, "ok"));
+    h.t.on_review(1, "c9".into(), review(Verdict::Allow, "ok"));
+    assert!(h.ran.borrow().is_empty());
+    assert!(matches!(h.t.state, State::Reviewing));
+    h.t.handle_key(&Key::Ctrl('c'));
+    assert!(h.review_aborted.get());
+    assert_eq!(h.t.state, State::Ready);
+    assert_eq!(audit_records(&h)[0]["decision"], "aborted");
+    // A verdict arriving after the abort does nothing.
+    h.t.on_review(1, "c1".into(), review(Verdict::Allow, "ok"));
+    assert!(h.ran.borrow().is_empty());
+    assert_eq!(h.t.state, State::Ready);
+}
+
+#[test]
+fn redisplay_interleaves_with_banners() {
+    let mut h = harness_with(MuthurSection { uppercase: true, ..cfg() }, |l| {
+        exchange(l, "[SHIP TIME X] HI", "HELLO", "end_turn");
+        l.append_user("[SHIP TIME X] list files", "ts", AgentId::Tech).unwrap();
+        let raw = vec![json!({"type":"tool_use","id":"c1","name":"run","input":run_call("ls", false)})];
+        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "".into(), stop: "tool_use".into(), raw: Some(raw), agent: AgentId::Tech };
+        l.append_assistant(a, "ts").unwrap();
+        let r = ToolResult { id: "c1".into(), name: "run".into(), content: "EXIT 0\na".into(), is_error: false, label: "RUN  ls  [ALLOW]".into() };
+        l.append_tool(&[r], "ts", AgentId::Tech).unwrap();
+        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "Found: one file.".into(), stop: "end_turn".into(), raw: None, agent: AgentId::Tech };
+        l.append_assistant(a, "ts").unwrap();
+        exchange(l, "[SHIP TIME X] BYE", "GOODBYE", "end_turn");
+    });
+    assert_eq!(h.t.mode, Mode::Persona);
+    let rows = screen(&mut h.t, 61, 40);
+    let at = |needle: &str| rows.iter().position(|r| r.contains(needle)).unwrap_or_else(|| panic!("{needle}: {rows:#?}"));
+    let order = [
+        at("> HI"),
+        at("DIRECT LINK: SCIENCE OFFICER"),
+        at("$ list files"),
+        at("RUN  ls  [ALLOW]"),
+        at("Found: one file."),
+        at("DIRECT LINK CLOSED"),
+        at("> BYE"),
+    ];
+    assert!(order.windows(2).all(|w| w[0] < w[1]), "{rows:#?}");
+}
+
+#[test]
+fn redisplay_closes_a_trailing_direct_link() {
+    let h = harness_with(cfg(), |l| {
+        l.append_user("[SHIP TIME X] uptime", "ts", AgentId::Tech).unwrap();
+        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "Up.".into(), stop: "end_turn".into(), raw: None, agent: AgentId::Tech };
+        l.append_assistant(a, "ts").unwrap();
+    });
+    // MUTHUR starts in persona mode, so the screen says the link is closed.
+    assert_eq!(h.t.transcript.last(), Some(&Entry::Note("DIRECT LINK CLOSED".into())));
+}
+
+#[test]
+fn harness_lines_sit_together() {
+    let e = [Entry::Command("x".into()), Entry::Harness("RUN  ls  [ALLOW]".into()), Entry::Harness("EXIT 0  1 LINES  0.0 S".into())];
+    let lines = view::transcript_lines(&e, None, 40);
+    assert_eq!(lines, vec![view::BANNER, "", "$ x", "", "RUN  ls  [ALLOW]", "EXIT 0  1 LINES  0.0 S"]);
+}
+
+// ---- Prompt arming, for each of the three status-row prompts ----
+
+#[derive(Clone, Copy, Debug)]
+enum P {
+    Ask,
+    Password,
+    Override,
+}
+
+const PROMPTS: [P; 3] = [P::Ask, P::Password, P::Override];
+
+/// Raises prompt `p` without rendering it.
+fn raise(h: &mut H, p: P) {
+    let (root, verdict) = match p {
+        P::Ask => (false, Verdict::Ask),
+        P::Password => (true, Verdict::Allow),
+        P::Override => (false, Verdict::Deny),
+    };
+    raise_run(h, "systemctl restart nginx", root);
+    h.t.on_review(1, "c1".into(), review(verdict, "restarts a service"));
+}
+
+/// The keys that accept prompt `p`.
+fn accept(h: &mut H, p: P) {
+    match p {
+        P::Ask => h.t.handle_key(&Key::Char('y')),
+        P::Password => {
+            type_str(&mut h.t, "pw");
+            h.t.handle_key(&Key::Enter);
+        }
+        P::Override => {
+            type_str(&mut h.t, "override");
+            h.t.handle_key(&Key::Enter);
+        }
+    }
+}
+
+fn prompting(h: &H) -> bool {
+    matches!(h.t.state, State::Ask { .. } | State::Password { .. } | State::OverridePrompt { .. })
+}
+
+#[test]
+fn prompt_arms_from_second_render() {
+    for p in PROMPTS {
+        let mut h = harness();
+        raise(&mut h, p);
+        // In the background: no render for a long while, then the operator looks.
+        h.tick(5000);
+        accept(&mut h, p);
+        assert!(h.ran.borrow().is_empty(), "{p:?}: unseen prompt must not be armed");
+        // Drawn once: the frame may still be queued for the wire, so not armed yet.
+        screen(&mut h.t, 80, 40);
+        h.tick(5000);
+        accept(&mut h, p);
+        assert!(h.ran.borrow().is_empty(), "{p:?}: a prompt rendered only once must not be armed");
+        // The second render starts the arming delay.
+        screen(&mut h.t, 80, 40);
+        accept(&mut h, p);
+        assert!(h.ran.borrow().is_empty(), "{p:?}: keys right after the second render are ignored");
+        h.tick(900);
+        accept(&mut h, p);
+        assert!(h.ran.borrow().is_empty(), "{p:?}");
+        assert!(prompting(&h), "{p:?}");
+        h.tick(200);
+        accept(&mut h, p);
+        assert_eq!(h.ran.borrow().len(), 1, "{p:?}");
+    }
+}
+
+#[test]
+fn prompt_ignores_keys_during_arming() {
+    for p in PROMPTS {
+        let mut h = harness();
+        raise(&mut h, p);
+        seen(&mut h);
+        h.tick(200);
+        accept(&mut h, p);
+        assert!(h.ran.borrow().is_empty(), "{p:?}");
+        assert!(prompting(&h), "{p:?}");
+        assert_eq!(h.t.input, "", "{p:?}");
+        match &h.t.state {
+            State::Password { secret, .. } => assert!(secret.is_empty(), "keys before arming are not typed"),
+            State::OverridePrompt { typed, .. } => assert_eq!(typed, ""),
+            _ => {}
+        }
+        h.tick(900);
+        accept(&mut h, p);
+        assert_eq!(h.ran.borrow().len(), 1, "{p:?}");
+    }
+}
+
+#[test]
+fn prompt_disarmed_while_obscured() {
+    for p in PROMPTS {
+        // Raised under an overlay: rendering under it never arms.
+        let mut h = harness();
+        raise(&mut h, p);
+        h.t.set_obscured(true);
+        for _ in 0..5 {
+            screen(&mut h.t, 80, 40);
+            h.tick(1000);
+        }
+        accept(&mut h, p);
+        assert!(h.ran.borrow().is_empty(), "{p:?}: a prompt under an overlay must not arm");
+        // Uncovered: one render draws it, the next starts the delay.
+        h.t.set_obscured(false);
+        screen(&mut h.t, 80, 40);
+        h.tick(2000);
+        accept(&mut h, p);
+        assert!(h.ran.borrow().is_empty(), "{p:?}");
+        screen(&mut h.t, 80, 40);
+        accept(&mut h, p);
+        assert!(h.ran.borrow().is_empty(), "{p:?}");
+        h.tick(1100);
+        accept(&mut h, p);
+        assert_eq!(h.ran.borrow().len(), 1, "{p:?}");
+
+        // Already armed, then covered: arming starts over once uncovered.
+        let mut h = harness();
+        raise(&mut h, p);
+        seen(&mut h);
+        h.tick(1100);
+        h.t.set_obscured(true);
+        screen(&mut h.t, 80, 40);
+        accept(&mut h, p);
+        assert!(h.ran.borrow().is_empty(), "{p:?}: covered prompt is disarmed");
+        h.t.set_obscured(false);
+        seen(&mut h);
+        accept(&mut h, p);
+        assert!(h.ran.borrow().is_empty(), "{p:?}: re-armed from scratch");
+        h.tick(1100);
+        accept(&mut h, p);
+        assert_eq!(h.ran.borrow().len(), 1, "{p:?}");
+    }
+}
+
+#[test]
+fn ctrl_c_aborts_prompt_during_arming() {
+    for p in PROMPTS {
+        for render in [false, true] {
+            let mut h = harness();
+            raise(&mut h, p);
+            if render {
+                seen(&mut h);
+            }
+            h.tick(100);
+            h.t.handle_key(&Key::Ctrl('c'));
+            assert_eq!(h.t.state, State::Ready, "{p:?}");
+            assert!(h.ran.borrow().is_empty(), "{p:?}");
+            let recs = records(&h);
+            let n = recs.len();
+            assert_eq!(recs[n - 2]["results"][0]["content"], "ABORTED BY OPERATOR", "{p:?}");
+            assert_eq!(recs[n - 1]["stop"], "interrupted", "{p:?}");
+        }
+    }
+}
+
+#[test]
+fn audit_offline_between_prompt_and_answer_refuses_root() {
+    let mut h = harness();
+    raise(&mut h, P::Password);
+    seen(&mut h);
+    *h.t.audit.borrow_mut() = AuditLog::offline();
+    h.tick(1100);
+    accept(&mut h, P::Password);
+    assert!(h.ran.borrow().is_empty(), "root must not run unaudited");
+    assert_eq!(last_results(&h)[0].content, "NOT AUTHORIZED: AUDIT LOG OFFLINE");
 }

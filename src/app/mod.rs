@@ -17,7 +17,7 @@ pub use tabs::{PlaceholderTab, TABS, Tab, TabId};
 
 /// How long a Y/N prompt must be on screen before Y counts (MU/TH/UR, CARGO).
 /// Keys sooner than this after the prompt is seen are ignored (see
-/// `muthur::State::Override`, `cargo::action::Prompt`).
+/// `muthur::State::Ask`, `cargo::action::Prompt`).
 /// Break arrives as NUL in raw mode (`BRKINT`/`PARMRK` off), decoded as `^@`.
 pub const BREAK: Key = Key::Ctrl('@');
 
@@ -133,6 +133,10 @@ impl App {
 
     pub fn on_tool_done(&mut self, req_id: u64, call_id: String, outcome: crate::tools::ToolOutcome) {
         self.tabs[TabId::Muthur.index()].on_tool_done(req_id, call_id, outcome);
+    }
+
+    pub fn on_review(&mut self, req_id: u64, call_id: String, review: crate::review::Review) {
+        self.tabs[TabId::Muthur.index()].on_review(req_id, call_id, review);
     }
 
     /// The active tab's redraw cadence; 1 s when it is idle.

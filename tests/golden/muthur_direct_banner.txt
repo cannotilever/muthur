@@ -1,0 +1,43 @@
+ USCSS TEST qq MU/TH/UR 6000                                  17 NOV 2137 14:02 
+
+ FOLDERS           l MU/TH/UR 6000 qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqk
+                   x INTERFACE 2037 READY.                                     x
+ lqqqqqqqqqqqqqqk  x                                                           x
+ x MU/TH/UR     x  x DIRECT LINK: SCIENCE OFFICER                              x
+ x              tqqu AGENT ACCOUNT OFFLINE -- SEE DEPLOY                       x
+ x              x  x REVIEWER OFFLINE                                          x
+ mqqqqqqqqqqqqqqj  x                                                           x
+                   x                                                           x
+ lqqqqqqqqqqqqqqk  x                                                           x
+ x UTILITY      x  x                                                           x
+ x              x  x                                                           x
+ x              x  x                                                           x
+ mqqqqqqqqqqqqqqj  x                                                           x
+                   x                                                           x
+ lqqqqqqqqqqqqqqk  x                                                           x
+ x CARGO        x  x                                                           x
+ x              x  x                                                           x
+ x              x  x                                                           x
+ mqqqqqqqqqqqqqqj  x                                                           x
+                   x                                                           x
+ lqqqqqqqqqqqqqqk  x                                                           x
+ x SHELL        x  x                                                           x
+ x              x  x                                                           x
+ x              x  x                                                           x
+ mqqqqqqqqqqqqqqj  x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   tqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqu
+                   x READY FOR INQUIRY                                         x
+                   x $                                                         x
+                   mqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqj
+ F1-F4 SELECT .... ^] F FULLSCREEN .... SH-F15/16 SCROLL .... ^] ? HELP

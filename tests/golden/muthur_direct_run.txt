@@ -1,0 +1,43 @@
+ USCSS TEST qq MU/TH/UR 6000                                  17 NOV 2137 14:02 
+
+ FOLDERS           l MU/TH/UR 6000 qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqk
+                   x INTERFACE 2037 READY.                                     x
+ lqqqqqqqqqqqqqqk  x                                                           x
+ x MU/TH/UR     x  x DIRECT LINK: SCIENCE OFFICER                              x
+ x              tqqu                                                           x
+ x              x  x $ check why nginx keeps restarting                        x
+ mqqqqqqqqqqqqqqj  x                                                           x
+                   x RUN  systemctl status nginx --no-pager  [ALLOW]           x
+ lqqqqqqqqqqqqqqk  x      REVIEW: LOW -- read-only status check                x
+ x UTILITY      x  x EXIT 3  12 LINES  0.1 S                                   x
+ x              x  x RUN# systemctl restart nginx  [ROOT, ASK: MEDIUM]         x
+ x              x  x      REVIEW: MEDIUM -- restarts a service the operator    x
+ mqqqqqqqqqqqqqqj  x      asked about                                          x
+                   x EXIT 0  0 LINES  1.4 S                                    x
+ lqqqqqqqqqqqqqqk  x                                                           x
+ x CARGO        x  x Found: nginx failed its config test.                      x
+ x              x  x Changed: restarted nginx.                                 x
+ x              x  x Left undone: nothing.                                     x
+ mqqqqqqqqqqqqqqj  x                                                           x
+                   x                                                           x
+ lqqqqqqqqqqqqqqk  x                                                           x
+ x SHELL        x  x                                                           x
+ x              x  x                                                           x
+ x              x  x                                                           x
+ mqqqqqqqqqqqqqqj  x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   x                                                           x
+                   tqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqu
+                   x READY FOR INQUIRY                                         x
+                   x $                                                         x
+                   mqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqj
+ F1-F4 SELECT .... ^] F FULLSCREEN .... SH-F15/16 SCROLL .... ^] ? HELP

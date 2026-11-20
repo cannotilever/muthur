@@ -1,11 +1,27 @@
-//! MU/TH/UR tool turns: carrying out `agent::Effect`s and the operator override.
+//! MU/TH/UR tool turns: carrying out `agent::Effect`s, reviews and the
+//! operator's Y/N, password and OVERRIDE prompts.
 
-use super::{unable, MuthurTab, State, NOTE_TRUNCATED};
+use super::{unable, Entry, MuthurTab, State, NOTE_TRUNCATED};
 use crate::agent::{Effect, ABORTED_ISSUED};
 use crate::input::Key;
 use crate::llm::{LlmError, Stop, ToolResult};
-use crate::ops::AgentId;
+use crate::review::Review;
+use crate::secret::Secret;
 use crate::tools::ToolOutcome;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// The word the OVERRIDE prompt wants.
+const OVERRIDE: &str = "OVERRIDE";
+/// Longest text the OVERRIDE prompt keeps.
+const TYPED_MAX: usize = 16;
+
+/// An operator answer to a tool prompt.
+enum Answer {
+    Confirm(bool),
+    Password(bool),
+    Override(bool),
+}
 
 const AUDIT_OFFLINE: &str = "AUDIT LOG OFFLINE";
 
@@ -28,8 +44,10 @@ impl MuthurTab {
         self.partial_raw.clear();
         self.abort = None;
         let calls = std::mem::take(&mut self.calls);
+        let online = self.audit.borrow().is_online();
+        let (defs, policy) = if self.direct() { (&self.tech.defs, &self.tech.policy) } else { (&self.tools, &self.policy) };
         let effects = match &mut self.turn {
-            Some(t) => t.on_done(&stop, calls, &self.tools, &self.policy, self.audit.borrow().is_online()),
+            Some(t) => t.on_done(&stop, calls, defs, policy, online),
             None => vec![Effect::Finished { truncated: false }],
         };
         if !effects.iter().any(|e| matches!(e, Effect::Finished { .. })) {
@@ -51,41 +69,116 @@ impl MuthurTab {
             return;
         }
         let Some(turn) = &mut self.turn else { return };
+        self.cancel = None;
         let effects = turn.on_tool_done(call_id, outcome);
         self.apply(effects, None);
     }
 
-    pub(super) fn override_key(&mut self, key: &Key) {
-        let State::Override { call_id, armed_at, .. } = &self.state else { return };
+    /// The reviewer's verdict for request `req_id`; stale ones, and any while
+    /// no review is in flight, are ignored (the turn also checks the call).
+    pub(super) fn review_done(&mut self, req_id: u64, call_id: &str, review: Review) {
+        if req_id != self.req_id || self.state != State::Reviewing {
+            return;
+        }
+        let online = self.audit.borrow().is_online();
+        let Some(turn) = &mut self.turn else { return };
+        let effects = turn.on_review(call_id, review, online);
+        if !effects.is_empty() {
+            self.review_abort = None;
+        }
+        self.apply(effects, None);
+    }
+
+    /// A key while a Y/N, password or OVERRIDE prompt is up.
+    pub(super) fn prompt_key(&mut self, key: &Key) {
         // Aborting is always safe, so Ctrl-C works even while arming.
         if *key == Key::Ctrl('c') {
             self.interrupt();
             return;
         }
         // Unarmed until seen, then for ARMING after that.
-        if armed_at.is_none_or(|t| (self.deps.now)() < t) {
+        if !self.state.armed((self.deps.now)()) {
             return;
         }
-        let id = call_id.clone();
-        match key {
-            Key::Char('y' | 'Y') => self.answer(&id, true),
-            Key::Char('n' | 'N') | Key::Esc => self.answer(&id, false),
-            _ => {}
-        }
+        let answer = match &mut self.state {
+            State::Ask { .. } => match key {
+                Key::Char('y' | 'Y') => Answer::Confirm(true),
+                Key::Char('n' | 'N') | Key::Esc => Answer::Confirm(false),
+                _ => return,
+            },
+            State::Password { secret, .. } => match key {
+                Key::Char(c) if !c.is_control() => return secret.push(*c),
+                Key::Backspace => return secret.pop(),
+                Key::Enter if !secret.is_empty() => Answer::Password(true),
+                Key::Esc => {
+                    secret.clear();
+                    Answer::Password(false)
+                }
+                _ => return,
+            },
+            State::OverridePrompt { typed, .. } => match key {
+                Key::Char(c) if !c.is_control() => {
+                    if typed.chars().count() < TYPED_MAX {
+                        typed.extend(c.to_uppercase());
+                    }
+                    return;
+                }
+                Key::Backspace => {
+                    typed.pop();
+                    return;
+                }
+                Key::Enter if typed == OVERRIDE => Answer::Override(true),
+                Key::Enter => return typed.clear(),
+                Key::Esc => Answer::Override(false),
+                _ => return,
+            },
+            _ => return,
+        };
+        self.answer(answer);
     }
 
-    fn answer(&mut self, call_id: &str, yes: bool) {
+    /// Hands the operator's answer to the turn. A given password is kept for
+    /// the root `Run` that follows, and dropped (wiped) if none does.
+    fn answer(&mut self, answer: Answer) {
+        let state = std::mem::replace(&mut self.state, State::Tools);
+        let call_id = match state {
+            State::Ask { call_id, .. } | State::OverridePrompt { call_id, .. } => call_id,
+            State::Password { call_id, secret, .. } => {
+                if matches!(answer, Answer::Password(true)) {
+                    self.secret = Some((call_id.clone(), secret));
+                }
+                call_id
+            }
+            _ => return,
+        };
+        let online = self.audit.borrow().is_online();
         let Some(turn) = &mut self.turn else {
+            self.secret = None;
             self.state = State::Ready;
             return;
         };
-        self.state = State::Tools;
-        let effects = turn.on_confirm(call_id, yes, self.audit.borrow().is_online());
+        let effects = match answer {
+            Answer::Confirm(yes) => turn.on_confirm(&call_id, yes, online),
+            Answer::Password(given) => turn.on_password(&call_id, given, online),
+            Answer::Override(yes) => turn.on_override(&call_id, yes, online),
+        };
         self.apply(effects, None);
+        self.secret = None;
     }
 
-    /// Ctrl-C mid-inquiry: cancel the request, close the turn, mark it interrupted.
+    /// Ctrl-C mid-inquiry: wipe any password, cancel the review, the command
+    /// and the request, close the turn and mark it interrupted.
     pub(super) fn interrupt(&mut self) {
+        if let State::Password { secret, .. } = &mut self.state {
+            secret.clear();
+        }
+        self.secret = None;
+        if let Some(abort) = self.review_abort.take() {
+            abort();
+        }
+        if let Some(cancel) = self.cancel.take() {
+            cancel.store(true, Ordering::SeqCst);
+        }
         if let Some(abort) = self.abort.take() {
             abort();
         }
@@ -117,33 +210,45 @@ impl MuthurTab {
                     }
                 }
                 Effect::Run { call_id, invocation } => {
-                    (self.deps.run_tool)(self.req_id, call_id, invocation);
-                    // A pending override prompt keeps the status row.
-                    if !matches!(self.state, State::Tools | State::Override { .. }) {
-                        self.state = State::Tools;
-                        self.started = Some((self.deps.now)());
-                    }
+                    // Only a root run gets the password just given for it.
+                    let secret = match self.secret.take() {
+                        Some((id, s)) if id == call_id && invocation.as_root() => Some(s),
+                        _ => None,
+                    };
+                    let cancel = Arc::new(AtomicBool::new(false));
+                    self.cancel = Some(cancel.clone());
+                    (self.deps.run_tool)(self.req_id, call_id, invocation, secret, cancel);
+                    // Calls run one at a time: the status row now shows this one.
+                    self.state = State::Tools;
+                    self.started = Some((self.deps.now)());
                 }
-                Effect::Confirm { call_id, prompt, .. } => {
-                    // Armed only from renders, so a prompt raised in the background still gets its delay.
-                    self.state = State::Override { call_id, prompt, drawn: false, armed_at: None };
+                Effect::Review { call_id, input } => {
+                    self.review_abort = Some((self.deps.review)(self.req_id, call_id, input));
+                    self.state = State::Reviewing;
+                    self.started = Some((self.deps.now)());
+                }
+                // Prompts arm only from renders, so one raised in the background still gets its delay.
+                Effect::Confirm { call_id, prompt, note } => {
+                    self.state = State::Ask { call_id, prompt, note, drawn: false, armed_at: None };
                     self.activity = true;
                 }
-                // The persona's tools are all review-free, so these never arrive (Task 12 wires them).
-                Effect::Review { call_id, .. } | Effect::AskPassword { call_id, .. } | Effect::AskOverride { call_id, .. } => {
-                    tracing::error!("persona turn raised a review or prompt for call {call_id}; aborting");
-                    self.interrupt();
-                    break;
+                Effect::AskPassword { call_id, prompt } => {
+                    self.state = State::Password { call_id, prompt, secret: Secret::new(), drawn: false, armed_at: None };
+                    self.activity = true;
+                }
+                Effect::AskOverride { call_id, note } => {
+                    self.state = State::OverridePrompt { call_id, note, typed: String::new(), drawn: false, armed_at: None };
+                    self.activity = true;
                 }
                 Effect::Note(s) => {
                     if self.revealing {
                         self.settle_segment();
                     }
-                    self.transcript.push(super::Entry::Note(s));
+                    self.transcript.push(if self.direct() { Entry::Harness(s) } else { Entry::Note(s) });
                 }
                 Effect::LogTool(results) => {
                     let ts = (self.deps.timestamp)();
-                    if let Err(e) = self.log.append_tool(&results, &ts, AgentId::Muthur) {
+                    if let Err(e) = self.log.append_tool(&results, &ts, self.agent()) {
                         tracing::error!("chat log: cannot record tool results: {e}");
                     }
                 }
