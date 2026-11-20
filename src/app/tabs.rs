@@ -67,7 +67,7 @@ pub trait Tab {
     /// The metrics source is failing (Utility and Cargo).
     fn on_metrics_offline(&mut self, _why: &str) {}
     /// The result of container command `_seq` (CARGO only).
-    fn on_cargo_done(&mut self, _seq: u64, _out: crate::tools::runner::RunOutput, _ms: u64) {}
+    fn on_cargo_done(&mut self, _seq: u64, _out: crate::ops::runner::RunOutput, _ms: u64) {}
     /// A streamed LLM event for request `_req_id` (MU/TH/UR only).
     fn on_llm(&mut self, _req_id: u64, _ev: crate::llm::StreamEvent) {}
     /// The outcome of tool call `_call_id` started for request `_req_id` (MU/TH/UR only).

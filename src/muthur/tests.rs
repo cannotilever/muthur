@@ -4,7 +4,7 @@ use crate::chatlog::{Assistant, ChatLog};
 use crate::config::{MuthurSection, Provider, ServiceLists, ToolsSection};
 use crate::input::Key;
 use crate::llm::{ChatRequest, LlmError, MessageContent, Stop, StreamEvent, ToolResult};
-use crate::tools::audit::AuditLog;
+use crate::ops::audit::AuditLog;
 use crate::tools::exec::ToolOutcome;
 use crate::tools::{Invocation, ToolDefs, Verb};
 use ratatui::buffer::Buffer;
@@ -26,7 +26,7 @@ struct H {
     clock: Rc<Cell<Instant>>,
     path: PathBuf,
     audit_path: PathBuf,
-    audit: crate::tools::audit::SharedAudit,
+    audit: crate::ops::audit::SharedAudit,
     _dir: tempfile::TempDir,
 }
 
@@ -57,7 +57,7 @@ fn harness_full(cfg: MuthurSection, tools: ToolsSection, audit_online: bool, pre
     let audit_path = dir.path().join("muthur/audit.jsonl");
     let mut log = ChatLog::open(path.clone()).unwrap();
     prefill(&mut log);
-    let audit = crate::tools::audit::shared(if audit_online { AuditLog::open(audit_path.clone()).unwrap() } else { AuditLog::offline() });
+    let audit = crate::ops::audit::shared(if audit_online { AuditLog::open(audit_path.clone()).unwrap() } else { AuditLog::offline() });
     let shared_audit = audit.clone();
     let sent: Sent = Rc::default();
     let ran: Ran = Rc::default();
@@ -480,16 +480,7 @@ fn shared_audit_sees_muthur_entries() {
     h.t.on_tool_done(1, "c1".into(), ok("active"));
     assert!(h.audit.borrow().is_online());
     // Another writer through the same handle lands in the same file.
-    let e = crate::tools::audit::AuditEntry {
-        tool: "cargo_start".into(),
-        args: json!({}),
-        tier: 1,
-        decision: crate::tools::audit::Decision::Auto,
-        argv: None,
-        exit: None,
-        ms: 0,
-        output: String::new(),
-    };
+    let e = crate::ops::audit::AuditEntry::new("cargo_start", json!({}), crate::ops::audit::Decision::Auto);
     h.audit.borrow_mut().append(&e, "ts").unwrap();
     let audit = std::fs::read_to_string(&h.audit_path).unwrap();
     assert_eq!(audit.lines().count(), 2, "{audit}");
@@ -855,7 +846,7 @@ fn ctrl_c_while_confirmed_restart_runs_is_audited_truthfully() {
     assert_eq!(a.len(), 2, "{a:?}");
     assert_eq!(a[1]["decision"], "confirmed");
     assert_eq!(a[1]["tool"], "restart_service");
-    assert_eq!(a[1]["tier"], 2);
+    assert!(a[1].get("tier").is_none());
     assert_eq!(a[1]["exit"], 0);
     assert_eq!(a[1]["ms"], 850);
     assert_eq!(a[1]["argv"], a[0]["argv"]);

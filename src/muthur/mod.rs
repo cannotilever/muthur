@@ -10,7 +10,7 @@ use crate::config::MuthurSection;
 use crate::input::Key;
 use crate::agent::{Call, Orphan, Turn};
 use crate::llm::{ChatRequest, LlmError, StreamEvent};
-use crate::tools::audit::SharedAudit;
+use crate::ops::audit::SharedAudit;
 use crate::tools::{Invocation, ToolDefs};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};

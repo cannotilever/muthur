@@ -1,7 +1,7 @@
 use super::*;
 use crate::app::ARMING;
 use crate::metrics::local::ps_argv;
-use crate::tools::runner::RunOutput;
+use crate::ops::runner::RunOutput;
 use ratatui::style::Modifier;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -489,11 +489,11 @@ fn audit_entries_per_action() {
     h.done(exited(0, "a1\n", ""));
     let a = h.audit();
     assert_eq!(a.len(), 2, "{a:?}");
-    assert_eq!((&a[0]["tool"], &a[0]["decision"], &a[0]["tier"]), (&"cargo_stop".into(), &"confirmed".into(), &2.into()));
+    assert_eq!((&a[0]["tool"], &a[0]["decision"]), (&"cargo_stop".into(), &"confirmed".into()));
     assert_eq!(a[0]["argv"], serde_json::json!(["docker", "stop", "a1"]));
     assert_eq!(a[0]["args"], serde_json::json!({"id": "a1", "name": "web"}));
     assert_eq!(a[0]["exit"], serde_json::json!(0));
-    assert_eq!((&a[1]["tool"], &a[1]["decision"], &a[1]["tier"]), (&"cargo_start".into(), &"auto".into(), &1.into()));
+    assert_eq!((&a[1]["tool"], &a[1]["decision"]), (&"cargo_start".into(), &"auto".into()));
 }
 
 #[test]
@@ -542,7 +542,7 @@ fn logs_open_at_bottom_and_scroll() {
     let s = h.screen();
     assert!(!s.contains("line000") && s.contains("line001"), "{s}");
     let a = h.audit();
-    assert_eq!((&a[0]["tool"], &a[0]["decision"], &a[0]["tier"]), (&"cargo_logs".into(), &"auto".into(), &1.into()));
+    assert_eq!((&a[0]["tool"], &a[0]["decision"]), (&"cargo_logs".into(), &"auto".into()));
     assert_eq!(h.n_calls(), 1, "logs do not trigger a ps refresh");
 }
 
@@ -681,17 +681,11 @@ fn audit_offline_at_y_refuses() {
     let mut h = harness(vec![c("a1", "web", "UP")]);
     h.key(Key::Char('d'));
     h.arm();
-    h.t.audit.borrow_mut().append(&crate::tools::audit::AuditEntry {
-        tool: "x".into(), args: serde_json::json!({}), tier: 1, decision: crate::tools::audit::Decision::Auto,
-        argv: None, exit: None, ms: 0, output: String::new(),
-    }, "ts").unwrap();
+    h.t.audit.borrow_mut().append(&crate::ops::audit::AuditEntry::new("x", serde_json::json!({}), crate::ops::audit::Decision::Auto), "ts").unwrap();
     std::fs::remove_file(&h.audit_path).unwrap();
     std::fs::create_dir(&h.audit_path).unwrap();
     // MU/TH/UR's write fails while the prompt is up: the log is now offline.
-    let _ = h.t.audit.borrow_mut().append(&crate::tools::audit::AuditEntry {
-        tool: "x".into(), args: serde_json::json!({}), tier: 1, decision: crate::tools::audit::Decision::Auto,
-        argv: None, exit: None, ms: 0, output: String::new(),
-    }, "ts");
+    let _ = h.t.audit.borrow_mut().append(&crate::ops::audit::AuditEntry::new("x", serde_json::json!({}), crate::ops::audit::Decision::Auto), "ts");
     h.key(Key::Char('y'));
     assert_eq!(h.n_calls(), 0);
     assert!(h.screen().contains("AUDIT LOG OFFLINE"));

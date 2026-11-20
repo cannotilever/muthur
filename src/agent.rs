@@ -2,7 +2,7 @@
 //! operator answers into `Effect`s for the tab to carry out. No I/O, no clocks.
 
 use crate::llm::{Stop, ToolResult};
-use crate::tools::audit::{AuditEntry, Decision};
+use crate::ops::audit::{AuditEntry, Decision};
 use crate::config::Elevate;
 use crate::tools::exec::{argv_for, ToolOutcome};
 use crate::tools::{Invocation, ToolDefs};
@@ -15,6 +15,7 @@ pub struct Call {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)] // M5 code; replaced in Task 10
 pub enum Effect {
     Spawn { forced_final: bool },
     Run { call_id: String, invocation: Invocation },
@@ -42,14 +43,11 @@ impl Orphan {
     pub fn audit(&self, outcome: ToolOutcome) -> AuditEntry {
         let tier = self.invocation.tier();
         AuditEntry {
-            tool: self.tool.clone(),
-            args: self.args.clone(),
-            tier,
-            decision: if tier == 2 { Decision::Confirmed } else { Decision::Auto },
             argv: outcome.argv,
             exit: outcome.exit,
             ms: outcome.ms,
             output: outcome.content,
+            ..AuditEntry::new(&self.tool, self.args.clone(), if tier == 2 { Decision::Confirmed } else { Decision::Auto })
         }
     }
 }
@@ -76,7 +74,6 @@ enum State {
 struct Slot {
     call: Call,
     label: String,
-    tier: u8,
     state: State,
     result: Option<ToolResult>,
 }
@@ -116,7 +113,7 @@ impl Turn {
                 Ok(inv) => (inv.label(), inv.tier()),
                 Err(_) => (call.name.to_uppercase(), rejected_tier(&call.name)),
             };
-            let mut slot = Slot { call, label, tier, state: State::Done, result: None };
+            let mut slot = Slot { call, label, state: State::Done, result: None };
             match checked {
                 _ if duplicate => {
                     slot.resolve_err(Decision::Rejected, format!("NOT AUTHORIZED: {DUPLICATE_ID}"), &mut out)
@@ -144,14 +141,11 @@ impl Turn {
         let State::Running { confirmed, .. } = slot.state else { return vec![] };
         let decision = if confirmed { Decision::Confirmed } else { Decision::Auto };
         let mut out = vec![Effect::Audit(AuditEntry {
-            tool: slot.call.name.clone(),
-            args: slot.call.input.clone(),
-            tier: slot.tier,
-            decision,
             argv: outcome.argv,
             exit: outcome.exit,
             ms: outcome.ms,
             output: outcome.content.clone(),
+            ..AuditEntry::new(&slot.call.name, slot.call.input.clone(), decision)
         })];
         slot.result = Some(slot.make_result(outcome.content, outcome.is_error));
         slot.state = State::Done;
@@ -299,14 +293,9 @@ impl Slot {
     /// `resolve`, with the argv of a command already issued.
     fn resolve_with(&mut self, decision: Decision, argv: Option<Vec<String>>, text: String, out: &mut Vec<Effect>) {
         out.push(Effect::Audit(AuditEntry {
-            tool: self.call.name.clone(),
-            args: self.call.input.clone(),
-            tier: self.tier,
-            decision,
             argv,
-            exit: None,
-            ms: 0,
             output: text.clone(),
+            ..AuditEntry::new(&self.call.name, self.call.input.clone(), decision)
         }));
         self.result = Some(self.make_result(text, true));
         self.state = State::Done;
@@ -399,7 +388,7 @@ mod tests {
                 Effect::Audit(AuditEntry {
                     tool: "service_status".into(),
                     args: json!({"unit": "nginx"}),
-                    tier: 1,
+                    agent: None, as_root: false, reason: None, deny_rule: None, review: None,
                     decision: Decision::Auto,
                     argv: Some(vec!["systemctl".into(), "status".into()]),
                     exit: Some(json!(0)),
@@ -435,7 +424,6 @@ mod tests {
         let a = audits(&e);
         assert_eq!(a.len(), 1);
         assert_eq!(a[0].decision, Decision::Confirmed);
-        assert_eq!(a[0].tier, 2);
         assert!(matches!(e.last(), Some(Effect::Spawn { forced_final: false })));
 
         // No (second turn).
@@ -449,7 +437,7 @@ mod tests {
                 Effect::Audit(AuditEntry {
                     tool: "restart_service".into(),
                     args: json!({"unit": "nginx"}),
-                    tier: 2,
+                    agent: None, as_root: false, reason: None, deny_rule: None, review: None,
                     decision: Decision::Denied,
                     argv: None,
                     exit: None,
@@ -517,7 +505,7 @@ mod tests {
                 Effect::Audit(AuditEntry {
                     tool: "service_status".into(),
                     args: json!({}),
-                    tier: 1,
+                    agent: None, as_root: false, reason: None, deny_rule: None, review: None,
                     decision: Decision::Rejected,
                     argv: None,
                     exit: None,
@@ -532,7 +520,6 @@ mod tests {
         let mut t = Turn::new(8);
         let e = t.on_done(&Stop::ToolUse, vec![call("c1", "stop_service", json!({"unit": "nginx"}))], &defs(), true);
         assert_eq!(e[0], Effect::Note("ACCESS DENIED: STOP_SERVICE".into()));
-        assert_eq!(audits(&e)[0].tier, 2);
     }
 
     #[test]
@@ -544,7 +531,6 @@ mod tests {
         let a = audits(&e);
         assert_eq!(a.len(), 1);
         assert_eq!(a[0].decision, Decision::Rejected);
-        assert_eq!(a[0].tier, 2);
         assert_eq!(a[0].output, "NOT AUTHORIZED: AUDIT LOG OFFLINE");
         assert_eq!(
             e[e.len() - 2],
@@ -599,11 +585,11 @@ mod tests {
         t.on_done(&Stop::ToolUse, vec![call("c1", "ship_status", json!({})), restart("c2")], &defs(), true);
         assert!(t.tools_running());
         assert_eq!(t.awaiting_confirm(), Some(("c2", "RESTART NGINX.SERVICE")));
-        let aborted = |tool: &str, args: Value, tier: u8| {
+        let aborted = |tool: &str, args: Value, _tier: u8| {
             Effect::Audit(AuditEntry {
                 tool: tool.into(),
                 args,
-                tier,
+                agent: None, as_root: false, reason: None, deny_rule: None, review: None,
                 decision: Decision::Aborted,
                 argv: None,
                 exit: None,
@@ -654,7 +640,7 @@ mod tests {
                 Effect::Audit(AuditEntry {
                     tool: "restart_service".into(),
                     args: json!({"unit": "nginx"}),
-                    tier: 2,
+                    agent: None, as_root: false, reason: None, deny_rule: None, review: None,
                     decision: Decision::Aborted,
                     argv: Some(argv.clone()),
                     exit: None,
@@ -685,7 +671,7 @@ mod tests {
             AuditEntry {
                 tool: "restart_service".into(),
                 args: json!({"unit": "nginx"}),
-                tier: 2,
+                agent: None, as_root: false, reason: None, deny_rule: None, review: None,
                 decision: Decision::Confirmed,
                 argv: Some(argv),
                 exit: Some(json!(0)),
@@ -697,7 +683,7 @@ mod tests {
         assert_eq!(t.on_tool_done("c1", ok("late")), vec![]);
         // A tier-1 orphan's late outcome is audited as auto.
         let o = Orphan { call_id: "c2".into(), tool: "ship_status".into(), args: json!({}), invocation: Invocation::ShipStatus };
-        assert_eq!((o.audit(ok("x")).decision, o.audit(ok("x")).tier), (Decision::Auto, 1));
+        assert_eq!(o.audit(ok("x")).decision, Decision::Auto);
     }
 
     #[test]
@@ -737,7 +723,7 @@ mod tests {
                     Effect::Audit(AuditEntry {
                         tool: "ship_status".into(),
                         args: json!({}),
-                        tier: 1,
+                        agent: None, as_root: false, reason: None, deny_rule: None, review: None,
                         decision: Decision::Rejected,
                         argv: None,
                         exit: None,

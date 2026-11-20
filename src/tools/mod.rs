@@ -2,25 +2,9 @@
 
 use crate::config::{Elevate, ToolsSection};
 use crate::llm::ToolSpec;
-pub mod audit;
 pub mod exec;
-pub mod runner;
 
 use serde_json::{Value, json};
-
-pub const CAP: usize = 4096;
-
-/// Truncate to at most CAP bytes on a char boundary, marking the cut.
-pub fn cap(text: String) -> String {
-    if text.len() <= CAP {
-        return text;
-    }
-    let mut end = CAP;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}\n[TRUNCATED]", &text[..end])
-}
 
 const SUFFIXES: [&str; 11] =
     [".service", ".socket", ".timer", ".mount", ".target", ".path", ".slice", ".scope", ".swap", ".automount", ".device"];
@@ -287,6 +271,7 @@ impl ToolDefs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ops::{CAP, cap};
     use crate::config::ServiceLists;
 
     fn defs() -> ToolDefs {

@@ -1,9 +1,9 @@
 //! Container commands: what each key runs, the Y/N prompt, and how a result
 //! reads on the message line and in the audit log.
 
-use crate::tools::audit::{AuditEntry, Decision};
-use crate::tools::cap;
-use crate::tools::runner::RunOutput;
+use crate::ops::audit::{AuditEntry, Decision};
+use crate::ops::cap;
+use crate::ops::runner::RunOutput;
 use serde_json::json;
 use std::time::{Duration, Instant};
 
@@ -163,13 +163,10 @@ pub(super) fn aborted_entry(verb: Verb, id: &str, name: &str, argv: Vec<String>)
 #[allow(clippy::too_many_arguments)]
 fn entry(verb: Verb, id: &str, name: &str, argv: Vec<String>, decision: Decision, exit: serde_json::Value, ms: u64, output: String) -> AuditEntry {
     AuditEntry {
-        tool: format!("cargo_{}", verb.word()),
-        args: json!({ "id": id, "name": name }),
-        tier: if verb.confirm() { 2 } else { 1 },
-        decision,
         argv: Some(argv),
         exit: Some(exit),
         ms,
         output: cap(output),
+        ..AuditEntry::new(&format!("cargo_{}", verb.word()), json!({ "id": id, "name": name }), decision)
     }
 }

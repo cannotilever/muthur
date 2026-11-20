@@ -15,7 +15,7 @@ fn muthur_tab(path: &std::path::Path, prefill: Option<(&str, &str)>) -> (muthur:
     use muthur::chatlog::{Assistant, ChatLog};
     use muthur::config::{MuthurSection, Provider, ServiceLists, ToolsSection};
     use muthur::muthur::{MuthurDeps, MuthurTab};
-    use muthur::tools::{ToolDefs, audit::AuditLog};
+    use muthur::{ops::audit::AuditLog, tools::ToolDefs};
     let mut log = ChatLog::open(path.to_path_buf()).unwrap();
     if let Some((q, a)) = prefill {
         log.append_user(q, "ts").unwrap();
@@ -37,7 +37,7 @@ fn muthur_tab(path: &std::path::Path, prefill: Option<(&str, &str)>) -> (muthur:
         ..Default::default()
     });
     let audit = AuditLog::open(path.with_file_name("audit.jsonl")).unwrap();
-    (MuthurTab::new(cfg, tools, "USCSS TEST", log, muthur::tools::audit::shared(audit), deps), clock)
+    (MuthurTab::new(cfg, tools, "USCSS TEST", log, muthur::ops::audit::shared(audit), deps), clock)
 }
 
 fn scene(name: &str, keys: &[Key]) {
@@ -96,7 +96,7 @@ fn cargo_app() -> (App, std::rc::Rc<std::cell::RefCell<Vec<u64>>>, tempfile::Tem
     use muthur::app::TabId;
     use muthur::cargo::{CargoDeps, CargoTab};
     use muthur::metrics::{Container, Snapshot};
-    use muthur::tools::audit::{AuditLog, shared};
+    use muthur::ops::audit::{AuditLog, shared};
     let dir = tempfile::tempdir().unwrap();
     let seqs: std::rc::Rc<std::cell::RefCell<Vec<u64>>> = Default::default();
     let rec = seqs.clone();
@@ -134,7 +134,7 @@ fn cargo_stop_prompt() {
 
 #[test]
 fn cargo_logs() {
-    use muthur::tools::runner::RunOutput;
+    use muthur::ops::runner::RunOutput;
     let (mut app, seqs, _dir) = cargo_app();
     app.handle_key(Key::Char('L'));
     let mut log: String = (0..38).map(|i| format!("2137-11-17T14:{i:02}:00Z refinery: batch {i} nominal\n")).collect();

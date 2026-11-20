@@ -36,7 +36,7 @@ pub enum Event {
     Tick,
     Llm { req_id: u64, ev: crate::llm::StreamEvent },
     ToolDone { req_id: u64, call_id: String, outcome: crate::tools::exec::ToolOutcome },
-    CargoDone { seq: u64, output: crate::tools::runner::RunOutput, ms: u64 },
+    CargoDone { seq: u64, output: crate::ops::runner::RunOutput, ms: u64 },
 }
 
 /// The chrome is laid out for 80×43; smaller screens cannot hold it.
@@ -300,7 +300,7 @@ fn build_muthur(
     ship: &str,
     tx: UnboundedSender<Event>,
     slot: crate::tools::exec::SnapshotSlot,
-    audit: crate::tools::audit::SharedAudit,
+    audit: crate::ops::audit::SharedAudit,
 ) -> anyhow::Result<crate::muthur::MuthurTab> {
     use crate::llm::{LlmError, StreamEvent, client::LlmClient};
     use crate::muthur::{Abort, MuthurDeps, MuthurTab};
@@ -325,7 +325,7 @@ fn build_muthur(
     let year_offset = cfg.chrome.year_offset;
     let tools = crate::tools::ToolDefs::new(&cfg.tools);
     let ctx = crate::tools::exec::ExecCtx {
-        runner: std::sync::Arc::new(crate::tools::runner::SystemRunner),
+        runner: std::sync::Arc::new(crate::ops::runner::SystemRunner),
         snapshot: slot,
         elevate: tools.elevate(),
     };
@@ -347,8 +347,8 @@ fn build_muthur(
 }
 
 /// The CARGO tab, running container commands on blocking tasks.
-fn build_cargo(tx: UnboundedSender<Event>, audit: crate::tools::audit::SharedAudit, hints: HintSlot) -> crate::cargo::CargoTab {
-    use crate::tools::runner::{Runner, SystemRunner};
+fn build_cargo(tx: UnboundedSender<Event>, audit: crate::ops::audit::SharedAudit, hints: HintSlot) -> crate::cargo::CargoTab {
+    use crate::ops::runner::{Runner, SystemRunner};
     let deps = crate::cargo::CargoDeps {
         run: Box::new(move |seq, argv, timeout, merged| {
             let tx = tx.clone();
@@ -366,8 +366,8 @@ fn build_cargo(tx: UnboundedSender<Event>, audit: crate::tools::audit::SharedAud
     crate::cargo::CargoTab::new(deps, audit)
 }
 
-fn open_audit_log() -> crate::tools::audit::AuditLog {
-    use crate::tools::audit::AuditLog;
+fn open_audit_log() -> crate::ops::audit::AuditLog {
+    use crate::ops::audit::AuditLog;
     let Some(dir) = dirs::state_dir() else {
         tracing::error!("no state directory; audit log offline, tier-2 tools disabled");
         return AuditLog::offline();
@@ -486,7 +486,7 @@ pub fn run(cfg: &Config, strict: bool) -> anyhow::Result<()> {
     let slot = crate::tools::exec::SnapshotSlot::default();
     start_metrics(cfg, &tx, slot.clone());
     // One audit log for every writer: MU/TH/UR's tools and CARGO's commands.
-    let audit = crate::tools::audit::shared(open_audit_log());
+    let audit = crate::ops::audit::shared(open_audit_log());
     let muthur = build_muthur(cfg, &chrome.ship_name, tx.clone(), slot, audit.clone())?;
     let cargo = build_cargo(tx.clone(), audit, hints);
     let mut app = App::assemble(chrome, muthur, UtilityTab::new(), cargo, shell);
@@ -799,8 +799,8 @@ mod tests {
             run_tool: Box::new(|_, _, _| {}),
         };
         let tools = crate::tools::ToolDefs::new(&Default::default());
-        let audit = crate::tools::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap();
-        let m = MuthurTab::new(cfg, tools, "USCSS TEST", log, crate::tools::audit::shared(audit), deps);
+        let audit = crate::ops::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap();
+        let m = MuthurTab::new(cfg, tools, "USCSS TEST", log, crate::ops::audit::shared(audit), deps);
         let shell = crate::shell::ShellTab::new(
             crate::shell::ShellConfig { command: "sh".into(), args: vec!["-c".into(), "sleep 2".into()], scrollback: 10 },
             crate::scroll::HintSlot::default(),

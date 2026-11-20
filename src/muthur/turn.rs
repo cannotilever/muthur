@@ -148,7 +148,7 @@ impl MuthurTab {
         }
     }
 
-    fn record_audit(&mut self, entry: &crate::tools::audit::AuditEntry) {
+    fn record_audit(&mut self, entry: &crate::ops::audit::AuditEntry) {
         let ts = (self.deps.timestamp)();
         if let Err(e) = self.audit.borrow_mut().append(entry, &ts) {
             tracing::error!("audit log: cannot record tool call: {e}");

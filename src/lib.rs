@@ -10,6 +10,7 @@ pub mod link;
 pub mod llm;
 pub mod metrics;
 pub mod muthur;
+pub mod ops;
 pub mod run;
 pub mod scroll;
 pub mod shell;

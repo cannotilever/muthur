@@ -17,8 +17,8 @@ use crate::input::Key;
 use crate::metrics::local::ps_argv;
 use crate::metrics::probes::parse_containers;
 use crate::metrics::{Container, Snapshot};
-use crate::tools::audit::{AuditLog, SharedAudit, shared};
-use crate::tools::runner::RunOutput;
+use crate::ops::audit::{AuditLog, SharedAudit, shared};
+use crate::ops::runner::RunOutput;
 use crate::utility::widgets::message_panel;
 use action::{Prompt, Verb, aborted_entry, audit_entry, failure};
 use list::{Selection, draw_list};
@@ -286,7 +286,7 @@ impl CargoTab {
         self.append_audit(&audit_entry(p.verb, &p.id, &p.name, p.argv.clone(), out, ms))
     }
 
-    fn append_audit(&mut self, entry: &crate::tools::audit::AuditEntry) -> bool {
+    fn append_audit(&mut self, entry: &crate::ops::audit::AuditEntry) -> bool {
         let ts = (self.deps.timestamp)();
         if let Err(e) = self.audit.borrow_mut().append(entry, &ts) {
             tracing::error!("audit log: cannot record container command: {e}");

@@ -1,7 +1,8 @@
 //! Executes a validated `Invocation` and maps the result to model-facing text.
 
-use super::runner::{RunOutput, Runner};
-use super::{Invocation, cap};
+use crate::ops::runner::{RunOutput, Runner};
+use super::Invocation;
+use crate::ops::cap;
 use crate::config::Elevate;
 use crate::metrics::Snapshot;
 use serde_json::{Value, json};

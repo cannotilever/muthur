@@ -3,6 +3,8 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 
+use super::AgentId;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Decision {
@@ -11,18 +13,52 @@ pub enum Decision {
     Denied,
     Rejected,
     Aborted,
+    Overridden,
+}
+
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub struct ReviewRecord {
+    pub verdict: String,
+    pub risk: String,
+    pub note: String,
+    pub model: String,
+    pub ms: u64,
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AuditEntry {
     pub tool: String,
     pub args: serde_json::Value,
-    pub tier: u8,
+    pub agent: Option<AgentId>,
+    pub as_root: bool,
+    pub reason: Option<String>,
+    pub deny_rule: Option<String>,
+    pub review: Option<ReviewRecord>,
     pub decision: Decision,
     pub argv: Option<Vec<String>>,
     pub exit: Option<serde_json::Value>,
     pub ms: u64,
     pub output: String,
+}
+
+impl AuditEntry {
+    pub fn new(tool: &str, args: serde_json::Value, decision: Decision) -> Self {
+        Self {
+            tool: tool.into(),
+            args,
+            agent: None,
+            as_root: false,
+            reason: None,
+            deny_rule: None,
+            review: None,
+            decision,
+            argv: None,
+            exit: None,
+            ms: 0,
+            output: String::new(),
+        }
+    }
 }
 
 /// One log for every writer (MU/TH/UR and CARGO); the app is single-threaded.
@@ -43,7 +79,11 @@ struct Record<'a> {
     ts: &'a str,
     tool: &'a str,
     args: &'a serde_json::Value,
-    tier: u8,
+    agent: Option<AgentId>,
+    as_root: bool,
+    reason: &'a Option<String>,
+    deny_rule: &'a Option<String>,
+    review: &'a Option<ReviewRecord>,
     decision: Decision,
     argv: &'a Option<Vec<String>>,
     exit: &'a Option<serde_json::Value>,
@@ -88,7 +128,11 @@ impl AuditLog {
             ts,
             tool: &e.tool,
             args: &e.args,
-            tier: e.tier,
+            agent: e.agent,
+            as_root: e.as_root,
+            reason: &e.reason,
+            deny_rule: &e.deny_rule,
+            review: &e.review,
             decision: e.decision,
             argv: &e.argv,
             exit: &e.exit,
@@ -119,14 +163,11 @@ mod tests {
 
     fn entry(tool: &str) -> AuditEntry {
         AuditEntry {
-            tool: tool.into(),
             args: serde_json::json!({"unit": "a.service"}),
-            tier: 1,
-            decision: Decision::Auto,
             argv: Some(vec!["systemctl".into(), "status".into()]),
-            exit: None,
             ms: 12,
             output: "ok".into(),
+            ..AuditEntry::new(tool, serde_json::json!(null), Decision::Auto)
         }
     }
 
@@ -145,7 +186,7 @@ mod tests {
         let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
         let mut sorted = keys.clone();
         sorted.sort();
-        let mut want = vec!["ts", "tool", "args", "tier", "decision", "argv", "exit", "ms", "output"];
+        let mut want = vec!["ts", "tool", "args", "agent", "as_root", "reason", "deny_rule", "review", "decision", "argv", "exit", "ms", "output"];
         want.sort();
         assert_eq!(sorted, want);
         assert_eq!(v["decision"], "auto");
@@ -210,5 +251,29 @@ mod tests {
         assert!(l.append(&entry("b"), "t").is_err());
         assert!(!l.is_online());
         assert!(l.needs_newline);
+    }
+
+    #[test]
+    fn record_has_m7_fields_and_no_tier() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("audit.jsonl");
+        let mut l = AuditLog::open(p.clone()).unwrap();
+        let e = AuditEntry {
+            as_root: true,
+            reason: Some("r".into()),
+            deny_rule: Some("LOCKOUT".into()),
+            review: Some(ReviewRecord { verdict: "deny".into(), risk: "high".into(), note: "n".into(), model: "m".into(), ms: 1, error: None }),
+            agent: Some(AgentId::Tech),
+            ..AuditEntry::new("run", serde_json::json!({}), Decision::Overridden)
+        };
+        l.append(&e, "t").unwrap();
+        let v: serde_json::Value = serde_json::from_str(std::fs::read_to_string(&p).unwrap().lines().next().unwrap()).unwrap();
+        assert_eq!(v["agent"], "tech");
+        assert_eq!(v["as_root"], true);
+        assert_eq!(v["reason"], "r");
+        assert_eq!(v["deny_rule"], "LOCKOUT");
+        assert_eq!(v["review"]["verdict"], "deny");
+        assert_eq!(v["decision"], "overridden");
+        assert!(v.get("tier").is_none());
     }
 }

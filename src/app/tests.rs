@@ -369,8 +369,8 @@ pub(crate) fn fake_muthur() -> (crate::muthur::MuthurTab, tempfile::TempDir) {
         services: crate::config::ServiceLists { restart: vec!["nginx".into()], ..Default::default() },
         ..Default::default()
     });
-    let audit = crate::tools::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap();
-    (MuthurTab::new(cfg, tools, "USCSS TEST", log, crate::tools::audit::shared(audit), deps), dir)
+    let audit = crate::ops::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap();
+    (MuthurTab::new(cfg, tools, "USCSS TEST", log, crate::ops::audit::shared(audit), deps), dir)
 }
 
 type Ran = std::rc::Rc<std::cell::RefCell<Vec<String>>>;
@@ -395,8 +395,8 @@ fn fake_muthur_clocked() -> (crate::muthur::MuthurTab, tempfile::TempDir, std::r
         services: crate::config::ServiceLists { restart: vec!["nginx".into()], ..Default::default() },
         ..Default::default()
     });
-    let audit = crate::tools::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap();
-    (MuthurTab::new(cfg, tools, "USCSS TEST", log, crate::tools::audit::shared(audit), deps), dir, clock, ran)
+    let audit = crate::ops::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap();
+    (MuthurTab::new(cfg, tools, "USCSS TEST", log, crate::ops::audit::shared(audit), deps), dir, clock, ran)
 }
 
 #[test]
@@ -464,7 +464,7 @@ struct SpyState {
 struct Spy(Arc<Mutex<SpyState>>);
 impl Tab for Spy {
     fn render(&mut self, _area: Rect, _buf: &mut Buffer) {}
-    fn on_cargo_done(&mut self, seq: u64, _out: crate::tools::runner::RunOutput, _ms: u64) {
+    fn on_cargo_done(&mut self, seq: u64, _out: crate::ops::runner::RunOutput, _ms: u64) {
         self.0.lock().unwrap().cargo_done.push(seq);
     }
     fn handle_key(&mut self, key: &Key) {
@@ -654,7 +654,7 @@ fn metrics_and_outage_reach_utility_and_cargo() {
 fn cargo_done_reaches_cargo() {
     let st = Arc::new(Mutex::new(SpyState::default()));
     let mut app = spy_app(&st, TabId::Cargo);
-    app.on_cargo_done(7, crate::tools::runner::RunOutput::NotFound, 3);
+    app.on_cargo_done(7, crate::ops::runner::RunOutput::NotFound, 3);
     assert_eq!(st.lock().unwrap().cargo_done, vec![7]);
 }
 
