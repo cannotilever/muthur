@@ -426,7 +426,7 @@ fn scrolled_back_view_holds_while_output_arrives() {
 // ---- M5: tool turns ----
 
 fn ok(content: &str) -> ToolOutcome {
-    ToolOutcome { content: content.into(), is_error: false, argv: Some(vec!["systemctl".into()]), exit: Some(json!(0)), ms: 5 }
+    ToolOutcome { content: content.into(), is_error: false, argv: Some(vec!["systemctl".into()]), exit: Some(json!(0)), ms: 5, audit_output: None }
 }
 
 fn tool_call(id: &str, name: &str, input: serde_json::Value) -> StreamEvent {
@@ -839,6 +839,7 @@ fn ctrl_c_while_confirmed_restart_runs_is_audited_truthfully() {
         argv: Some(["sudo", "-n", "/usr/bin/systemctl", "restart", "nginx.service"].map(String::from).to_vec()),
         exit: Some(json!(0)),
         ms: 850,
+        audit_output: None,
     };
     let transcript = h.t.transcript.len();
     h.t.on_tool_done(1, "c1".into(), real.clone());

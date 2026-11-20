@@ -4,8 +4,11 @@ use crate::config::{Elevate, ToolsSection};
 use crate::llm::ToolSpec;
 pub mod deny;
 pub mod exec;
+pub mod facts;
+pub mod fixed;
 pub mod netgate;
 pub mod registry;
+pub mod shell;
 
 use serde_json::{Value, json};
 

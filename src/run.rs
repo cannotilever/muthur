@@ -822,7 +822,7 @@ mod tests {
         tx.send(Event::Llm { req_id: 1, ev: StreamEvent::ToolCall { id: "c1".into(), name: "ship_status".into(), input: input.clone() } }).unwrap();
         let raw = vec![serde_json::json!({"type":"tool_use","id":"c1","name":"ship_status","input":input})];
         tx.send(Event::Llm { req_id: 1, ev: StreamEvent::Done { stop: Stop::ToolUse, model: None, raw: Some(raw) } }).unwrap();
-        let outcome = ToolOutcome { content: "UP 3D".into(), is_error: false, argv: None, exit: None, ms: 1 };
+        let outcome = ToolOutcome { content: "UP 3D".into(), is_error: false, argv: None, exit: None, ms: 1, audit_output: None };
         tx.send(Event::ToolDone { req_id: 1, call_id: "c1".into(), outcome }).unwrap();
         tx.send(Event::Keys(vec![Key::Ctrl(']'), Key::Char('q')])).unwrap();
         event_loop(&mut app, &mut t, &mut rx, &mut no_pty(), || 0, now).await.unwrap();

@@ -331,6 +331,7 @@ mod tests {
             argv: Some(vec!["systemctl".into(), "status".into()]),
             exit: Some(json!(0)),
             ms: 12,
+            audit_output: None,
         }
     }
     fn call(id: &str, name: &str, input: Value) -> Call {
@@ -665,6 +666,7 @@ mod tests {
             argv: Some(argv.clone()),
             exit: Some(json!(0)),
             ms: 900,
+            audit_output: None,
         };
         assert_eq!(
             o.audit(late),

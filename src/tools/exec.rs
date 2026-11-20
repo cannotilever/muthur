@@ -28,6 +28,8 @@ pub struct ToolOutcome {
     pub argv: Option<Vec<String>>,
     pub exit: Option<Value>,
     pub ms: u64,
+    /// Full text for the audit log; None means same as `content`.
+    pub audit_output: Option<String>,
 }
 
 fn strs(a: &[&str]) -> Vec<String> {
@@ -83,6 +85,7 @@ fn outcome(
         argv: Some(argv),
         exit: Some(exit),
         ms,
+        audit_output: None,
     }
 }
 
@@ -107,6 +110,7 @@ pub fn execute(inv: &Invocation, ctx: &ExecCtx) -> ToolOutcome {
                 argv: None,
                 exit: None,
                 ms: 0,
+                audit_output: None,
             },
             None => ToolOutcome {
                 content: "TELEMETRY NOT YET AVAILABLE".into(),
@@ -114,6 +118,7 @@ pub fn execute(inv: &Invocation, ctx: &ExecCtx) -> ToolOutcome {
                 argv: None,
                 exit: None,
                 ms: 0,
+                audit_output: None,
             },
         };
     };
