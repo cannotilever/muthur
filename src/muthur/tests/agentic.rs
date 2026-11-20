@@ -142,6 +142,16 @@ fn tool_round_runs_and_respawns() {
 }
 
 #[test]
+fn delegate_placeholder_answers_no_response() {
+    let mut h = harness();
+    submit(&mut h, "why is nginx down");
+    tool_use(&mut h, 1, &[("d1", "delegate", json!({"task": "check nginx"}))]);
+    let r = last_results(&h);
+    assert_eq!(r.len(), 1);
+    assert!(r[0].content.contains("NO RESPONSE FROM SCIENCE OFFICER"), "{}", r[0].content);
+}
+
+#[test]
 fn stale_tool_done_ignored() {
     let mut h = harness();
     submit(&mut h, "x");

@@ -86,6 +86,7 @@ fn kind(e: &Effect) -> &'static str {
         Effect::AskPassword { .. } => "password",
         Effect::AskOverride { .. } => "override",
         Effect::Run { .. } => "run",
+        Effect::Delegate { .. } => "delegate",
         Effect::Note(_) => "note",
         Effect::LogTool(_) => "log",
         Effect::Audit(_) => "audit",
@@ -618,4 +619,103 @@ fn stale_outcome_ignored() {
     assert_eq!(t.on_review("c1", allow(), true), vec![]);
     assert_eq!(t.on_password("c1", true, true), vec![]);
     assert_eq!(t.on_override("c1", true, true), vec![]);
+}
+
+fn delegate_call(id: &str, task: &str) -> Call {
+    call(id, "delegate", json!({"task": task}))
+}
+fn report(lines: &[&str], text: &str, truncated: bool) -> DelegateOutcome {
+    DelegateOutcome::Report { lines: lines.iter().map(|s| s.to_string()).collect(), report: text.into(), truncated }
+}
+fn delegated(t: &mut Turn) -> Vec<Effect> {
+    t.on_done(&Stop::ToolUse, vec![delegate_call("d1", "check nginx")], &persona(), &no_policy(), true)
+}
+
+#[test]
+fn delegate_emits_effect_without_note() {
+    let mut t = pturn();
+    let e = delegated(&mut t);
+    assert_eq!(e, vec![Effect::Delegate { call_id: "d1".into(), task: "check nginx".into(), operator_message: "status".into() }]);
+    assert_eq!(t.delegating(), Some("d1"));
+}
+
+#[test]
+fn delegate_result_content() {
+    let r = report(&["SCIENCE OFFICER: uptime  [ALLOW]"], "Up 3 days.", false);
+    assert_eq!(r.content("SCIENCE OFFICER"), "COMMANDS:\nSCIENCE OFFICER: uptime  [ALLOW]\nREPORT:\nUp 3 days.");
+    assert_eq!(report(&[], "Up 3 days.", true).content("SCIENCE OFFICER"), "COMMANDS:\nNONE\nREPORT (TRUNCATED):\nUp 3 days.");
+    let n = DelegateOutcome::NoResponse { lines: vec![] };
+    assert_eq!(n.content("SCIENCE OFFICER"), "COMMANDS:\nNONE\nNO RESPONSE FROM SCIENCE OFFICER");
+}
+
+#[test]
+fn on_delegate_resolves_and_spawns() {
+    let mut t = pturn();
+    delegated(&mut t);
+    let out = report(&["SCIENCE OFFICER: uptime  [ALLOW]"], "Up 3 days.", false);
+    let content = out.content("SCIENCE OFFICER");
+    let e = t.on_delegate("d1", out, "SCIENCE OFFICER");
+    let a = audits(&e);
+    assert_eq!(a.len(), 1);
+    assert_eq!(a[0].tool, "delegate");
+    assert_eq!(a[0].agent, Some(AgentId::Muthur));
+    assert_eq!(a[0].decision, Decision::Auto);
+    assert_eq!(a[0].args, json!({"task": "check nginx"}));
+    assert_eq!(a[0].output, content);
+    let l = logged(&e);
+    assert_eq!(l.len(), 1);
+    assert_eq!(l[0].len(), 1);
+    assert!(!l[0][0].is_error);
+    assert_eq!(l[0][0].label, "DELEGATE");
+    assert_eq!(l[0][0].content, content);
+    assert_eq!(e.last(), Some(&Effect::Spawn { forced_final: false }));
+    assert!(notes(&e).is_empty());
+    assert_eq!(t.delegating(), None);
+
+    let mut t = pturn();
+    delegated(&mut t);
+    let e = t.on_delegate("d1", DelegateOutcome::NoResponse { lines: vec![] }, "SCIENCE OFFICER");
+    assert!(logged(&e)[0][0].is_error);
+}
+
+#[test]
+fn on_delegate_wrong_id_ignored() {
+    let mut t = pturn();
+    delegated(&mut t);
+    assert_eq!(t.on_delegate("zz", DelegateOutcome::NoResponse { lines: vec![] }, "X"), vec![]);
+    assert_eq!(t.delegating(), Some("d1"));
+}
+
+#[test]
+fn abort_while_delegating() {
+    let mut t = pturn();
+    delegated(&mut t);
+    let e = t.abort();
+    let a = audits(&e);
+    assert_eq!(a.len(), 1);
+    assert_eq!(a[0].decision, Decision::Aborted);
+    let r = logged(&e)[0];
+    assert_eq!(r[0].content, ABORTED);
+    assert!(r[0].is_error);
+    assert!(!e.iter().any(|x| matches!(x, Effect::Orphan(_))));
+    assert_eq!(e.last(), Some(&Effect::Finished { truncated: false }));
+}
+
+#[test]
+fn delegate_then_ship_status_sequential() {
+    let mut t = pturn();
+    let e = t.on_done(&Stop::ToolUse, vec![delegate_call("d1", "check nginx"), ship("s1")], &persona(), &no_policy(), true);
+    assert_eq!(e.len(), 1);
+    assert!(matches!(e[0], Effect::Delegate { .. }));
+    let e = t.on_delegate("d1", DelegateOutcome::NoResponse { lines: vec![] }, "X");
+    assert!(e.iter().any(|x| matches!(x, Effect::Run { call_id, .. } if call_id == "s1")), "{e:?}");
+    assert!(!e.iter().any(|x| matches!(x, Effect::Spawn { .. })));
+}
+
+#[test]
+fn delegate_counts_toward_round_cap() {
+    let mut t = Turn::new(1, AgentId::Muthur, "status".into());
+    delegated(&mut t);
+    let e = t.on_delegate("d1", DelegateOutcome::NoResponse { lines: vec![] }, "X");
+    assert_eq!(e.last(), Some(&Effect::Spawn { forced_final: true }));
 }

@@ -37,6 +37,9 @@ pub enum Effect {
     /// The reviewer denied; the operator may type OVERRIDE. `prompt` is the command or tool label.
     AskOverride { call_id: String, prompt: String, note: String },
     Run { call_id: String, invocation: Invocation },
+    /// Hand `task` to the technical agent; its outcome comes back through `on_delegate`.
+    /// `operator_message` is the operator's own line, for the child's authority checks.
+    Delegate { call_id: String, task: String, operator_message: String },
     Note(String),
     LogTool(Vec<ToolResult>),
     Audit(AuditEntry),
@@ -44,6 +47,27 @@ pub enum Effect {
     /// (see `Orphan::audit`).
     Orphan(Orphan),
     Finished { truncated: bool },
+}
+
+/// How a delegation ended, as the persona's tool result.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DelegateOutcome {
+    Report { lines: Vec<String>, report: String, truncated: bool },
+    NoResponse { lines: Vec<String> },
+}
+
+impl DelegateOutcome {
+    /// The tool-result text for the persona; `officer` is the agent's label.
+    pub fn content(&self, officer: &str) -> String {
+        let (lines, tail) = match self {
+            DelegateOutcome::Report { lines, report, truncated } => {
+                (lines, format!("REPORT{}:\n{report}", if *truncated { " (TRUNCATED)" } else { "" }))
+            }
+            DelegateOutcome::NoResponse { lines } => (lines, format!("NO RESPONSE FROM {officer}")),
+        };
+        let commands = if lines.is_empty() { "NONE".to_string() } else { lines.join("\n") };
+        format!("COMMANDS:\n{commands}\n{tail}")
+    }
 }
 
 /// A call aborted while its command was running.
@@ -88,6 +112,8 @@ enum State {
     /// `overridden`: reached through OVERRIDE.
     Password { inv: Invocation, overridden: bool },
     Override(Invocation),
+    /// Handed to the technical agent; waiting for its outcome.
+    Delegating,
     Running { inv: Invocation, decision: Decision },
     Done,
 }
@@ -471,6 +497,25 @@ impl Turn {
         out
     }
 
+    /// The delegation finished: resolves the waiting call and moves on.
+    pub fn on_delegate(&mut self, call_id: &str, outcome: DelegateOutcome, officer: &str) -> Vec<Effect> {
+        let Some(i) = self.live(call_id, |s| matches!(s, State::Delegating)) else { return vec![] };
+        let mut out = Vec::new();
+        let content = outcome.content(officer);
+        let is_error = matches!(outcome, DelegateOutcome::NoResponse { .. });
+        let slot = &mut self.slots[i];
+        out.push(Effect::Audit(AuditEntry { output: content.clone(), ..slot.base_audit(self.agent, Decision::Auto) }));
+        let r = slot.make_result(content, is_error);
+        slot.resolved(r, Decision::Auto, None, &mut self.prior);
+        self.advance(&mut out);
+        out
+    }
+
+    /// The call id of the slot waiting on a delegation.
+    pub fn delegating(&self) -> Option<&str> {
+        self.slots.iter().find(|s| matches!(s.state, State::Delegating) && s.result.is_none()).map(|s| s.call.id.as_str())
+    }
+
     /// Ctrl-C: every unresolved call is aborted, the round logged, the turn finished.
     pub fn abort(&mut self) -> Vec<Effect> {
         let mut out = Vec::new();
@@ -553,9 +598,10 @@ impl Turn {
         let State::Pending(inv) = std::mem::replace(&mut slot.state, State::Done) else { return };
         match inv.gate() {
             Gate::Free => slot.run(self.agent, inv, Decision::Auto, out),
-            // Task 4 replaces this arm with the real delegation.
             Gate::Delegate => {
-                slot.refuse(self.agent, Decision::Rejected, "NOT AUTHORIZED: delegate unavailable".into(), "DENIED: delegate unavailable", &mut self.prior, out)
+                let Invocation::Delegate { task } = &inv else { return };
+                out.push(Effect::Delegate { call_id: slot.call.id.clone(), task: task.clone(), operator_message: self.operator_message.clone() });
+                slot.state = State::Delegating;
             }
             Gate::Reviewed => {
                 let input = ReviewInput {

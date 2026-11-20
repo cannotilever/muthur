@@ -2,7 +2,7 @@
 //! operator's Y/N, password and OVERRIDE prompts.
 
 use super::{Entry, MuthurTab, State};
-use crate::agent::{Call, Effect, ABORTED_ISSUED};
+use crate::agent::{ABORTED_ISSUED, Call, DelegateOutcome, Effect};
 use crate::input::Key;
 use crate::llm::{Stop, ToolResult};
 use crate::review::Review;
@@ -255,6 +255,16 @@ impl MuthurTab {
                 Effect::AskOverride { call_id, prompt, note } => {
                     self.state = State::OverridePrompt { call_id, prompt, note, typed: String::new(), drawn: false, armed_at: None };
                     self.activity = true;
+                }
+                // Temporary: Task 8 replaces this with the real child turn.
+                Effect::Delegate { call_id, .. } => {
+                    let label = self.tech.label.clone();
+                    let Some(turn) = self.turn.as_mut() else { continue };
+                    let effects = turn.on_delegate(&call_id, DelegateOutcome::NoResponse { lines: vec![] }, &label);
+                    self.apply(effects, None);
+                    if self.turn.is_none() {
+                        break;
+                    }
                 }
                 Effect::Note(s) => {
                     if self.revealing {
