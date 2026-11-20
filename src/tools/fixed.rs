@@ -37,7 +37,7 @@ fn strs(a: &[&str]) -> Vec<String> {
 /// container tools without a runtime.
 pub fn argv_for(inv: &Invocation, runtime: Option<&str>) -> Option<Vec<String>> {
     Some(match inv {
-        Invocation::ShipStatus | Invocation::PortCheck { .. } | Invocation::Run { .. } => return None,
+        Invocation::ShipStatus | Invocation::PortCheck { .. } | Invocation::Run { .. } | Invocation::Delegate { .. } => return None,
         Invocation::Containers => {
             strs(&[runtime?, "ps", "-a", "--no-trunc", "--format", "{{.Names}}\\t{{.Image}}\\t{{.Status}}"])
         }

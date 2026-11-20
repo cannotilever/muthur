@@ -517,6 +517,15 @@ fn execute_tool(
             let timeout = Duration::from_secs(u64::from(*timeout_secs));
             crate::tools::shell::run(&crate::ops::runner::SystemRunner, command, *as_root, timeout, secret.as_ref(), cancel)
         }
+        // The tab never runs a delegate; the persona's call goes to the officer instead.
+        crate::tools::Invocation::Delegate { .. } => crate::tools::ToolOutcome {
+            content: "NOT AVAILABLE".into(),
+            is_error: true,
+            argv: None,
+            exit: None,
+            ms: 0,
+            audit_output: None,
+        },
         _ => crate::tools::fixed::execute(inv, ctx),
     }
 }

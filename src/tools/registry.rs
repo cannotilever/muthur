@@ -65,12 +65,14 @@ pub enum Invocation {
     PortCheck { host: String, port: u16 },
     HttpCheck { url: String },
     Run { command: String, reason: String, as_root: bool, timeout_secs: u32 },
+    Delegate { task: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Gate {
     Free,
     Reviewed,
+    Delegate,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,6 +94,7 @@ impl Invocation {
             Invocation::PortCheck { .. } => "port_check",
             Invocation::HttpCheck { .. } => "http_check",
             Invocation::Run { .. } => "run",
+            Invocation::Delegate { .. } => "delegate",
         }
     }
 
@@ -107,6 +110,7 @@ impl Invocation {
             Invocation::PortCheck { host, port } => format!("PORT CHECK {host} {port}"),
             Invocation::HttpCheck { url } => format!("HTTP CHECK {url}"),
             Invocation::Run { command, .. } => command.clone(),
+            Invocation::Delegate { .. } => "DELEGATE".into(),
         }
     }
 
@@ -116,6 +120,7 @@ impl Invocation {
             | Invocation::Containers
             | Invocation::ContainerInspect { .. }
             | Invocation::ContainerLogs { .. } => Gate::Free,
+            Invocation::Delegate { .. } => Gate::Delegate,
             _ => Gate::Reviewed,
         }
     }
@@ -166,7 +171,18 @@ fn fixed_specs() -> Vec<ToolSpec> {
 impl ToolDefs {
     pub fn persona(t: &ToolsSection) -> Self {
         Self {
-            specs: if t.enabled { fixed_specs() } else { Vec::new() },
+            specs: if t.enabled {
+                let mut specs = fixed_specs();
+                specs.push(spec(
+                    "delegate",
+                    "Delegate a diagnostic or a change to the science officer, who can run shell commands on the ship under the operator's supervision. \
+                     The task must be complete and self-contained: the officer sees nothing of this conversation.",
+                    json!({"task": {"type":"string","description":"The complete task, with every detail the officer needs"}}),
+                ));
+                specs
+            } else {
+                Vec::new()
+            },
             max_rounds: t.max_rounds,
             agent: AgentId::Muthur,
             default_timeout_secs: 0,
@@ -327,6 +343,13 @@ impl ToolDefs {
                 let timeout_secs = if t == 0 { self.default_timeout_secs } else { t as u32 };
                 Ok(Invocation::Run { command: command.to_string(), reason: reason.to_string(), as_root, timeout_secs })
             }
+            "delegate" => {
+                let task = text("task")?.trim();
+                if task.is_empty() || task.chars().count() > 4000 {
+                    return Err("invalid task".into());
+                }
+                Ok(Invocation::Delegate { task: task.to_string() })
+            }
             _ => Err(format!("unknown tool {name}")),
         }
     }
@@ -346,10 +369,40 @@ mod tests {
     #[test]
     fn persona_order() {
         let d = ToolDefs::persona(&ToolsSection::default());
-        assert_eq!(names(&d), ["ship_status", "containers", "container_inspect", "container_logs"]);
+        assert_eq!(names(&d), ["ship_status", "containers", "container_inspect", "container_logs", "delegate"]);
         assert_eq!(d.agent(), AgentId::Muthur);
         assert_eq!(d.max_rounds(), 8);
         assert!(ToolDefs::persona(&ToolsSection { enabled: false, ..Default::default() }).specs().is_empty());
+    }
+
+    #[test]
+    fn persona_offers_delegate_last() {
+        let d = ToolDefs::persona(&ToolsSection::default());
+        assert_eq!(names(&d), ["ship_status", "containers", "container_inspect", "container_logs", "delegate"]);
+    }
+
+    #[test]
+    fn technical_has_no_delegate() {
+        assert!(tech().validate("delegate", &json!({"task":"x"})).is_err());
+    }
+
+    #[test]
+    fn delegate_validates_task() {
+        let d = ToolDefs::persona(&ToolsSection::default());
+        assert_eq!(d.validate("delegate", &json!({"task":"  check nginx  "})), Ok(Invocation::Delegate { task: "check nginx".into() }));
+        assert_eq!(d.validate("delegate", &json!({"task":"   "})), Err("invalid task".into()));
+        assert_eq!(d.validate("delegate", &json!({"task":"a".repeat(4001)})), Err("invalid task".into()));
+        assert!(d.validate("delegate", &json!({"task":"é".repeat(4000)})).is_ok());
+        assert_eq!(d.validate("delegate", &json!({"task":5})), Err("invalid task".into()));
+        assert_eq!(d.validate("delegate", &json!({})), Err("missing task".into()));
+    }
+
+    #[test]
+    fn delegate_gate() {
+        let i = Invocation::Delegate { task: "x".into() };
+        assert_eq!(i.gate(), Gate::Delegate);
+        assert_eq!(i.name(), "delegate");
+        assert_eq!(i.label(), "DELEGATE");
     }
 
     #[test]

@@ -553,6 +553,10 @@ impl Turn {
         let State::Pending(inv) = std::mem::replace(&mut slot.state, State::Done) else { return };
         match inv.gate() {
             Gate::Free => slot.run(self.agent, inv, Decision::Auto, out),
+            // Task 4 replaces this arm with the real delegation.
+            Gate::Delegate => {
+                slot.refuse(self.agent, Decision::Rejected, "NOT AUTHORIZED: delegate unavailable".into(), "DENIED: delegate unavailable", &mut self.prior, out)
+            }
             Gate::Reviewed => {
                 let input = ReviewInput {
                     operator_message: self.operator_message.clone(),
