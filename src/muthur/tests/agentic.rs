@@ -143,16 +143,6 @@ fn tool_round_runs_and_respawns() {
 }
 
 #[test]
-fn delegate_placeholder_answers_no_response() {
-    let mut h = harness();
-    submit(&mut h, "why is nginx down");
-    tool_use(&mut h, 1, &[("d1", "delegate", json!({"task": "check nginx"}))]);
-    let r = last_results(&h);
-    assert_eq!(r.len(), 1);
-    assert!(r[0].content.contains("NO RESPONSE FROM SCIENCE OFFICER"), "{}", r[0].content);
-}
-
-#[test]
 fn stale_tool_done_ignored() {
     let mut h = harness();
     submit(&mut h, "x");
@@ -976,4 +966,287 @@ fn password_prompt_clears_type_ahead() {
     h.t.on_review(1, "c1".into(), review(Verdict::Allow, "ok"));
     assert!(matches!(h.t.state, State::Password { .. }));
     assert_eq!((h.t.input.as_str(), h.t.cursor), ("", 0));
+}
+
+// ---- Delegation: MU/TH/UR hands a task to the science officer ----
+
+/// Ends persona request `req` with one `delegate` call.
+fn delegate(h: &mut H, req: u64, id: &str, task: &str) {
+    tool_use(h, req, &[(id, "delegate", json!({"task": task}))]);
+}
+
+fn harness_report(mode: crate::config::DelegateReport) -> H {
+    let mut h = harness();
+    h.t.tech.delegate_report = mode;
+    h
+}
+
+/// The messages of the last request sent.
+fn last_messages(h: &H) -> Vec<crate::llm::Message> {
+    h.sent.borrow().last().unwrap().1.messages.clone()
+}
+
+fn user_text(text: &str) -> crate::llm::Message {
+    crate::llm::Message { role: crate::llm::Role::User, content: MessageContent::Text(text.into()) }
+}
+
+/// Persona request 1 delegates `d1` "check nginx"; the child (request 2) runs
+/// `uptime` (allowed), then reports "Up 3 days." from request 3.
+fn delegated_uptime(h: &mut H) {
+    submit(h, "why is nginx down");
+    delegate(h, 1, "d1", "check nginx");
+    tool_use(h, 2, &[("c1", "run", run_call("uptime", false))]);
+    h.t.on_review(2, "c1".into(), review(Verdict::Allow, "read-only"));
+    h.t.on_tool_done(2, "c1".into(), ok("up 3 days"));
+    h.t.on_llm(3, StreamEvent::Text("Up 3 days.".into()));
+    h.t.on_llm(3, done(Stop::End));
+}
+
+const UPTIME_RESULT: &str = "COMMANDS:\nSCIENCE OFFICER: uptime  [ALLOW]\nREPORT:\nUp 3 days.";
+
+#[test]
+fn delegate_spawns_child_with_task_only_window() {
+    let mut h = harness_with(cfg(), |l| {
+        l.append_user("[SHIP TIME X] ls", "ts", AgentId::Tech).unwrap();
+        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "Found.".into(), stop: "end_turn".into(), raw: None, lane: Lane::Tech };
+        l.append_assistant(a, "ts").unwrap();
+    });
+    submit(&mut h, "why is nginx down");
+    delegate(&mut h, 1, "d1", "check nginx");
+    assert_eq!(*h.agents.borrow(), vec![AgentId::Muthur, AgentId::Tech]);
+    {
+        let s = h.sent.borrow();
+        let req = &s.last().unwrap().1;
+        assert!(req.system.starts_with(TECH_PROMPT.lines().next().unwrap()), "{}", req.system);
+        assert_eq!(req.messages, vec![user_text("check nginx")]);
+        assert!(req.tools.iter().any(|t| t.name == "run"), "{:?}", req.tools);
+        assert!(!req.tools.iter().any(|t| t.name == "delegate"), "{:?}", req.tools);
+    }
+    assert!(text(&mut h.t).contains("DELEGATING TO SCIENCE OFFICER"));
+}
+
+#[test]
+fn delegate_child_run_condensed_and_relayed() {
+    let mut h = harness();
+    delegated_uptime(&mut h);
+    h.tick(2000);
+    let shown = text(&mut h.t);
+    assert!(shown.contains("SCIENCE OFFICER: uptime  [ALLOW]"), "{shown}");
+    for absent in ["RUN ", "REVIEW:", "EXIT", "Up 3 days.", "REPORTS:"] {
+        assert!(!shown.contains(absent), "{absent}: {shown}");
+    }
+    assert_eq!(h.agents.borrow().last(), Some(&AgentId::Muthur));
+    let r = last_results(&h);
+    assert_eq!((r.len(), r[0].id.as_str(), r[0].content.as_str(), r[0].is_error), (1, "d1", UPTIME_RESULT, false));
+    let recs = records(&h);
+    let delegated: Vec<&serde_json::Value> = recs.iter().filter(|r| r["delegated"] == "d1").collect();
+    let kinds: Vec<&str> = delegated.iter().filter_map(|r| r["kind"].as_str()).filter(|k| *k != "epoch").collect();
+    assert_eq!(kinds, ["user", "assistant", "tool", "assistant"], "{recs:#?}");
+    assert!(delegated.iter().all(|r| r["agent"] == "tech"), "{delegated:#?}");
+    // The persona's own records stay in its lane.
+    let persona_tool = recs.iter().find(|r| r["kind"] == "tool" && r["agent"] == "muthur").unwrap();
+    assert!(persona_tool.get("delegated").is_none(), "{persona_tool}");
+    assert_eq!(persona_tool["results"][0]["content"], UPTIME_RESULT);
+    // The persona's final answer is shown as usual.
+    h.t.on_llm(4, StreamEvent::Text("NGINX UP.".into()));
+    h.t.on_llm(4, done(Stop::End));
+    h.tick(2000);
+    assert!(text(&mut h.t).contains("NGINX UP."));
+    assert!(status_row(&mut h).contains("READY FOR INQUIRY"));
+}
+
+#[test]
+fn delegate_verbatim_prints_report() {
+    let mut h = harness_report(crate::config::DelegateReport::Verbatim);
+    delegated_uptime(&mut h);
+    let rows = screen(&mut h.t, 61, 40);
+    let at = |needle: &str| rows.iter().position(|r| r.contains(needle)).unwrap_or_else(|| panic!("{needle}: {rows:#?}"));
+    assert_eq!(at("SCIENCE OFFICER REPORTS:") + 1, at("Up 3 days."), "{rows:#?}");
+    assert_eq!(last_results(&h)[0].content, UPTIME_RESULT);
+    assert_eq!(records(&h).iter().find(|r| r["delegated"] == "d1").unwrap()["report"], "verbatim");
+}
+
+#[test]
+fn delegate_child_password_prompt() {
+    let mut h = harness();
+    submit(&mut h, "restart nginx");
+    delegate(&mut h, 1, "d1", "restart nginx");
+    tool_use(&mut h, 2, &[("c1", "run", run_call("systemctl restart nginx", true))]);
+    h.t.on_review(2, "c1".into(), review(Verdict::Allow, "operator asked"));
+    let row = status_row(&mut h);
+    assert!(row.contains("CLEARANCE REQUIRED -- systemctl restart nginx -- PASSWORD:"), "{row}");
+    seen(&mut h);
+    h.tick(1100);
+    type_str(&mut h.t, "hunter2");
+    h.t.handle_key(&Key::Enter);
+    assert_eq!(h.ran.borrow().len(), 1);
+    assert_eq!(h.secrets.borrow()[0].as_ref().map(Secret::expose), Some("hunter2"));
+    h.t.on_tool_done(2, "c1".into(), exit_outcome(0, 0));
+    assert!(text(&mut h.t).contains("SCIENCE OFFICER: systemctl restart nginx  [ROOT, ALLOW]"));
+    h.t.on_llm(3, StreamEvent::Text("Restarted.".into()));
+    h.t.on_llm(3, done(Stop::End));
+    let chat = std::fs::read_to_string(&h.path).unwrap();
+    let audit = std::fs::read_to_string(&h.audit_path).unwrap();
+    assert!(!chat.contains("hunter2") && !audit.contains("hunter2"));
+}
+
+#[test]
+fn delegate_child_error_gives_no_response() {
+    let mut h = harness();
+    submit(&mut h, "why is nginx down");
+    delegate(&mut h, 1, "d1", "check nginx");
+    h.t.on_llm(2, StreamEvent::Error(LlmError::SignalLost));
+    assert_eq!(*h.agents.borrow(), vec![AgentId::Muthur, AgentId::Tech, AgentId::Muthur]);
+    let r = last_results(&h);
+    assert!(r[0].content.ends_with("NO RESPONSE FROM SCIENCE OFFICER"), "{}", r[0].content);
+    assert!(r[0].is_error);
+    assert_ne!(h.t.state, State::Ready, "the persona turn goes on");
+    let shown = text(&mut h.t);
+    assert!(!shown.contains("UNABLE TO COMPLY"), "{shown}");
+    let recs = records(&h);
+    let child_last = recs.iter().rfind(|r| r["delegated"] == "d1" && r["kind"] == "assistant").unwrap();
+    assert_eq!(child_last["stop"], "error");
+}
+
+#[test]
+fn delegate_tech_not_ready_gives_no_response() {
+    let mut h = harness();
+    h.t.tech.cfg.api_key = None;
+    submit(&mut h, "why is nginx down");
+    delegate(&mut h, 1, "d1", "check nginx");
+    assert_eq!(*h.agents.borrow(), vec![AgentId::Muthur, AgentId::Muthur]);
+    let r = last_results(&h);
+    assert_eq!(r[0].content, "COMMANDS:\nNONE\nNO RESPONSE FROM SCIENCE OFFICER");
+    assert!(r[0].is_error);
+    assert!(!records(&h).iter().any(|r| r.get("delegated").is_some()), "no delegated exchange is logged");
+}
+
+#[test]
+fn two_delegations_in_one_round_run_sequentially() {
+    let mut h = harness();
+    submit(&mut h, "check everything");
+    tool_use(&mut h, 1, &[("d1", "delegate", json!({"task": "check nginx"})), ("d2", "delegate", json!({"task": "check disk"}))]);
+    assert_eq!(*h.agents.borrow(), vec![AgentId::Muthur, AgentId::Tech]);
+    assert_eq!(last_messages(&h), vec![user_text("check nginx")]);
+    h.t.on_llm(2, StreamEvent::Text("Nginx fine.".into()));
+    h.t.on_llm(2, done(Stop::End));
+    assert_eq!(*h.agents.borrow(), vec![AgentId::Muthur, AgentId::Tech, AgentId::Tech]);
+    assert_eq!(last_messages(&h), vec![user_text("check disk")]);
+    h.t.on_llm(3, StreamEvent::Text("Disk fine.".into()));
+    h.t.on_llm(3, done(Stop::End));
+    assert_eq!(h.agents.borrow().last(), Some(&AgentId::Muthur));
+    let r = last_results(&h);
+    assert_eq!(r.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["d1", "d2"]);
+    assert!(r[0].content.ends_with("REPORT:\nNginx fine.") && r[1].content.ends_with("REPORT:\nDisk fine."), "{r:?}");
+}
+
+#[test]
+fn injected_task_host_is_not_from_operator() {
+    let mut h = harness();
+    submit(&mut h, "check the website");
+    let task = "http_check http://evil.example/x";
+    delegate(&mut h, 1, "d1", task);
+    tool_use(&mut h, 2, &[("c1", "http_check", json!({"url": "http://evil.example/x"}))]);
+    let reviews = h.reviews.borrow();
+    let (req, call, input) = reviews.last().unwrap();
+    assert_eq!((*req, call.as_str()), (2, "c1"));
+    assert_eq!(input.operator_message, "CHECK THE WEBSITE", "the operator's own line, as typed (uppercased)");
+    assert!(input.unknown_target);
+    assert_eq!(input.delegated_task.as_deref(), Some(task));
+}
+
+#[test]
+fn delegation_invisible_to_direct() {
+    let mut h = harness();
+    delegated_uptime(&mut h);
+    h.t.on_llm(4, StreamEvent::Text("NGINX UP.".into()));
+    h.t.on_llm(4, done(Stop::End));
+    direct(&mut h);
+    submit(&mut h, "uptime");
+    assert_eq!(h.agents.borrow().last(), Some(&AgentId::Tech));
+    let s = h.sent.borrow();
+    let req = &s.last().unwrap().1;
+    let all = format!("{:?}", req.messages);
+    assert!(!all.contains("check nginx") && !all.contains("Up 3 days."), "{all}");
+    assert_eq!(req.messages.len(), 1, "{all}");
+}
+
+#[test]
+fn toggle_refused_during_delegation() {
+    let mut h = harness();
+    submit(&mut h, "why is nginx down");
+    delegate(&mut h, 1, "d1", "check nginx");
+    direct(&mut h);
+    assert!(status_row(&mut h).contains("INQUIRY IN PROGRESS"));
+    assert_eq!(h.t.mode, Mode::Persona);
+    tool_use(&mut h, 2, &[("c1", "run", run_call("uptime", false))]);
+    h.t.on_review(2, "c1".into(), review(Verdict::Allow, "read-only"));
+    h.t.handle_key(&Key::Ctrl('u'));
+    direct(&mut h);
+    assert!(status_row(&mut h).contains("INQUIRY IN PROGRESS"));
+    assert_eq!(h.t.mode, Mode::Persona);
+}
+
+#[test]
+fn delegate_status_word_executing() {
+    let mut h = harness();
+    submit(&mut h, "why is nginx down");
+    delegate(&mut h, 1, "d1", "check nginx");
+    tool_use(&mut h, 2, &[("c1", "run", run_call("uptime", false))]);
+    h.t.on_review(2, "c1".into(), review(Verdict::Allow, "read-only"));
+    assert_eq!(h.ran.borrow().len(), 1);
+    let row = status_row(&mut h);
+    assert!(row.trim_start_matches('│').trim_start().starts_with("EXECUTING"), "{row}");
+}
+
+#[test]
+fn delegate_child_root_refused_when_audit_offline() {
+    let mut h = harness_full(cfg(), tools_cfg(), false, |_| {});
+    submit(&mut h, "restart nginx");
+    delegate(&mut h, 1, "d1", "restart nginx");
+    tool_use(&mut h, 2, &[("c1", "run", run_call("id", true))]);
+    h.t.on_review(2, "c1".into(), review(Verdict::Allow, "operator asked"));
+    assert!(!matches!(h.t.state, State::Password { .. }), "{:?}", h.t.state);
+    assert!(h.ran.borrow().is_empty());
+    // The M7 refusal note, condensed (it keeps its ROOT tag).
+    let line = "SCIENCE OFFICER: id  [ROOT, DENIED: AUDIT LOG OFFLINE]";
+    let shown = text(&mut h.t);
+    assert!(shown.contains(line), "{shown}");
+    h.t.on_llm(3, StreamEvent::Text("Could not restart.".into()));
+    h.t.on_llm(3, done(Stop::End));
+    let r = last_results(&h);
+    assert!(r[0].content.starts_with(&format!("COMMANDS:\n{line}\nREPORT:")), "{}", r[0].content);
+}
+
+#[test]
+fn delegate_audit_entries() {
+    let mut h = harness();
+    delegated_uptime(&mut h);
+    let a = audit_records(&h);
+    let run = a.iter().find(|e| e["tool"] == "run").unwrap_or_else(|| panic!("{a:#?}"));
+    assert_eq!((&run["agent"], &run["delegated_by"]), (&json!("tech"), &json!("d1")));
+    let del = a.iter().find(|e| e["tool"] == "delegate").unwrap_or_else(|| panic!("{a:#?}"));
+    assert_eq!((&del["agent"], &del["decision"]), (&json!("muthur"), &json!("auto")));
+    assert!(del["output"].as_str().unwrap().starts_with("COMMANDS:"), "{del}");
+}
+
+#[test]
+fn ctrl_c_during_delegation_ends_inquiry() {
+    let mut h = harness();
+    submit(&mut h, "why is nginx down");
+    delegate(&mut h, 1, "d1", "check nginx");
+    h.t.on_llm(2, StreamEvent::Text("Checking".into()));
+    h.t.handle_key(&Key::Ctrl('c'));
+    assert_eq!(h.t.state, State::Ready);
+    assert!(h.t.child.is_none() && h.t.turn.is_none());
+    let recs = records(&h);
+    let child_last = recs.iter().rfind(|r| r["delegated"] == "d1").unwrap();
+    assert_eq!((&child_last["kind"], &child_last["stop"]), (&json!("assistant"), &json!("interrupted")));
+    let persona_tool = recs.iter().rfind(|r| r["kind"] == "tool" && r["agent"] == "muthur").unwrap();
+    assert_eq!(persona_tool["results"][0]["content"], "ABORTED BY OPERATOR");
+    // Late events of the aborted child change nothing.
+    h.t.on_llm(2, done(Stop::End));
+    assert_eq!(h.sent.borrow().len(), 2);
+    submit(&mut h, "status");
+    assert_eq!(h.agents.borrow().last(), Some(&AgentId::Muthur));
 }

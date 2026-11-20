@@ -2,7 +2,8 @@
 //! operator's Y/N, password and OVERRIDE prompts.
 
 use super::{Entry, MuthurTab, State};
-use crate::agent::{ABORTED_ISSUED, Call, DelegateOutcome, Effect};
+use crate::agent::{ABORTED_ISSUED, Call, DelegateOutcome, Effect, Turn};
+use crate::config::DelegateReport;
 use crate::input::Key;
 use crate::llm::{Stop, ToolResult};
 use crate::review::Review;
@@ -25,6 +26,14 @@ enum Answer {
 
 const AUDIT_OFFLINE: &str = "AUDIT LOG OFFLINE";
 
+/// A technical turn running a task the persona delegated, for its call `call_id`.
+pub(super) struct Child {
+    pub(super) call_id: String,
+    turn: Turn,
+    /// The text of the child's last reply: its report.
+    report: String,
+}
+
 /// The transcript note redisplayed for a logged tool result.
 pub(super) fn tool_note(r: &ToolResult) -> String {
     if r.content.starts_with(ABORTED_ISSUED) {
@@ -37,20 +46,30 @@ pub(super) fn tool_note(r: &ToolResult) -> String {
 impl MuthurTab {
     /// The stream ended: log the assistant record, then let the turn decide what follows.
     pub(super) fn stream_done(&mut self, stop: Stop, model: Option<String>, raw: Option<Vec<serde_json::Value>>) {
-        self.flush_cleaner();
+        let child = self.child.is_some();
+        if !child {
+            self.flush_cleaner();
+        }
         let a = self.assistant(model, stop.log_str(), raw);
         self.log_assistant(a);
+        if let Some(c) = &mut self.child {
+            c.report = self.partial_raw.clone();
+        }
         // Logged; an interrupt later in the turn must not log this text again.
         self.partial_raw.clear();
         self.abort = None;
         let calls = std::mem::take(&mut self.calls);
         let online = self.audit.borrow().is_online();
-        let (defs, policy) = if self.direct() { (&self.tech.defs, &self.tech.policy) } else { (&self.tools, &self.policy) };
-        let effects = match &mut self.turn {
+        let (defs, policy) = if self.tech_active() { (&self.tech.defs, &self.tech.policy) } else { (&self.tools, &self.policy) };
+        let turn = match &mut self.child {
+            Some(c) => Some(&mut c.turn),
+            None => self.turn.as_mut(),
+        };
+        let effects = match turn {
             Some(t) => t.on_done(&stop, calls, defs, policy, online),
             None => vec![Effect::Finished { truncated: false }],
         };
-        if !effects.iter().any(|e| matches!(e, Effect::Finished { .. })) {
+        if !child && !effects.iter().any(|e| matches!(e, Effect::Finished { .. })) {
             // A tool round follows: the text so far goes above its notes.
             self.settle_segment();
         }
@@ -73,9 +92,8 @@ impl MuthurTab {
         if req_id != self.req_id {
             return;
         }
-        let Some(turn) = &mut self.turn else { return };
+        let Some(effects) = self.active_turn().map(|t| t.on_tool_done(call_id, outcome)) else { return };
         self.cancel = None;
-        let effects = turn.on_tool_done(call_id, outcome);
         self.apply(effects, None);
     }
 
@@ -86,8 +104,7 @@ impl MuthurTab {
             return;
         }
         let online = self.audit.borrow().is_online();
-        let Some(turn) = &mut self.turn else { return };
-        let effects = turn.on_review(call_id, review.clone(), online);
+        let Some(effects) = self.active_turn().map(|t| t.on_review(call_id, review.clone(), online)) else { return };
         if !effects.is_empty() {
             self.review_abort = None;
             // For the pending block of a prompt that may follow.
@@ -159,7 +176,7 @@ impl MuthurTab {
             _ => return,
         };
         let online = self.audit.borrow().is_online();
-        let Some(turn) = &mut self.turn else {
+        let Some(turn) = self.active_turn() else {
             self.secret = None;
             self.state = State::Ready;
             return;
@@ -196,8 +213,113 @@ impl MuthurTab {
         if let Some(abort) = self.abort.take() {
             abort();
         }
+        self.abort_child();
         self.abort_turn();
         self.end_early(None);
+    }
+
+    /// The child's turn while a delegation runs, else the inquiry's own.
+    fn active_turn(&mut self) -> Option<&mut Turn> {
+        match &mut self.child {
+            Some(c) => Some(&mut c.turn),
+            None => self.turn.as_mut(),
+        }
+    }
+
+    /// Ctrl-C during a delegation: log any reply in progress and close the
+    /// child's open round as aborted, in its own lane; the persona's waiting
+    /// call is then aborted with the rest of its turn.
+    fn abort_child(&mut self) {
+        if self.child.is_none() {
+            return;
+        }
+        if !self.partial_raw.is_empty() {
+            let a = self.assistant(None, "interrupted", None);
+            self.log_assistant(a);
+            self.partial_raw.clear();
+        }
+        self.close_child();
+    }
+
+    /// Resolve the child's open round as aborted (in its lane) and take it.
+    fn close_child(&mut self) -> Option<Child> {
+        let effects = self.child.as_mut()?.turn.abort().into_iter().filter(|e| !matches!(e, Effect::Finished { .. })).collect();
+        self.apply(effects, None);
+        self.child.take()
+    }
+
+    /// A child request failed (stream error or window build): the persona's
+    /// call gets no response and its turn goes on.
+    pub(super) fn child_failed(&mut self) {
+        let stop = if self.partial_raw.is_empty() { "error" } else { "interrupted" };
+        let a = self.assistant(None, stop, None);
+        self.log_assistant(a);
+        self.partial_raw.clear();
+        self.abort = None;
+        let Some(child) = self.close_child() else { return };
+        let lines = child.turn.lines().to_vec();
+        self.resume_persona(&child.call_id, DelegateOutcome::NoResponse { lines });
+    }
+
+    /// The child finished: show the report in verbatim mode and hand it to the persona.
+    fn finish_child(&mut self, truncated: bool) {
+        let Some(Child { call_id, turn, report }) = self.child.take() else { return };
+        let label = self.tech.label.clone();
+        if self.tech.delegate_report == DelegateReport::Verbatim {
+            self.transcript.push(Entry::Harness(format!("{label} REPORTS:")));
+            self.transcript.extend(report.trim_end().lines().map(|l| Entry::Harness(l.to_string())));
+        }
+        let lines = turn.lines().to_vec();
+        self.resume_persona(&call_id, DelegateOutcome::Report { lines, report, truncated });
+    }
+
+    /// Resolve the persona's delegated call and carry on with its turn.
+    fn resume_persona(&mut self, call_id: &str, outcome: DelegateOutcome) {
+        let label = self.tech.label.clone();
+        let effects = self.turn.as_mut().map(|t| t.on_delegate(call_id, outcome, &label)).unwrap_or_default();
+        if effects.is_empty() {
+            // No call was waiting: never leave the tab stuck mid-inquiry.
+            debug_assert!(false, "persona turn ignored the delegation outcome for {call_id}");
+            self.finish(None, false);
+            return;
+        }
+        self.state = State::Tools;
+        self.apply(effects, None);
+    }
+
+    /// Hand `task` to a new child turn, or answer at once when the technical agent cannot be reached.
+    fn delegate(&mut self, call_id: String, task: String, operator_message: String) {
+        let label = self.tech.label.clone();
+        if let Some(c) = &mut self.child {
+            // A child cannot delegate (it has no such tool); never nest.
+            let effects = c.turn.on_delegate(&call_id, DelegateOutcome::NoResponse { lines: vec![] }, &label);
+            self.apply(effects, None);
+            return;
+        }
+        if self.tech.cfg.readiness().is_err() {
+            self.resume_persona(&call_id, DelegateOutcome::NoResponse { lines: vec![] });
+            return;
+        }
+        if self.revealing {
+            self.settle_segment();
+        }
+        self.transcript.push(Entry::Harness(format!("DELEGATING TO {label}")));
+        self.ensure_tech_system();
+        let ts = (self.deps.timestamp)();
+        let verbatim = self.tech.delegate_report == DelegateReport::Verbatim;
+        if let Err(e) = self.log.append_delegation(&call_id, &task, verbatim, &ts) {
+            tracing::error!("chat log: cannot record delegation: {e}");
+            self.resume_persona(&call_id, DelegateOutcome::NoResponse { lines: vec![] });
+            return;
+        }
+        let turn = Turn::delegated(self.tech.max_rounds, operator_message, task, label, call_id.clone());
+        self.child = Some(Child { call_id, turn, report: String::new() });
+        self.spawn_request(self.tech.max_rounds == 0);
+    }
+
+    /// The child running now, by call id: the owner of a batch of effects.
+    fn child_id(&self) -> Option<String> {
+        self.child.as_ref().map(|c| c.call_id.clone())
     }
 
     /// Resolve any open round as aborted (logged and audited); the caller ends the inquiry.
@@ -211,6 +333,8 @@ impl MuthurTab {
     /// Carry out the turn's effects in order. `stop` is the stop of the stream
     /// that produced them, for the completion handling on `Finished`.
     fn apply(&mut self, effects: Vec<Effect>, stop: Option<&Stop>) {
+        // The effects belong to the child running now, or to the persona's turn.
+        let owner = self.child_id();
         for e in effects {
             match e {
                 Effect::Spawn { forced_final } => {
@@ -256,12 +380,8 @@ impl MuthurTab {
                     self.state = State::OverridePrompt { call_id, prompt, note, typed: String::new(), drawn: false, armed_at: None };
                     self.activity = true;
                 }
-                // Temporary: Task 8 replaces this with the real child turn.
-                Effect::Delegate { call_id, .. } => {
-                    let label = self.tech.label.clone();
-                    let Some(turn) = self.turn.as_mut() else { continue };
-                    let effects = turn.on_delegate(&call_id, DelegateOutcome::NoResponse { lines: vec![] }, &label);
-                    self.apply(effects, None);
+                Effect::Delegate { call_id, task, operator_message } => {
+                    self.delegate(call_id, task, operator_message);
                     if self.turn.is_none() {
                         break;
                     }
@@ -270,18 +390,25 @@ impl MuthurTab {
                     if self.revealing {
                         self.settle_segment();
                     }
-                    self.transcript.push(if self.direct() { Entry::Harness(s) } else { Entry::Note(s) });
+                    self.transcript.push(if self.tech_active() { Entry::Harness(s) } else { Entry::Note(s) });
                 }
                 Effect::LogTool(results) => {
                     let ts = (self.deps.timestamp)();
-                    if let Err(e) = self.log.append_tool(&results, &ts, &self.agent().into()) {
+                    if let Err(e) = self.log.append_tool(&results, &ts, &self.lane()) {
                         tracing::error!("chat log: cannot record tool results: {e}");
                     }
                 }
                 Effect::Audit(entry) => self.record_audit(&entry),
                 // Its command is still running; its outcome comes back for this request.
                 Effect::Orphan(o) => self.orphans.push((self.req_id, o)),
+                Effect::Finished { truncated } if self.child.is_some() => {
+                    self.finish_child(truncated || stop == Some(&Stop::MaxTokens));
+                }
                 Effect::Finished { truncated } => self.finish(stop, truncated),
+            }
+            // A child finished or failed (and maybe another started): the rest was its.
+            if self.child_id() != owner {
+                break;
             }
         }
     }

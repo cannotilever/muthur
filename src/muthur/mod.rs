@@ -8,7 +8,7 @@ mod plain;
 pub mod view;
 
 use crate::app::tabs::Tab;
-use crate::chatlog::{Assistant, ChatLog};
+use crate::chatlog::{Assistant, ChatLog, Lane};
 #[cfg(feature = "agent")]
 use crate::config::AgentSection;
 use crate::config::MuthurSection;
@@ -278,6 +278,9 @@ pub struct MuthurTab {
     /// The agent turn of the inquiry in progress.
     turn: Option<Turn>,
     #[cfg(feature = "agent")]
+    /// The technical turn running a delegated task of `turn`.
+    child: Option<turn::Child>,
+    #[cfg(feature = "agent")]
     /// Tool calls received in the current stream.
     calls: Vec<Call>,
     #[cfg(feature = "agent")]
@@ -359,6 +362,8 @@ impl MuthurTab {
             #[cfg(feature = "agent")]
             turn: None,
             #[cfg(feature = "agent")]
+            child: None,
+            #[cfg(feature = "agent")]
             calls: Vec::new(),
             #[cfg(feature = "agent")]
             orphans: Vec::new(),
@@ -397,13 +402,46 @@ impl MuthurTab {
     }
 
     fn agent(&self) -> AgentId {
-        if self.direct() { AgentId::Tech } else { AgentId::Muthur }
+        self.lane().agent()
+    }
+
+    /// The log lane of the request in progress: a delegated child's own, the
+    /// direct link's, or the persona's.
+    #[cfg(feature = "agent")]
+    fn lane(&self) -> Lane {
+        match &self.child {
+            Some(c) => Lane::Delegated(c.call_id.clone()),
+            None if self.direct() => Lane::Tech,
+            None => Lane::Muthur,
+        }
+    }
+
+    #[cfg(not(feature = "agent"))]
+    fn lane(&self) -> Lane {
+        Lane::Muthur
+    }
+
+    /// A delegated technical turn is running.
+    #[cfg(feature = "agent")]
+    fn has_child(&self) -> bool {
+        self.child.is_some()
+    }
+
+    #[cfg(not(feature = "agent"))]
+    fn has_child(&self) -> bool {
+        false
+    }
+
+    /// The technical agent is the one talking: direct mode or a delegated child.
+    #[cfg(feature = "agent")]
+    fn tech_active(&self) -> bool {
+        self.direct() || self.has_child()
     }
 
     /// The connection settings of the current agent.
     #[cfg(feature = "agent")]
     fn llm_cfg(&self) -> &MuthurSection {
-        if self.direct() { &self.tech.cfg } else { &self.cfg }
+        if self.tech_active() { &self.tech.cfg } else { &self.cfg }
     }
 
     /// A request is streaming.
@@ -463,7 +501,7 @@ impl MuthurTab {
             text: self.partial_raw.clone(),
             stop: stop.into(),
             raw,
-            lane: self.agent().into(),
+            lane: self.lane(),
         }
     }
 
@@ -522,6 +560,7 @@ impl MuthurTab {
     #[cfg(feature = "agent")]
     fn drop_turn(&mut self) {
         self.turn = None;
+        self.child = None;
     }
 
     fn enter(&mut self) {
@@ -581,10 +620,7 @@ impl MuthurTab {
             self.transcript.push(Entry::Note(LINK_CLOSED.into()));
             return;
         }
-        if self.tech_system.is_none() {
-            let facts = (self.tech.facts)();
-            self.tech_system = Some(self.tech.prompt.replace("{FACTS}", &facts));
-        }
+        self.ensure_tech_system();
         let mut banner = vec![link_banner(&self.tech.label)];
         banner.extend(self.tech.probe.status_line().map(str::to_string));
         if !self.tech.reviewer_ready {
@@ -593,10 +629,19 @@ impl MuthurTab {
         self.transcript.push(Entry::Note(banner.join("\n")));
     }
 
+    /// Fix the technical system prompt, with the host facts, on first use.
+    #[cfg(feature = "agent")]
+    fn ensure_tech_system(&mut self) {
+        if self.tech_system.is_none() {
+            let facts = (self.tech.facts)();
+            self.tech_system = Some(self.tech.prompt.replace("{FACTS}", &facts));
+        }
+    }
+
     /// The current agent's tool definitions.
     #[cfg(feature = "agent")]
     fn defs(&self) -> &ToolDefs {
-        if self.direct() { &self.tech.defs } else { &self.tools }
+        if self.tech_active() { &self.tech.defs } else { &self.tools }
     }
 
     fn submit(&mut self, line: String) {
@@ -634,10 +679,10 @@ impl MuthurTab {
     #[cfg(feature = "agent")]
     fn request_parts(&mut self) -> (String, String, Vec<crate::llm::ToolSpec>, bool) {
         self.calls.clear();
-        let direct = self.direct();
-        let system = if direct { self.tech_system.clone().unwrap_or_default() } else { self.system.clone() };
+        let tech = self.tech_active();
+        let system = if tech { self.tech_system.clone().unwrap_or_default() } else { self.system.clone() };
         let defs = self.defs();
-        (system, defs.json(), defs.specs().to_vec(), direct)
+        (system, defs.json(), defs.specs().to_vec(), tech)
     }
 
     /// Send the next request of the turn, from the log's message window.
@@ -646,17 +691,23 @@ impl MuthurTab {
         self.reveal.reset();
         self.cleaner = Cleaner::new();
         self.partial_raw.clear();
-        self.revealing = true;
+        // A delegated child's text is never shown.
+        self.revealing = !self.has_child();
         let (system, tools_json, specs, report_only_past) = self.request_parts();
         let cfg = self.llm_cfg();
         let (provider, budget) = (cfg.provider, cfg.context_tokens);
         let model = cfg.model().unwrap_or_default().to_string();
         let agent = self.agent();
-        let messages = match self.log.window(&agent.into(), provider, &model, &system, &tools_json, budget, report_only_past) {
+        let messages = match self.log.window(&self.lane(), provider, &model, &system, &tools_json, budget, report_only_past) {
             Ok(m) => m,
             Err(e) => {
                 tracing::error!("chat log: cannot build message window: {e}");
                 self.state = State::Waiting;
+                #[cfg(feature = "agent")]
+                if self.has_child() {
+                    self.child_failed();
+                    return;
+                }
                 self.end_early(Some(LlmError::Transmission));
                 return;
             }
@@ -776,7 +827,7 @@ impl MuthurTab {
     fn tool_phase(&self) -> Option<&'static str> {
         match self.state {
             State::Reviewing => Some("REVIEWING"),
-            State::Tools if self.direct() => Some("EXECUTING"),
+            State::Tools if self.tech_active() => Some("EXECUTING"),
             State::Tools => Some("ACCESSING"),
             _ => None,
         }
@@ -1008,14 +1059,22 @@ impl Tab for MuthurTab {
         match ev {
             StreamEvent::Text(t) => {
                 self.partial_raw.push_str(&t);
-                let cleaned = self.cleaner.push(&t);
-                let s = self.display(&cleaned);
-                self.reveal.push(&s, (self.deps.now)());
+                // A delegated child's text is kept for its report, never shown.
+                if !self.has_child() {
+                    let cleaned = self.cleaner.push(&t);
+                    let s = self.display(&cleaned);
+                    self.reveal.push(&s, (self.deps.now)());
+                }
                 self.state = State::Streaming;
             }
             StreamEvent::ToolCall { id, name, input } => self.tool_call(id, name, input),
             StreamEvent::Done { stop, model, raw } => self.stream_done(stop, model, raw),
             StreamEvent::Error(e) => {
+                #[cfg(feature = "agent")]
+                if self.has_child() {
+                    self.child_failed();
+                    return;
+                }
                 self.abort_turn();
                 self.end_early(Some(e));
             }
