@@ -1,3 +1,3 @@
-# Template: `make install-system` replaces OPERATOR with the deploying user.
+# Template: make install-system fills in the deploying user's name below.
 OPERATOR ALL=(muthur-agent) NOPASSWD: ALL
 Defaults>muthur-agent !use_pty

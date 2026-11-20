@@ -237,8 +237,10 @@ operator, who types their password on the WY-60 for every call; MUTHUR never
 caches it and it only ever reaches sudo's stdin. Network diagnostics are fixed
 tools that run as the operator, behind a target gate: a host must come from the
 operator's message or `[agent] net_allow`, or the call always ends at Y/N.
-A startup probe checks the account and the isolation; if either fails, `run`
-is withheld and the `/DIRECT` banner says why. Files and install steps:
+A startup probe (each step limited to 5 s, result fixed for the session)
+checks the account and the isolation. Isolated means a connect to TEST-NET-1
+fails with `Operation not permitted`; success, a timeout or `Network is
+unreachable` count as not isolated. If either fails, `run` is withheld and the `/DIRECT` banner says why. Files and install steps:
 `docs/deploy.md`.
 
 **The gates**, in order; the first refusal ends the call:
@@ -372,6 +374,6 @@ for multi-server monitoring — tools then get a "which host" parameter.
 - InfluxDB metrics source / multi-server.
 - Multiple chat sessions ("folders").
 - Idle lock (v1 relies on the terminal's own screen blanking).
-- Cargo: MU/TH/UR tools that act on containers; live log following;
+- Cargo: dedicated agent tools that act on containers (M7 agents only read them, or use `run`); live log following;
   remove / pull / exec; acting on several containers at once; a sidebar
   marker when a container dies on its own.

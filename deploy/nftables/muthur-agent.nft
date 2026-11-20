@@ -1,4 +1,7 @@
 # Drops all non-loopback egress from the muthur-agent account.
+# The empty declaration plus delete makes re-loading this file idempotent.
+table inet muthur_agent
+delete table inet muthur_agent
 table inet muthur_agent {
 	chain output {
 		type filter hook output priority 0; policy accept;

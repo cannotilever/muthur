@@ -23,7 +23,7 @@ else
 AGENT_SCP := scp $(SYSUSERS) $(HOST):$$tmp/sysusers.conf && scp $(TMPFILES) $(HOST):$$tmp/tmpfiles.conf && scp $(SUDOERS) $(HOST):$$tmp/sudoers && scp $(NFT) $(HOST):$$tmp/agent.nft &&
 AGENT_STEPS := \
 	echo \"==> agent account\"; sudo install -m 644 $$tmp/sysusers.conf /etc/sysusers.d/muthur-agent.conf; sudo install -m 644 $$tmp/tmpfiles.conf /etc/tmpfiles.d/muthur-agent.conf; sudo systemd-sysusers; sudo systemd-tmpfiles --create; \
-	echo \"==> agent sudoers\"; sed \"s/OPERATOR/\$$(whoami)/\" $$tmp/sudoers > $$tmp/sudoers.out; sudo visudo -cf $$tmp/sudoers.out; sudo install -m 440 $$tmp/sudoers.out /etc/sudoers.d/muthur-agent; \
+	echo \"==> agent sudoers\"; if [ \"\$$(whoami)\" = root ]; then echo \"ABORT: deploy as a normal user, not root\"; exit 1; fi; sed \"s/OPERATOR/\$$(whoami)/\" $$tmp/sudoers > $$tmp/sudoers.out; sudo visudo -cf $$tmp/sudoers.out; sudo install -m 440 $$tmp/sudoers.out /etc/sudoers.d/muthur-agent; \
 	echo \"==> agent network isolation\"; sudo install -d /etc/nftables.d; sudo install -m 644 $$tmp/agent.nft /etc/nftables.d/muthur-agent.nft; sudo nft -f /etc/nftables.d/muthur-agent.nft; \
 	echo \"==> REMINDER: include /etc/nftables.d/*.nft from /etc/nftables.conf so the rule survives a reboot\";
 endif

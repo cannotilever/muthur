@@ -59,7 +59,12 @@ fn sysusers_dry_run() {
         Command::new("systemd-sysusers").arg("--dry-run").arg(&path),
     );
     if let Some(o) = out {
-        assert!(o.status.success(), "sysusers: {}", String::from_utf8_lossy(&o.stderr));
+        let err = String::from_utf8_lossy(&o.stderr);
+        if !o.status.success() && (err.contains("unrecognized option") || err.contains("unknown option")) {
+            eprintln!("sysusers_dry_run: --dry-run unsupported, skipping");
+            return;
+        }
+        assert!(o.status.success(), "sysusers: {err}");
     }
 }
 
@@ -68,7 +73,16 @@ fn files_have_expected_lines() {
     let sudoers = read("deploy/sudoers.d/muthur-agent");
     assert!(sudoers.contains("OPERATOR ALL=(muthur-agent) NOPASSWD: ALL"));
     assert!(sudoers.contains("Defaults>muthur-agent !use_pty"));
+    let grants = sudoers
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#') && l.contains("ALL="))
+        .count();
+    assert_eq!(grants, 1, "exactly one grant line");
     let nft = read("deploy/nftables/muthur-agent.nft");
+    assert!(
+        nft.find("oif \"lo\" accept").unwrap() < nft.find("meta skuid \"muthur-agent\" drop").unwrap(),
+        "loopback accept must precede the drop"
+    );
     assert!(nft.contains("meta skuid \"muthur-agent\" drop"));
     assert!(nft.contains("oif \"lo\" accept"));
     let sysusers = read("deploy/sysusers.d/muthur-agent.conf");

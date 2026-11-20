@@ -68,7 +68,9 @@ Check that the isolation works. This must fail with "Operation not permitted":
 sudo -u muthur-agent curl -m 3 https://example.com
 ```
 
-At startup MUTHUR probes the account and the isolation. If either fails, `/DIRECT` shows `AGENT ACCOUNT OFFLINE -- SEE DEPLOY` or `AGENT NETWORK NOT ISOLATED -- SEE DEPLOY` and the `run` tool is withheld.
+"Could not resolve host" also proves the rule when DNS goes to a non-loopback resolver.
+
+At startup MUTHUR probes the account and the isolation, each step limited to 5 s, and the result is fixed for the session. Isolated means a connect to 192.0.2.1 fails with `Operation not permitted`; success, a timeout or `Network is unreachable` all count as not isolated. If either fails, `/DIRECT` shows `AGENT ACCOUNT OFFLINE -- SEE DEPLOY` or `AGENT NETWORK NOT ISOLATED -- SEE DEPLOY` and the `run` tool is withheld.
 
 ## 7. Checks before a release
 
