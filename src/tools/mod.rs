@@ -5,6 +5,7 @@ use crate::llm::ToolSpec;
 pub mod deny;
 pub mod exec;
 pub mod netgate;
+pub mod registry;
 
 use serde_json::{Value, json};
 
@@ -130,7 +131,7 @@ fn normalize_list(kind: &str, list: &[String]) -> Vec<String> {
     out
 }
 
-fn spec(name: &str, description: &str, properties: Value) -> ToolSpec {
+pub(crate) fn spec(name: &str, description: &str, properties: Value) -> ToolSpec {
     let required: Vec<&str> = properties.as_object().map(|o| o.keys().map(String::as_str).collect()).unwrap_or_default();
     ToolSpec {
         name: name.into(),
