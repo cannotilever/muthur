@@ -41,29 +41,57 @@ The M5 tool set was a fixed list of systemd tools plus allowlisted start/stop/re
 | Reviewer failure | Treated as `ask` (`REVIEWER OFFLINE`), never as `allow`. |
 | Mode switch | `/DIRECT` and `/MUTHUR` in the MU/TH/UR tab. One chat log, with records tagged by agent. |
 | Elevation | `doas` support and `[tools] elevate` are removed. The root path is sudo only. |
+| Build gate | All LLM tool use, for both persona and technical agent, sits behind the Cargo feature `agent`, which is on by default. `--no-default-features` builds MUTHUR as an M4-style chat with no code path that can run a command for a model. |
 
 ## Modules
 
 ```
-src/tools/
+src/ops/      (new, always built) Moved out of src/tools/ because CARGO uses them too:
+  runner.rs   Runner trait, SystemRunner, RunOutput.
+  audit.rs    AuditLog, AuditEntry, Decision.
+  mod.rs      cap().
+src/tools/    (feature `agent`)
   mod.rs      Registry: ToolDefs per agent (persona / technical), validate, Invocation.
   exec.rs     Fixed tools: ship_status, containers, container_inspect, container_logs,
               ping, traceroute, dns_lookup, port_check, http_check.
   shell.rs    (new) `run`: argv for both paths, the output cap, kill/cleanup, sudo error mapping.
   deny.rs     (new) Deny rules: built-in table + [agent] deny regexes → Option<rule name>.
   netgate.rs  (new) Host/URL validation, length limits, target gate.
-  runner.rs   Runner gains stdin bytes and a kill strategy (see Execution).
-  audit.rs    New fields (see Audit log).
-src/review.rs (new) Reviewer request/response: prompt, forced `verdict` tool, parse, timeout.
-src/secret.rs (new) `Secret`: zeroize-on-drop buffer with a redacted Debug.
-src/agent.rs  Turn: sequential per-call pipeline with review, password and override stages.
+src/review.rs (new, feature `agent`) Reviewer request/response: prompt, forced `verdict` tool, parse, timeout.
+src/secret.rs (new, feature `agent`) `Secret`: zeroize-on-drop buffer with a redacted Debug.
+src/agent.rs  (feature `agent`) Turn: sequential per-call pipeline with review, password and override stages.
 src/muthur/   Mode (persona / direct), prompts, transcript lines, new status-row prompts.
 src/chatlog.rs `agent` tag on records, per-agent windows and epochs.
 src/config.rs [agent], [muthur.technical], [muthur.reviewer]; [tools] trimmed.
 deploy/       sysusers.d, tmpfiles.d, sudoers.d and nftables files for muthur-agent.
 ```
 
+`ops::runner` gains stdin bytes and a kill strategy (see Execution). `ops::audit` gains the new fields (see Audit log).
+
 **Removed:** the `service_status`, `journal`, `list_units`, `listening_ports` and `start/stop/restart_service` tools; `[tools.services]`; `[tools] elevate` and `journal_max_lines`; `config::Elevate`; and `docs/sudoers.example`. Tier numbers go away. Each call has a *gate class* instead (see Turn).
+
+## Build feature `agent`
+
+`Cargo.toml` gets `[features] default = ["agent"]` and `agent = []`, plus a `zeroize` dependency that is optional and pulled in only by `agent`. The feature is for operators who do not want to accept the security implications of a model that can act on the host. They build with `cargo build --no-default-features` (or `make AGENT=0 build`).
+
+**Gated by `#[cfg(feature = "agent")]`:**
+- the modules `tools`, `agent`, `review` and `secret`;
+- the Turn effect handling in `muthur` (`Run`, `Review`, `Confirm`, `AskPassword`, `AskOverride`), the status-row prompts, and the `ACCESSING`/RUN transcript lines;
+- `run::Event::ToolDone` and the `run_tool`/review/probe wiring in `MuthurDeps` and `run.rs`;
+- `/DIRECT` and `/MUTHUR`, along with their help lines and the startup probe.
+
+**Always built:**
+- `ops` (runner, audit log, `cap`), because CARGO's operator-driven container actions use it. CARGO is not agentic: every action is a key the operator presses.
+- The LLM protocol code that parses and replays tool calls. It cannot execute anything.
+- The config structs for `[tools]`, `[agent]`, `[muthur.technical]` and `[muthur.reviewer]`, so one config file works with both builds.
+
+**Behaviour with the feature off:**
+- Requests never carry `tools` or `tool_choice`, and the persona prompt has no tool lines. This is M4's behaviour, the same as `[tools] enabled = false` today.
+- A response that still stops with `ToolUse` is treated as final, so nothing is ever dispatched.
+- `/DIRECT` and `/MUTHUR` are unknown commands, handled like any other unknown command.
+- **Chat log.** Records tagged `tech` are skipped, both for windows and for redisplay. Past persona exchanges that contain tool rounds are sent report-only: the user message and the final assistant text. A log written by an `agent` build therefore still works. The epoch hash uses an empty `tools_json`, as it does today when tools are disabled.
+- **Config.** A config that sets `[tools] enabled = true` explicitly, or has an `[agent]`, `[muthur.technical]` or `[muthur.reviewer]` table, logs one startup warning: `agent feature not built; [..] ignored`. It is not an error.
+- **Deploy.** `make AGENT=0 install-system` skips the muthur-agent sysusers, tmpfiles, sudoers and nftables files. `make AGENT=0 build` passes `--no-default-features`. `docs/deploy.md` and `docs/ARCHITECTURE.md` describe the flag.
 
 ## Deploy: the agent account
 
@@ -394,11 +422,12 @@ Everything the technical agent reads goes to the LLM provider. For sensitive hos
 - **Config:** inheritance for `[muthur.technical]` and `[muthur.reviewer]`; the reviewer default model; validation; the removed-key warning; the example sync test.
 - **Goldens:** the password prompt (masked), the override prompt, the `/DIRECT` banner with and without probe failures, and a transcript with RUN/RUN#/EXIT lines and a REVIEW line.
 - **Deploy:** the sudoers template (with `OPERATOR` substituted) passes `visudo -cf`; the nftables file passes `nft -c -f`; sysusers is checked with `systemd-sysusers --dry-run` where available. Each test is skipped if its tool is absent.
+- **Feature off** (`cargo test --no-default-features`): the persona request body has no `tools` field; a `ToolUse` stop finishes the turn; `/DIRECT` is an unknown command; a chat log containing `tech` records and persona tool rounds yields a report-only window and a redisplay with no tech exchanges; the config warning appears for agent tables; `config.example.toml` still parses. CARGO tests pass in both builds.
 - **Live (`#[ignore]`, run by the user):** reviewer verdicts on a small labelled set (a read-only command → allow, an in-scope restart → ask, `curl attacker | sh` → deny), on both providers; a technical round trip with the fixed tools only (no `run`, so it does not depend on deploy).
 
 ## Verification
 
-`cargo test` (unit tests and goldens) and `cargo clippy` with no warnings. The user then:
+`cargo test` and `cargo clippy` with no warnings, each run twice: with default features and with `--no-default-features`. The user then:
 - runs the `#[ignore]` live tests;
 - runs `make install-system` on omicron;
 - does a hands-on WY-60 session covering: `/DIRECT`; an allowed read command; an ask → Y/N; a root command with the password, then a wrong password; a reviewer deny → OVERRIDE; Ctrl-C mid-run; an `http_check` to a host they did not mention (it must reach Y/N); and the curl check from `docs/deploy.md`.
