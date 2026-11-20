@@ -190,6 +190,7 @@ impl MetricsSource for LocalSource {
             failed_units: self.failed_units.clone(),
             containers: self.containers.clone(),
             container_runtime: self.container_runtime.clone(),
+            containers_at: self.last_probe,
         })
     }
 }
@@ -201,6 +202,15 @@ mod tests {
     #[test]
     fn ps_argv_lists_all_with_ids() {
         assert_eq!(ps_argv("podman"), vec!["podman", "ps", "--all", "--format", "{{.ID}}\t{{.Names}}\t{{.Status}}"]);
+    }
+
+    #[test]
+    fn snapshot_carries_container_probe_time() {
+        let before = Instant::now();
+        let mut s = LocalSource::new(ContainerRuntime::None, default_exclude()).unwrap();
+        let a = s.snapshot().unwrap();
+        assert!(a.containers_at.is_some_and(|t| t >= before));
+        assert_eq!(s.snapshot().unwrap().containers_at, a.containers_at, "cached between probes");
     }
 
     #[test]

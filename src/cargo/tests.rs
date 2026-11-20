@@ -605,3 +605,31 @@ fn empty_logs_say_so() {
     h.done(exited(0, "", ""));
     assert!(h.screen().contains("NO LOG OUTPUT"));
 }
+
+// --- Final review fixes --------------------------------------------------
+
+#[test]
+fn refresh_not_undone_by_older_probe() {
+    let mut h = harness(vec![c("a1", "web", "EXITED")]);
+    let probed_before = h.clock.get();
+    h.clock.set(probed_before + Duration::from_secs(1));
+    h.key(Key::Char('U'));
+    h.done(exited(0, "a1\n", ""));
+    // A snapshot arrives before the refresh returns: the refresh still counts.
+    let stale = Snapshot { containers_at: Some(probed_before), ..snap(Some(vec![c("a1", "web", "EXITED")])) };
+    h.t.on_metrics(&stale);
+    h.done(exited(0, "a1\tweb\tUp 1 second\n", ""));
+    let row = |h: &mut H| {
+        let buf = render(&mut h.t, WINDOWED);
+        let (_, y) = find(&buf, ">WEB").unwrap();
+        text(&buf).lines().nth(y as usize).unwrap().to_string()
+    };
+    assert!(row(&mut h).contains(" UP "), "refresh applied");
+    // The cached probe keeps coming every 2 s: it must not put EXITED back.
+    h.t.on_metrics(&stale);
+    assert!(row(&mut h).contains(" UP "), "stale snapshot ignored");
+    // A probe taken after the refresh wins again.
+    let fresh = Snapshot { containers_at: Some(h.clock.get() + Duration::from_secs(5)), ..snap(Some(vec![c("a1", "web", "EXITED")])) };
+    h.t.on_metrics(&fresh);
+    assert!(row(&mut h).contains("EXITED"), "newer probe applies");
+}

@@ -69,8 +69,10 @@ pub struct CargoTab {
     offline: bool,
     prompt: Option<Prompt>,
     action: Option<Pending>,
-    /// `seq` of the `ps` refresh in flight.
-    refresh: Option<u64>,
+    /// `seq` of the `ps` refresh in flight, and when it was started.
+    refresh: Option<(u64, Instant)>,
+    /// When the list on screen was probed (snapshot probe or refresh start).
+    list_at: Option<Instant>,
     seq: u64,
     /// Progress, result or error (reverse) for the message line; cleared by
     /// the next key.
@@ -93,6 +95,7 @@ impl CargoTab {
             prompt: None,
             action: None,
             refresh: None,
+            list_at: None,
             seq: 0,
             message: None,
             logs: None,
@@ -116,9 +119,15 @@ impl CargoTab {
 
     pub fn on_snapshot(&mut self, s: &Snapshot) {
         self.offline = false;
-        // A snapshot is at least as fresh as a refresh still in flight.
-        self.refresh = None;
+        // Snapshots repeat a cached probe between container probes: one taken
+        // before the list on screen (a post-action refresh) must not undo it.
+        if let (Some(at), Some(mine)) = (s.containers_at, self.list_at)
+            && at < mine
+        {
+            return;
+        }
         self.runtime = s.container_runtime.clone();
+        self.list_at = s.containers_at;
         self.set_list(s.containers.clone());
     }
 
@@ -264,7 +273,7 @@ impl CargoTab {
         // Show the new state now rather than at the next 10 s probe.
         if let Some(rt) = self.runtime.clone() {
             let seq = self.next_seq();
-            self.refresh = Some(seq);
+            self.refresh = Some((seq, (self.deps.now)()));
             (self.deps.run)(seq, ps_argv(&rt), REFRESH_TIMEOUT, false);
         }
     }
@@ -344,9 +353,12 @@ impl Tab for CargoTab {
     }
 
     fn on_cargo_done(&mut self, seq: u64, out: RunOutput, ms: u64) {
-        if self.refresh == Some(seq) {
+        if let Some((rseq, started)) = self.refresh
+            && rseq == seq
+        {
             self.refresh = None;
             if let RunOutput::Exited { code: 0, stdout, .. } = &out {
+                self.list_at = Some(started);
                 self.set_list(Some(parse_containers(stdout)));
             }
             return;

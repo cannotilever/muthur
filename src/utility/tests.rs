@@ -29,6 +29,7 @@ pub(crate) fn snap() -> Snapshot {
         failed_units: Some(vec!["AUTORANDR".into()]),
         containers: Some(vec![Container { id: "1".into(), name: "web".into(), status: "UP".into(), ..Default::default() }]),
         container_runtime: Some("docker".into()),
+        containers_at: None,
     }
 }
 

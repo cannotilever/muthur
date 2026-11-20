@@ -26,6 +26,9 @@ pub struct Snapshot {
     pub containers: Option<Vec<Container>>,
     /// The runtime command that produced `containers` (`docker`/`podman`).
     pub container_runtime: Option<String>,
+    /// When `containers` was probed. Containers are probed less often than
+    /// snapshots are sent, so consecutive snapshots repeat an older list.
+    pub containers_at: Option<std::time::Instant>,
 }
 
 /// Bytes used of bytes total.
