@@ -307,10 +307,18 @@ pub struct Config {
     pub chrome: ChromeConfig,
     /// Key-name → byte-sequence overrides for the WY-60 keymap.
     pub keys: BTreeMap<String, String>,
+    /// Startup warnings found by `load`. They are logged once logging is up,
+    /// which is after the config is read.
+    #[serde(skip)]
+    pub warnings: Vec<String>,
 }
 
 impl Config {
     pub fn validate(&self) -> anyhow::Result<()> {
+        // Without the agent build `[agent]` is ignored, so it cannot be wrong.
+        if !cfg!(feature = "agent") {
+            return Ok(());
+        }
         let a = &self.agent;
         if !(1..=3600).contains(&a.max_timeout_secs) {
             bail!("[agent] max_timeout_secs must be 1..=3600 (got {})", a.max_timeout_secs);
@@ -372,10 +380,8 @@ pub fn load(path: &Path) -> anyhow::Result<Config> {
         );
     }
     let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    for w in warnings(&text, cfg!(feature = "agent")) {
-        tracing::warn!("{w}");
-    }
-    let cfg: Config = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    let mut cfg: Config = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    cfg.warnings = warnings(&text, cfg!(feature = "agent"));
     cfg.validate().with_context(|| format!("validating {}", path.display()))?;
     Ok(cfg)
 }
@@ -469,7 +475,8 @@ mod tests {
             let mut c = Config::default();
             c.agent.default_timeout_secs = d;
             c.agent.max_timeout_secs = m;
-            assert!(c.validate().is_err(), "{d} {m}");
+            // Only the agent build checks the section it uses.
+            assert_eq!(c.validate().is_err(), cfg!(feature = "agent"), "{d} {m}");
         }
         assert!(Config::default().validate().is_ok());
     }
@@ -498,7 +505,9 @@ mod tests {
             assert_eq!(w, ["agent feature not built; [tools] [agent] [muthur.technical] [muthur.reviewer] ignored"]);
         }
         let (_d, p) = write_cfg(text, 0o600);
-        assert_eq!(load(&p).unwrap().agent.label, "X");
+        let c = load(&p).unwrap();
+        assert_eq!(c.agent.label, "X");
+        assert_eq!(c.warnings, w, "load keeps the warnings for logging");
     }
 
     #[test]

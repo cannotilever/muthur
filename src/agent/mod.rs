@@ -134,8 +134,11 @@ fn after_line(o: &ToolOutcome) -> String {
         return c.lines().next().unwrap_or("").to_string();
     }
     let exit = o.exit.as_ref().and_then(serde_json::Value::as_i64).map_or("?".to_string(), |n| n.to_string());
-    let lines = o.audit_output.as_deref().unwrap_or(c).lines().count();
-    format!("EXIT {exit}  {lines} LINES  {:.1} S", o.ms as f64 / 1000.0)
+    let text = o.audit_output.as_deref().unwrap_or(c);
+    // The capture keeps only the head and tail of a big output, so its count
+    // is a floor.
+    let more = if text.contains(" BYTES OMITTED …]\n") { "+" } else { "" };
+    format!("EXIT {exit}  {}{more} LINES  {:.1} S", text.lines().count(), o.ms as f64 / 1000.0)
 }
 
 impl Slot {
@@ -284,7 +287,8 @@ impl Slot {
                 out.push(Effect::Note(if tech { "OUTCOME UNKNOWN".into() } else { format!("ACCESS INTERRUPTED: {}", self.label) }));
                 (ABORTED_ISSUED, Some(shell::argv(command, true)))
             }
-            Invocation::Run { .. } if tech => {
+            // Every tech-mode call shows its RUN line, so it needs an end line.
+            _ if tech => {
                 out.push(Effect::Note("ABORTED".into()));
                 (ABORTED, None)
             }

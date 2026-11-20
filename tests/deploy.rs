@@ -84,8 +84,39 @@ fn files_have_expected_lines() {
         "loopback accept must precede the drop"
     );
     assert!(nft.contains("meta skuid \"muthur-agent\" drop"));
+    for proto in ["udp", "tcp"] {
+        let dns = format!("meta skuid \"muthur-agent\" {proto} dport {{ 53, 853 }} drop");
+        let at = nft.find(&dns).unwrap_or_else(|| panic!("missing: {dns}"));
+        assert!(at < nft.find("oif \"lo\" accept").unwrap(), "loopback DNS drop must precede the loopback accept");
+    }
     assert!(nft.contains("oif \"lo\" accept"));
     let sysusers = read("deploy/sysusers.d/muthur-agent.conf");
     assert!(sysusers.contains("m muthur-agent adm"));
     assert!(sysusers.contains("m muthur-agent systemd-journal"));
+}
+
+/// `install` does not create parent directories, and a minimal host may lack
+/// any `/etc/*.d` (Arch ships no `/etc/sysusers.d`). Each one the Makefile
+/// installs into must be created first. `/etc/sudoers.d` comes with sudo and
+/// keeps its 0750 mode, so it is left alone.
+#[test]
+fn makefile_creates_each_drop_in_dir_first() {
+    let mk = read("Makefile");
+    // Shell statements, split on `;` so each install is one statement.
+    let stmts: Vec<&str> = mk.split(';').map(str::trim).collect();
+    let mut seen = 0;
+    for (n, st) in stmts.iter().enumerate() {
+        let Some(rest) = st.strip_prefix("sudo install -m ") else { continue };
+        let dest = rest.split_whitespace().nth(2).expect("install -m MODE SRC DEST");
+        let dir = &dest[..dest.rfind('/').unwrap()];
+        if !dir.ends_with(".d") || dir == "/etc/sudoers.d" {
+            continue;
+        }
+        seen += 1;
+        let made = stmts[..n]
+            .iter()
+            .any(|p| p.starts_with("sudo install -d") && p.split_whitespace().any(|w| w == dir));
+        assert!(made, "{dir} is installed into without `install -d` first");
+    }
+    assert!(seen >= 4, "found only {seen} drop-in installs");
 }

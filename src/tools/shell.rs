@@ -6,13 +6,19 @@ use crate::ops::head_tail;
 use crate::ops::runner::{Kill, RunOutput, RunSpec, Runner};
 use crate::secret::Secret;
 use serde_json::json;
-use std::sync::atomic::AtomicBool;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
 
 pub const AGENT_HOME: &str = "/var/lib/muthur-agent";
 const ENV: [&str; 3] = ["PATH=/usr/local/sbin:/usr/local/bin:/usr/bin", "LANG=C.UTF-8", "TERM=dumb"];
 const STEP: Duration = Duration::from_secs(5);
+
+/// Held across an unprivileged run and its cleanup. The cleanup kills every
+/// `muthur-agent` process, so a run abandoned by Ctrl-C must finish cleaning
+/// up before the next one starts, or it would kill the new command.
+static AGENT_RUN: Mutex<()> = Mutex::new(());
 
 fn strs(a: &[&str]) -> Vec<String> {
     a.iter().map(|s| s.to_string()).collect()
@@ -72,6 +78,20 @@ pub fn run(
         keep: Some(65536),
     };
     let start = Instant::now();
+    let _turn = if as_root {
+        None
+    } else {
+        loop {
+            match AGENT_RUN.try_lock() {
+                Ok(g) => break Some(g),
+                Err(std::sync::TryLockError::Poisoned(e)) => break Some(e.into_inner()),
+                Err(std::sync::TryLockError::WouldBlock) if cancel.load(Ordering::SeqCst) => {
+                    return out("ABORTED BY OPERATOR", true, argv, json!("cancelled"), 0, None);
+                }
+                Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
+    };
     let res = runner.run_spec(&spec);
     let ms = start.elapsed().as_millis() as u64;
     let cleanup = || {
@@ -100,6 +120,10 @@ pub fn run(
         }
         RunOutput::Exited { code, stdout, stderr } => {
             let text = format!("{stdout}{stderr}");
+            if !as_root {
+                // Anything the command left in the background dies with it.
+                cleanup();
+            }
             let lower = text.trim().to_lowercase();
             // Only sudo's own lines count, so a command that prints the phrase is not misread.
             let all_sudo = text
@@ -282,6 +306,49 @@ mod tests {
         let o = go(&f, true);
         assert_eq!(o.content, "NO RESPONSE — OUTCOME UNKNOWN");
         assert_eq!(f.calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn exit_runs_cleanup_unprivileged_only() {
+        let f = Fake::new(vec![exited(0, "x")]);
+        go(&f, false);
+        assert_eq!(f.calls.lock().unwrap()[1].0, cleanup_argv());
+        let f = Fake::new(vec![exited(0, "x")]);
+        go(&f, true);
+        assert_eq!(f.calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn agent_runs_are_serialised_with_their_cleanup() {
+        struct Slow(Mutex<Vec<&'static str>>);
+        impl Runner for Slow {
+            fn run(&self, argv: &[String], _t: Duration) -> RunOutput {
+                let tag = if argv == cleanup_argv().as_slice() { "cleanup" } else { "run" };
+                self.0.lock().unwrap().push(tag);
+                std::thread::sleep(Duration::from_millis(50));
+                exited(0, "")
+            }
+        }
+        let r = Slow(Mutex::new(vec![]));
+        std::thread::scope(|s| {
+            for _ in 0..3 {
+                s.spawn(|| go_with(&r));
+            }
+        });
+        assert_eq!(*r.0.lock().unwrap(), ["run", "cleanup"].repeat(3));
+    }
+
+    fn go_with(r: &dyn Runner) -> ToolOutcome {
+        run(r, "id", false, Duration::from_secs(9), None, &AtomicBool::new(false))
+    }
+
+    #[test]
+    fn cancel_while_waiting_for_another_run() {
+        let _held = AGENT_RUN.lock().unwrap();
+        let f = Fake::new(vec![]);
+        let o = run(&f, "id", false, Duration::from_secs(9), None, &AtomicBool::new(true));
+        assert_eq!(o.content, "ABORTED BY OPERATOR");
+        assert!(f.calls.lock().unwrap().is_empty());
     }
 
     #[test]

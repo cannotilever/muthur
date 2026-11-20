@@ -231,8 +231,10 @@ the only path to a shell. Settings live in `[tools]`, `[agent]`,
 
 **The agent account.** `run` executes as `muthur-agent`, an unprivileged system
 user reached with `sudo -n -u muthur-agent` (no sudo rights, not in `docker` or
-`wheel`). nftables drops all of its non-loopback egress, so a hijacked command
-cannot exfiltrate. With `as_root` the command runs through `sudo -S` as the
+`wheel`). nftables drops all of its non-loopback egress and its DNS to loopback
+resolvers, so a hijacked command cannot exfiltrate over the network; agent
+commands also run in their own session, with no controlling terminal, so they
+cannot reach the WY-60. With `as_root` the command runs through `sudo -S` as the
 operator, who types their password on the WY-60 for every call; MUTHUR never
 caches it and it only ever reaches sudo's stdin. Network diagnostics are fixed
 tools that run as the operator, behind a target gate: a host must come from the
@@ -282,7 +284,10 @@ runs clippy and tests in both modes.
 
 **Known gap.** Everything the technical agent reads goes to the LLM provider.
 For sensitive hosts, point `[muthur.technical]` at a local vLLM. The reviewer
-sees commands but no output, so it can stay remote.
+sees commands but no output, so it can stay remote. Loopback services remain
+reachable from `muthur-agent`: glibc's nss-resolve (systemd-resolved over
+varlink) and any local proxy can carry data out. `docs/deploy.md` says how to
+close them.
 
 ### Utility tab
 

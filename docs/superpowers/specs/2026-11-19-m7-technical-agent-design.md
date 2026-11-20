@@ -35,7 +35,7 @@ The M5 tool set was a fixed list of systemd tools plus allowlisted start/stop/re
 |---|---|
 | Unprivileged execution | A dedicated `muthur-agent` system account, reached with `sudo -n -u muthur-agent`. It has no sudo rights and is not in `docker` or `wheel`. |
 | Root execution | `sudo -S` as the operator. The operator types their password on the WY-60 for every root call. It is never cached by MUTHUR, and sudo's timestamp is bypassed (`-k`). |
-| Exfiltration | nftables drops all non-loopback egress from `muthur-agent`. Network diagnostics are fixed tools that run as the operator, behind a target gate. |
+| Exfiltration | nftables drops all non-loopback egress from `muthur-agent`, and its DNS (53, 853) to loopback resolvers. Network diagnostics are fixed tools that run as the operator, behind a target gate. |
 | Gate order | Deny rules (code, final), then the reviewer (LLM), then the operator (Y/N, password or OVERRIDE). |
 | Reviewer input | The operator's message, the command, the reason, the `as_root` flag and prior commands. **Never tool output.** |
 | Reviewer failure | Treated as `ask` (`REVIEWER OFFLINE`), never as `allow`. |
@@ -408,6 +408,8 @@ net_allow = []          # hosts the network tools may target without Y/N
 ## Known gap
 
 Everything the technical agent reads goes to the LLM provider. For sensitive hosts, point `[muthur.technical]` at local vLLM. The reviewer sees no tool output, but it does see commands, so it can run remotely without exposing data that the commands only read.
+
+Loopback services stay reachable from `muthur-agent`. glibc's nss-resolve talks to systemd-resolved over varlink, which nftables cannot see, and a local proxy would forward anything. `docs/deploy.md` says how to close both.
 
 ## Testing
 

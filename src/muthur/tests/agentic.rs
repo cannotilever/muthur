@@ -421,8 +421,46 @@ fn direct_mode_keeps_case() {
     assert!(shown.contains("$ ls -la /Var") && shown.contains("Found /Var."), "{shown}");
 }
 
+/// Runs `f` with every tracing event, at every level, written to a buffer.
+fn traced(f: impl FnOnce()) -> String {
+    #[derive(Clone, Default)]
+    struct Buf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Buf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let buf = Buf::default();
+    let w = buf.clone();
+    let sub = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_ansi(false)
+        .with_writer(move || w.clone())
+        .finish();
+    tracing::subscriber::with_default(sub, f);
+    String::from_utf8_lossy(&buf.0.lock().unwrap()).into_owned()
+}
+
+#[test]
+fn password_never_reaches_tracing() {
+    let log = traced(|| {
+        tracing::trace!("capture-check");
+        password_flow_body();
+    });
+    assert!(log.contains("capture-check"), "the subscriber must be live");
+    assert!(!log.contains("hunter2"), "{log}");
+}
+
 #[test]
 fn password_flow() {
+    password_flow_body();
+}
+
+fn password_flow_body() {
     let mut h = harness();
     raise_run(&mut h, "id", true);
     h.t.on_review(1, "c1".into(), review(Verdict::Allow, "read-only identity check"));

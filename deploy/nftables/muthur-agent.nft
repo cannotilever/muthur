@@ -1,10 +1,14 @@
-# Drops all non-loopback egress from the muthur-agent account.
+# Drops all non-loopback egress from the muthur-agent account, and DNS to
+# loopback resolvers too: a local stub (systemd-resolved on 127.0.0.53) would
+# otherwise forward encoded names to the outside world.
 # The empty declaration plus delete makes re-loading this file idempotent.
 table inet muthur_agent
 delete table inet muthur_agent
 table inet muthur_agent {
 	chain output {
 		type filter hook output priority 0; policy accept;
+		meta skuid "muthur-agent" udp dport { 53, 853 } drop
+		meta skuid "muthur-agent" tcp dport { 53, 853 } drop
 		oif "lo" accept
 		meta skuid "muthur-agent" drop
 	}

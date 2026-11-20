@@ -54,7 +54,7 @@ Stopping alone is not enough: udev starts the getty again on the next replug or 
 
 - `sysusers.d` and `tmpfiles.d`: the `muthur-agent` system user (groups `adm`, `systemd-journal`; no sudo rights, not in `docker` or `wheel`) and its home `/var/lib/muthur-agent`.
 - `sudoers.d/muthur-agent`: lets the deploying user run commands as `muthur-agent` without a password. `OPERATOR` is replaced with that user, and `visudo -cf` checks the result before it goes to `/etc/sudoers.d/`.
-- `nftables/muthur-agent.nft`: drops all non-loopback egress from `muthur-agent`, installed as `/etc/nftables.d/muthur-agent.nft`.
+- `nftables/muthur-agent.nft`: drops all non-loopback egress from `muthur-agent`, and its DNS (ports 53 and 853) to loopback resolvers as well, installed as `/etc/nftables.d/muthur-agent.nft`.
 
 The nft file is loaded at install time. To keep it across reboots, add this line to `/etc/nftables.conf` (and enable `nftables.service`):
 
@@ -68,7 +68,12 @@ Check that the isolation works. This must fail with "Operation not permitted":
 sudo -u muthur-agent curl -m 3 https://example.com
 ```
 
-"Could not resolve host" also proves the rule when DNS goes to a non-loopback resolver.
+"Could not resolve host" also proves the rule, since the account's DNS is dropped too.
+
+Two loopback paths remain that the rule cannot close, so check them by hand:
+
+- **nss-resolve.** With `resolve` in the `hosts:` line of `/etc/nsswitch.conf` (the Arch default), glibc asks systemd-resolved over its varlink socket, not over UDP, and `getent hosts <name>` from `muthur-agent` still resolves. A name built from data leaks that data. Remove `resolve` from `hosts:` (keep `files myhostname dns`) or accept the gap.
+- **Local proxies.** Any HTTP or SOCKS proxy listening on loopback is reachable from the account. Do not run one on this host, or bind it to a non-loopback address only.
 
 At startup MUTHUR probes the account and the isolation, each step limited to 5 s, and the result is fixed for the session. Isolated means a connect to 192.0.2.1 fails with `Operation not permitted`; success, a timeout or `Network is unreachable` all count as not isolated. If either fails, `/DIRECT` shows `AGENT ACCOUNT OFFLINE -- SEE DEPLOY` or `AGENT NETWORK NOT ISOLATED -- SEE DEPLOY` and the `run` tool is withheld.
 

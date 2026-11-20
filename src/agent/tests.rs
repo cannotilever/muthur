@@ -411,6 +411,13 @@ fn abort_each_stage() {
     assert_eq!(e.last(), Some(&Effect::Finished { truncated: false }));
     assert_eq!(t.on_tool_done("c1", ok("late")), vec![]);
 
+    // A running review-free tool ends its label line with ABORTED too.
+    let mut t = tturn("x");
+    start(&mut t, vec![ship("c1")], true);
+    assert!(t.running());
+    let e = t.abort();
+    assert_eq!(notes(&e), ["ABORTED"]);
+
     // Running root: issued, outcome unknown.
     let (mut t, _) = reviewed("id", true, allow(), true);
     t.on_password("c1", true, true);
@@ -456,6 +463,12 @@ fn tech_lines() {
     let (mut t, _) = reviewed("id", true, review(Verdict::Ask, Risk::Medium, "root id"), true);
     let e = t.on_password("c1", true, true);
     assert_eq!(notes(&e), ["RUN# id  [ROOT, ASK: MEDIUM]", "     REVIEW: MEDIUM -- root id"]);
+
+    // A cut-down capture makes the line count a floor.
+    let (mut t, _) = reviewed("ls", false, allow(), true);
+    let big = format!("a\nb{}c\n", crate::ops::omitted(9000));
+    let o = ToolOutcome { content: "EXIT 0\n…".into(), is_error: false, argv: None, exit: Some(json!(0)), ms: 100, audit_output: Some(big) };
+    assert_eq!(notes(&t.on_tool_done("c1", o)), ["EXIT 0  4+ LINES  0.1 S"]);
 
     // Result words replace the EXIT line.
     for (content, line) in [
@@ -583,7 +596,8 @@ fn new_stream_closes_open_round_as_aborted() {
     assert!(t.running());
     let e = start(&mut t, vec![ship("c3")], true);
     assert_eq!(audits(&e).iter().take(2).map(|a| a.decision).collect::<Vec<_>>(), [Decision::Aborted; 2]);
-    assert!(matches!(&e[1], Effect::Orphan(o) if o.call_id == "c1"), "{e:?}");
+    assert_eq!(e[0], Effect::Note("ABORTED".into()), "the running tool's line ends");
+    assert!(matches!(&e[2], Effect::Orphan(o) if o.call_id == "c1"), "{e:?}");
     let r = logged(&e)[0];
     assert_eq!(r.iter().map(|r| r.content.as_str()).collect::<Vec<_>>(), [ABORTED, ABORTED]);
     assert_eq!(e.last(), Some(&Effect::Run { call_id: "c3".into(), invocation: Invocation::ShipStatus }));

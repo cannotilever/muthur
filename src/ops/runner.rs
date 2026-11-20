@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -68,67 +68,106 @@ pub trait Runner: Send + Sync {
 
 pub struct SystemRunner;
 
-/// Read a stream to EOF. With `keep`, hold only the first and last `keep / 2`
-/// bytes, cut on UTF-8 boundaries, with the `head_tail` marker for the rest.
-fn drain<R: Read + Send + 'static>(mut r: R, keep: Option<usize>) -> mpsc::Receiver<Vec<u8>> {
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(match keep {
-            None => {
-                let mut buf = Vec::new();
-                let _ = r.read_to_end(&mut buf);
-                buf
-            }
-            Some(k) => drain_bounded(&mut r, k),
-        });
-    });
-    rx
+/// Bytes captured from one stream. With `keep`, hold only the first and last
+/// `keep / 2` bytes, cut on UTF-8 boundaries, with the `head_tail` marker for
+/// the rest.
+struct Capture {
+    keep: Option<usize>,
+    head: Vec<u8>,
+    tail: VecDeque<u8>,
+    total: usize,
 }
 
-fn drain_bounded(r: &mut impl Read, keep: usize) -> Vec<u8> {
-    let half = keep / 2; // tail size
-    let head_cap = keep - half;
-    let mut head: Vec<u8> = Vec::with_capacity(head_cap);
-    let mut tail: VecDeque<u8> = VecDeque::with_capacity(half);
-    let mut total = 0usize;
-    let mut chunk = [0u8; 8192];
-    loop {
-        let n = match r.read(&mut chunk) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => n,
+impl Capture {
+    fn new(keep: Option<usize>) -> Self {
+        Self { keep, head: Vec::new(), tail: VecDeque::new(), total: 0 }
+    }
+
+    fn push(&mut self, mut data: &[u8]) {
+        self.total += data.len();
+        let Some(keep) = self.keep else {
+            self.head.extend_from_slice(data);
+            return;
         };
-        total += n;
-        let mut data = &chunk[..n];
-        let room = head_cap - head.len();
+        let half = keep / 2; // tail size
+        let head_cap = keep - half;
+        let room = head_cap - self.head.len();
         let (h, rest) = data.split_at(room.min(data.len()));
-        head.extend_from_slice(h);
+        self.head.extend_from_slice(h);
         data = rest;
         if data.len() >= half {
-            tail.clear();
+            self.tail.clear();
             data = &data[data.len() - half..];
         } else {
-            let over = (tail.len() + data.len()).saturating_sub(half);
-            tail.drain(..over);
+            let over = (self.tail.len() + data.len()).saturating_sub(half);
+            self.tail.drain(..over);
         }
-        tail.extend(data);
+        self.tail.extend(data);
     }
-    let tail = tail.make_contiguous();
-    if total <= keep {
-        let mut all = head;
-        all.extend_from_slice(tail);
-        return all;
+
+    /// Everything captured so far.
+    fn bytes(&mut self) -> Vec<u8> {
+        let tail = self.tail.make_contiguous();
+        if self.keep.is_none_or(|k| self.total <= k) {
+            let mut all = self.head.clone();
+            all.extend_from_slice(tail);
+            return all;
+        }
+        // Trim to char boundaries; trimmed bytes count as dropped.
+        let hend = complete_prefix(&self.head);
+        let mut tstart = 0;
+        while tstart < tail.len() && !is_boundary(tail, tstart) {
+            tstart += 1;
+        }
+        let dropped = self.total - hend - (tail.len() - tstart);
+        let mut out = self.head[..hend].to_vec();
+        out.extend_from_slice(crate::ops::omitted(dropped).as_bytes());
+        out.extend_from_slice(&tail[tstart..]);
+        out
     }
-    // Trim to char boundaries; trimmed bytes count as dropped.
-    let hend = complete_prefix(&head);
-    let mut tstart = 0;
-    while tstart < tail.len() && !is_boundary(tail, tstart) {
-        tstart += 1;
+}
+
+/// A stream being read on its own thread. What it has read so far stays
+/// readable even if the stream never reaches EOF.
+struct Drain {
+    cap: Arc<Mutex<Capture>>,
+    done: mpsc::Receiver<()>,
+}
+
+impl Drain {
+    /// Wait until `end` for EOF, then return what was read.
+    fn collect(&self, end: Instant) -> Vec<u8> {
+        let _ = self.done.recv_timeout(end.saturating_duration_since(Instant::now()));
+        self.cap.lock().unwrap_or_else(|e| e.into_inner()).bytes()
     }
-    let dropped = total - hend - (tail.len() - tstart);
-    let mut out = head[..hend].to_vec();
-    out.extend_from_slice(crate::ops::omitted(dropped).as_bytes());
-    out.extend_from_slice(&tail[tstart..]);
-    out
+}
+
+fn drain<R: Read + Send + 'static>(mut r: R, keep: Option<usize>) -> Drain {
+    let cap = Arc::new(Mutex::new(Capture::new(keep)));
+    let (tx, done) = mpsc::channel();
+    let c = cap.clone();
+    std::thread::spawn(move || {
+        let mut chunk = [0u8; 8192];
+        loop {
+            match r.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => c.lock().unwrap_or_else(|e| e.into_inner()).push(&chunk[..n]),
+            }
+        }
+        let _ = tx.send(());
+    });
+    Drain { cap, done }
+}
+
+#[cfg(test)]
+fn drain_bounded(r: &mut impl Read, keep: usize) -> Vec<u8> {
+    let mut c = Capture::new(Some(keep));
+    let mut buf = Vec::new();
+    let _ = r.read_to_end(&mut buf);
+    for piece in buf.chunks(8192) {
+        c.push(piece);
+    }
+    c.bytes()
 }
 
 /// Length of `b` without a trailing, cut-off multi-byte sequence.
@@ -151,7 +190,8 @@ fn is_boundary(b: &[u8], i: usize) -> bool {
     i >= b.len() || (b[i] & 0xC0) != 0x80
 }
 
-const GRACE: Duration = Duration::from_millis(200);
+/// How long to wait for the pipes to close after the child exits.
+const AFTER_EXIT: Duration = Duration::from_secs(1);
 
 impl Runner for SystemRunner {
     fn run(&self, argv: &[String], timeout: Duration) -> RunOutput {
@@ -184,7 +224,14 @@ fn spawn_and_wait(spec: &RunSpec) -> RunOutput {
         return RunOutput::NotFound;
     };
     let mut command = Command::new(cmd);
-    command.args(args).env("LC_ALL", "C").process_group(0);
+    command.args(args).env("LC_ALL", "C");
+    // A new session, not just a process group: the child gets no controlling
+    // terminal, so it cannot open /dev/tty to reach the operator's serial
+    // line. The pgid still equals the pid, so `killpg` works as before.
+    // SAFETY: setsid is async-signal-safe and touches no parent state.
+    unsafe {
+        command.pre_exec(|| nix::unistd::setsid().map(drop).map_err(std::io::Error::from));
+    }
     command.stdin(if spec.stdin.is_some() { Stdio::piped() } else { Stdio::null() });
     let (mut child, out_rx, err_rx) = if merged {
         let (reader, writer) = match std::io::pipe() {
@@ -204,9 +251,7 @@ fn spawn_and_wait(spec: &RunSpec) -> RunOutput {
             Ok(c) => c,
             Err(e) => return spawn_failed(cmd, e),
         };
-        let (tx, err_rx) = mpsc::channel();
-        let _ = tx.send(Vec::new());
-        (child, drain(reader, keep), err_rx)
+        (child, drain(reader, keep), drain(std::io::empty(), None))
     } else {
         let mut child = match command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
             Ok(c) => c,
@@ -266,14 +311,14 @@ fn spawn_and_wait(spec: &RunSpec) -> RunOutput {
         let _ = killpg(pgid, Signal::SIGKILL);
         (status, cancelled)
     });
-    let wait = deadline.saturating_duration_since(Instant::now()) + GRACE;
-    let end = Instant::now() + wait;
-    let collect = |rx: &mpsc::Receiver<Vec<u8>>| rx.recv_timeout(end.saturating_duration_since(Instant::now()));
-    let (o, e) = (collect(&out_rx), collect(&err_rx));
     match status {
         Some(s) => {
-            let text = |r: Result<Vec<u8>, _>| String::from_utf8_lossy(&r.unwrap_or_default()).into_owned();
-            RunOutput::Exited { code: s.code().unwrap_or(-1), stdout: text(o), stderr: text(e) }
+            // The group is dead, so the pipes close at once unless a process
+            // outside our reach (another user, another session) still holds
+            // them. Take what arrived rather than waiting out the timeout.
+            let end = Instant::now() + AFTER_EXIT;
+            let text = |d: &Drain| String::from_utf8_lossy(&d.collect(end)).into_owned();
+            RunOutput::Exited { code: s.code().unwrap_or(-1), stdout: text(&out_rx), stderr: text(&err_rx) }
         }
         None if cancelled => RunOutput::Cancelled,
         None => RunOutput::TimedOut,
@@ -430,6 +475,29 @@ mod tests {
         let t = Instant::now();
         assert_eq!(SystemRunner.run_spec(&s), RunOutput::TimedOut);
         assert!(t.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn child_has_no_controlling_terminal() {
+        // /proc/PID/stat fields 6 and 7: session id and tty_nr.
+        let a = v(&["sh", "-c", "read -r p c st pp pg sid tty rest < /proc/$$/stat; echo $sid $tty; echo $$"]);
+        let RunOutput::Exited { stdout, .. } = SystemRunner.run(&a, Duration::from_secs(2)) else { panic!() };
+        let l: Vec<&str> = stdout.lines().collect();
+        assert_eq!(l[0], format!("{} 0", l[1]), "child must lead its own session with no tty");
+    }
+
+    #[test]
+    fn pipe_held_by_unkillable_process_keeps_output() {
+        // A setsid'd grandchild leaves our group, so killpg misses it and it
+        // keeps the pipe open: the exit must still come back promptly with
+        // what was written.
+        let a = v(&["sh", "-c", "echo hi; setsid sleep 5 & exit 0"]);
+        let mut s = RunSpec::new(&a, Duration::from_secs(20));
+        s.merged = true;
+        s.keep = Some(65536);
+        let t = Instant::now();
+        assert_eq!(SystemRunner.run_spec(&s), RunOutput::Exited { code: 0, stdout: "hi\n".into(), stderr: String::new() });
+        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
     }
 
     #[test]

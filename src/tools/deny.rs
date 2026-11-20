@@ -19,6 +19,17 @@ pub struct DenyRules {
 const B: &str = r#"(?:^|[\s;&|(`'"$/])"#;
 const A: &str = r"(?:$|[\s;&|)])";
 
+/// A command word's position: the start, or after a separator, optionally
+/// behind a wrapper (`sudo`, `env`, …) and a directory. An argument such as
+/// `getent passwd` or `/etc/passwd` is not in command position.
+const CMD: &str = r#"(?:^|[;&|(`\n]|\$\()\s*(?:(?:sudo|doas|env|nohup|exec|command|xargs|time)\s+(?:-\S+\s+)*)*(?:[^\s;&|()`'"]*/)?"#;
+
+/// `word` in command position, then one of `users` as a whole name later on
+/// the line. User names may hold `.` and `-`, so `\b` is too loose.
+fn word_then_user(words: &str, users: &str) -> String {
+    format!(r"{CMD}(?:{words})(?:\s|\s.*[^\w.-])(?:{users})(?:$|[^\w.-])")
+}
+
 fn w(word: &str) -> String {
     format!("{B}(?:{word}){A}")
 }
@@ -36,7 +47,7 @@ impl DenyRules {
             "/etc/sudoers".to_string(),
             r"(sysusers|tmpfiles)\.d/muthur-agent".to_string(),
             r"nftables\.d/muthur-agent".to_string(),
-            format!("{}.*({who})", w("usermod|gpasswd|passwd|userdel|chsh")),
+            word_then_user("usermod|gpasswd|passwd|userdel|chsh", &who),
             format!(r"{B}nft\W.*(flush|delete|muthur_agent)"),
         ];
         control.extend([&ctx.config_path, &ctx.state_dir, &ctx.exe].into_iter().filter(|p| !p.is_empty()).map(|p| escape(p)));
@@ -120,6 +131,13 @@ mod tests {
             ("cat /etc/sudoers.d/x", true, Some("CONTROL PLANE")),
             ("tail /home/op/.local/state/muthur/audit.jsonl", false, Some("CONTROL PLANE")),
             ("usermod -aG docker muthur-agent", true, Some("CONTROL PLANE")),
+            ("/usr/sbin/usermod -L op", true, Some("CONTROL PLANE")),
+            ("ls; passwd op", true, Some("CONTROL PLANE")),
+            ("echo x | sudo chsh -s /bin/sh muthur-agent", true, Some("CONTROL PLANE")),
+            ("getent passwd op", true, None),
+            ("cat /etc/passwd | grep op", true, None),
+            ("usermod -aG docker cooper", true, None),
+            ("passwd op.backup", true, None),
             ("nft flush ruleset", true, Some("CONTROL PLANE")),
             ("systemctl stop serial-getty@wy60", true, Some("LOCKOUT")),
             ("systemctl status serial-getty@wy60", false, None),

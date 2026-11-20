@@ -111,7 +111,8 @@ pub fn spawn_input<R: ReadTimeout + Send + 'static>(
                 Ok(0) => parser.timeout(),
                 Ok(n) => {
                     if buf[..n].contains(&0) {
-                        tracing::info!(bytes = ?&buf[..n], "break: NUL received");
+                        // Length only: the same read may hold password characters.
+                        tracing::info!(len = n, "break: NUL received");
                         on_break();
                     }
                     parser.feed(&buf[..n])
@@ -616,10 +617,18 @@ fn splash_for(cfg: &Config, ship: &str) -> Splash {
     Splash::new(info, Instant::now())
 }
 
+/// `config::load` runs before logging exists, so its warnings wait for here.
+fn log_config_warnings(cfg: &Config) {
+    for w in &cfg.warnings {
+        tracing::warn!("{w}");
+    }
+}
+
 /// Play the boot splash once on the configured link, then exit.
 pub fn run_splash(cfg: &Config, strict: bool) -> anyhow::Result<()> {
     check_geometry(cfg.terminal.cols, cfg.terminal.rows)?;
     let _log = init_logging()?;
+    log_config_warnings(cfg);
     install_panic_hook();
     let Session { link, tx, mut rx, mut terminal, .. } = open_session(cfg, strict)?;
     let ship = ship_name(cfg);
@@ -642,6 +651,7 @@ pub fn run_splash(cfg: &Config, strict: bool) -> anyhow::Result<()> {
 pub fn run(cfg: &Config, config_path: &std::path::Path, strict: bool) -> anyhow::Result<()> {
     check_geometry(cfg.terminal.cols, cfg.terminal.rows)?;
     let _log = init_logging()?;
+    log_config_warnings(cfg);
     install_panic_hook();
     // Before the link is taken over, so a bad config entry reaches stderr.
     let tech = tech_startup(cfg, config_path)?;

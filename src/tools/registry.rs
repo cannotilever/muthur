@@ -214,7 +214,7 @@ impl ToolDefs {
         ));
         specs.push(spec(
             "http_check",
-            "Make one HTTP request and report the status line and headers.",
+            "Make one HTTP request and report the status code and the total time.",
             json!({"url": {"type":"string","description":"An http or https URL"}}),
         ));
         Self {

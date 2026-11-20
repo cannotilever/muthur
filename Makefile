@@ -22,7 +22,7 @@ AGENT_STEPS :=
 else
 AGENT_SCP := scp $(SYSUSERS) $(HOST):$$tmp/sysusers.conf && scp $(TMPFILES) $(HOST):$$tmp/tmpfiles.conf && scp $(SUDOERS) $(HOST):$$tmp/sudoers && scp $(NFT) $(HOST):$$tmp/agent.nft &&
 AGENT_STEPS := \
-	echo \"==> agent account\"; sudo install -m 644 $$tmp/sysusers.conf /etc/sysusers.d/muthur-agent.conf; sudo install -m 644 $$tmp/tmpfiles.conf /etc/tmpfiles.d/muthur-agent.conf; sudo systemd-sysusers; sudo systemd-tmpfiles --create; \
+	echo \"==> agent account\"; sudo install -d -m 755 /etc/sysusers.d /etc/tmpfiles.d; sudo install -m 644 $$tmp/sysusers.conf /etc/sysusers.d/muthur-agent.conf; sudo install -m 644 $$tmp/tmpfiles.conf /etc/tmpfiles.d/muthur-agent.conf; sudo systemd-sysusers; sudo systemd-tmpfiles --create; \
 	echo \"==> agent sudoers\"; if [ \"\$$(whoami)\" = root ]; then echo \"ABORT: deploy as a normal user, not root\"; exit 1; fi; sed \"s/OPERATOR/\$$(whoami)/\" $$tmp/sudoers > $$tmp/sudoers.out; sudo visudo -cf $$tmp/sudoers.out; sudo install -m 440 $$tmp/sudoers.out /etc/sudoers.d/muthur-agent; \
 	echo \"==> agent network isolation\"; sudo install -d /etc/nftables.d; sudo install -m 644 $$tmp/agent.nft /etc/nftables.d/muthur-agent.nft; sudo nft -f /etc/nftables.d/muthur-agent.nft; \
 	echo \"==> REMINDER: include /etc/nftables.d/*.nft from /etc/nftables.conf so the rule survives a reboot\";
@@ -46,7 +46,7 @@ install-system:
 	scp $(UDEV) $(DROPIN) $(HOST):$$tmp/ && \
 	$(AGENT_SCP) \
 	ssh -t $(HOST) "bash -c 'set -e; \
-	echo \"==> install udev rule\"; sudo install -m 644 $$tmp/99-wy60.rules /etc/udev/rules.d/99-wy60.rules; \
+	echo \"==> install udev rule\"; sudo install -d -m 755 /etc/udev/rules.d; sudo install -m 644 $$tmp/99-wy60.rules /etc/udev/rules.d/99-wy60.rules; \
 	echo \"==> install getty drop-in\"; sudo install -d /etc/systemd/system/serial-getty@wy60.service.d; sudo install -m 644 $$tmp/override.conf /etc/systemd/system/serial-getty@wy60.service.d/override.conf; \
 	echo \"==> reload systemd\"; sudo systemctl daemon-reload; \
 	echo \"==> reload udev\"; sudo udevadm control --reload; \
