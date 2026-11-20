@@ -248,16 +248,26 @@ impl MuthurSection {
     }
 }
 
+/// How the persona presents the technical agent's report after a delegation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DelegateReport {
+    #[default]
+    Relayed,
+    Verbatim,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct ToolsSection {
     pub enabled: bool,
     pub max_rounds: u32,
+    pub delegate_report: DelegateReport,
 }
 
 impl Default for ToolsSection {
     fn default() -> Self {
-        Self { enabled: true, max_rounds: 8 }
+        Self { enabled: true, max_rounds: 8, delegate_report: DelegateReport::default() }
     }
 }
 
@@ -348,6 +358,7 @@ pub fn warnings(text: &str, agent_built: bool) -> Vec<String> {
     if !agent_built {
         let muthur = v.get("muthur");
         let present = tools.and_then(|t| t.get("enabled")).and_then(|e| e.as_bool()) == Some(true)
+            || tools.and_then(|t| t.get("delegate_report")).is_some()
             || v.get("agent").is_some()
             || muthur.and_then(|m| m.get("technical")).is_some()
             || muthur.and_then(|m| m.get("reviewer")).is_some();
@@ -520,7 +531,33 @@ mod tests {
             0o600,
         );
         let t = load(&p).unwrap().tools;
-        assert_eq!(t, ToolsSection { enabled: false, max_rounds: 3 });
+        assert_eq!(t, ToolsSection { enabled: false, max_rounds: 3, ..Default::default() });
+    }
+
+    #[test]
+    fn delegate_report_default_relayed() {
+        assert_eq!(ToolsSection::default().delegate_report, DelegateReport::Relayed);
+    }
+
+    #[test]
+    fn delegate_report_parses_verbatim() {
+        let (_d, p) = write_cfg("[tools]\ndelegate_report = \"verbatim\"\n", 0o600);
+        assert_eq!(load(&p).unwrap().tools.delegate_report, DelegateReport::Verbatim);
+    }
+
+    #[test]
+    fn delegate_report_bad_value_is_error() {
+        let (_d, p) = write_cfg("[tools]\ndelegate_report = \"loud\"\n", 0o600);
+        assert!(load(&p).is_err());
+    }
+
+    #[test]
+    fn warnings_cover_delegate_report() {
+        let text = "[tools]\ndelegate_report = \"verbatim\"\n";
+        let w = warnings(text, false);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].starts_with("agent feature not built"));
+        assert!(warnings(text, true).is_empty());
     }
 
     #[test]

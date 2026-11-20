@@ -110,6 +110,7 @@ uppercase = true
 [tools]
 # enabled = true
 # max_rounds = 8            # tool-call rounds per question
+# delegate_report = "relayed"  # "verbatim": print the science officer's report as-is
 
 # ── Technical agent ──────────────────────────────────────────────────────────
 # [agent]
