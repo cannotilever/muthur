@@ -1020,6 +1020,7 @@ mod tests {
     #[test]
     fn persona_window_unaffected_by_delegation() {
         let (_d, mut l) = full_log();
+        l.append_user("Q", "t", M).unwrap();
         let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
         let (_d2, mut l2) = log();
         l2.append_user("A", "t", T).unwrap();
@@ -1029,7 +1030,12 @@ mod tests {
         l2.append_tool(&[r1()], "t", &Lane::Muthur).unwrap();
         l2.append_assistant(asst_for(M, "PERSONA DONE"), "t").unwrap();
         l2.append_user("B", "t", T).unwrap();
-        assert_eq!(w, l2.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap());
+        l2.append_user("Q", "t", M).unwrap();
+        let w2 = l2.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
+        assert!(!w.is_empty());
+        assert_eq!(w, w2);
+        let dump = format!("{w:?}");
+        assert!(!dump.contains("task") && !dump.contains("FINDINGS"));
     }
 
     #[test]
@@ -1057,16 +1063,33 @@ mod tests {
         let (dir, mut l) = delegated_log();
         l.append_assistant(Assistant { lane: d("d1"), ..asst("FINDINGS", None) }, "t").unwrap();
         let mut l = ChatLog::open(dir.path().join("chat.jsonl")).unwrap();
+        // M5 rules: the unfinished persona exchange is excluded from a later persona window.
+        l.append_user("Q", "t", M).unwrap();
         let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
-        // M5 rules: the persona lane ends in its assistant tool_use record, so it is
-        // assistant-last (empty), exactly as without the delegated records.
-        let (_d2, mut l2) = log();
-        l2.append_user("A", "t", T).unwrap();
-        l2.append_assistant(asst_for(T, "ta"), "t").unwrap();
-        l2.append_user("P", "t", M).unwrap();
-        l2.append_assistant(tool_use_asst(Lane::Muthur), "t").unwrap();
-        assert_eq!(w, l2.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap());
-        assert_eq!(l.history()[1].delegations.len(), 1);
+        assert_eq!(w, vec![user("Q")]);
+        l.append_user("T2", "t", T).unwrap();
+        let wt = l.window(&Lane::Tech, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
+        assert_eq!(texts(&wt), vec!["A", "ta", "T2"]);
+        assert!(!format!("{wt:?}").contains("task") && !format!("{wt:?}").contains("FINDINGS"));
+        let h = l.history();
+        assert_eq!(h.iter().map(|e| e.user.as_str()).collect::<Vec<_>>(), vec!["A", "P", "Q", "T2"]);
+        assert_eq!(h[1].delegations.len(), 1);
+        assert!(h[2].delegations.is_empty());
+    }
+
+    #[test]
+    fn delegation_attaches_past_interleaved_direct_exchange() {
+        let (_d, mut l) = log();
+        l.append_user("P", "t", M).unwrap();
+        l.append_assistant(tool_use_asst(Lane::Muthur), "t").unwrap();
+        l.append_user("T1", "t", T).unwrap();
+        l.append_assistant(asst_for(T, "ta"), "t").unwrap();
+        l.append_delegation("d1", "task", false, "t").unwrap();
+        l.append_assistant(Assistant { lane: d("d1"), ..asst("FINDINGS", None) }, "t").unwrap();
+        let h = l.history();
+        assert_eq!(h.iter().map(|e| e.user.as_str()).collect::<Vec<_>>(), vec!["P", "T1"]);
+        assert_eq!(h[0].delegations.len(), 1);
+        assert!(h[1].delegations.is_empty());
     }
 
     #[test]
