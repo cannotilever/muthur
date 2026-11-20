@@ -31,12 +31,12 @@ pub fn argv_for(inv: &Invocation, runtime: Option<&str>) -> Option<Vec<String>> 
         Invocation::ContainerInspect { name } => strs(&[runtime?, "inspect", "--type", "container", "--", name]),
         Invocation::ContainerLogs { name, lines } => strs(&[runtime?, "logs", "--tail", &lines.to_string(), "--", name]),
         Invocation::Ping { host, count } => strs(&["ping", "-c", &count.to_string(), "-W", "2", "--", host]),
-        Invocation::Traceroute { host } => strs(&["traceroute", "-q", "1", "-w", "2", "-m", "30", "--", host]),
+        Invocation::Traceroute { host } => strs(&["traceroute", "-q", "1", "-w", "2", "-m", "30", host]),
         Invocation::DnsLookup { name, rtype } => {
             if matches!(rtype, DnsType::Ptr) {
                 strs(&["dig", "+short", "+time=2", "+tries=1", "-x", name])
             } else {
-                strs(&["dig", "+short", "+time=2", "+tries=1", "--", name, rtype.word()])
+                strs(&["dig", "+short", "+time=2", "+tries=1", "-q", name, "-t", rtype.word()])
             }
         }
         Invocation::HttpCheck { url } => strs(&[
@@ -56,18 +56,21 @@ fn timeout_for(inv: &Invocation) -> Duration {
 }
 
 /// Replace every `Config.Env` value (after the first `=`) with `<REDACTED>`.
+/// Accepts an array of objects or a single object.
 pub fn redact_env(inspect_json: &str) -> String {
-    let Ok(mut v) = serde_json::from_str::<Value>(inspect_json) else { return inspect_json.to_string() };
-    if let Some(items) = v.as_array_mut() {
-        for item in items {
-            let Some(env) = item.pointer_mut("/Config/Env").and_then(Value::as_array_mut) else { continue };
-            for e in env {
-                if let Some(s) = e.as_str() {
-                    let key = s.split_once('=').map_or(s, |(k, _)| k);
-                    *e = Value::String(format!("{key}=<REDACTED>"));
-                }
+    fn one(item: &mut Value) {
+        let Some(env) = item.pointer_mut("/Config/Env").and_then(Value::as_array_mut) else { return };
+        for e in env {
+            if let Some(s) = e.as_str() {
+                let key = s.split_once('=').map_or(s, |(k, _)| k);
+                *e = Value::String(format!("{key}=<REDACTED>"));
             }
         }
+    }
+    let Ok(mut v) = serde_json::from_str::<Value>(inspect_json) else { return inspect_json.to_string() };
+    match v.as_array_mut() {
+        Some(items) => items.iter_mut().for_each(one),
+        None => one(&mut v),
     }
     serde_json::to_string_pretty(&v).unwrap_or_else(|_| inspect_json.to_string())
 }
@@ -78,7 +81,14 @@ fn outcome(content: impl Into<String>, is_error: bool, argv: Option<Vec<String>>
 
 fn port_check(host: &str, port: u16) -> ToolOutcome {
     let start = Instant::now();
-    let Some(addr) = (host, port).to_socket_addrs().ok().and_then(|mut a| a.next()) else {
+    // getaddrinfo can block for 10-30 s and cannot be cancelled, so resolve on a
+    // thread and give up after 1 s. IP literals resolve instantly.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let h = host.to_string();
+    std::thread::spawn(move || {
+        let _ = tx.send((h.as_str(), port).to_socket_addrs().ok().and_then(|mut a| a.next()));
+    });
+    let Some(addr) = rx.recv_timeout(Duration::from_secs(1)).ok().flatten() else {
         return outcome("NO SUCH HOST", true, None, None, start.elapsed().as_millis() as u64);
     };
     let res = TcpStream::connect_timeout(&addr, Duration::from_secs(5));
@@ -137,7 +147,13 @@ pub fn execute(inv: &Invocation, ctx: &FixedCtx) -> ToolOutcome {
                         let mut it = stdout.split_whitespace();
                         format!("HTTP {} {} S", it.next().unwrap_or("000"), it.next().unwrap_or("0"))
                     }
-                    Invocation::ContainerInspect { .. } => redact_env(&stdout),
+                    Invocation::ContainerInspect { .. } => {
+                        // Fail closed: never pass unparsed inspect output through.
+                        if serde_json::from_str::<Value>(&stdout).is_err() {
+                            return outcome("INSPECT OUTPUT UNREADABLE", true, Some(argv), exit, ms);
+                        }
+                        redact_env(&stdout)
+                    }
                     Invocation::DnsLookup { .. } if stdout.trim().is_empty() => "NO RECORDS".into(),
                     _ if stdout.trim().is_empty() && stderr.trim().is_empty() => "NO OUTPUT".into(),
                     _ => format!("{stdout}{stderr}"),
@@ -199,10 +215,10 @@ mod tests {
         assert_eq!(a(Invocation::ContainerInspect { name: "web".into() }), strs(&["docker", "inspect", "--type", "container", "--", "web"]));
         assert_eq!(a(Invocation::ContainerLogs { name: "web".into(), lines: 50 }), strs(&["docker", "logs", "--tail", "50", "--", "web"]));
         assert_eq!(a(Invocation::Ping { host: "h".into(), count: 3 }), strs(&["ping", "-c", "3", "-W", "2", "--", "h"]));
-        assert_eq!(a(Invocation::Traceroute { host: "h".into() }), strs(&["traceroute", "-q", "1", "-w", "2", "-m", "30", "--", "h"]));
+        assert_eq!(a(Invocation::Traceroute { host: "h".into() }), strs(&["traceroute", "-q", "1", "-w", "2", "-m", "30", "h"]));
         assert_eq!(
             a(Invocation::DnsLookup { name: "x.org".into(), rtype: DnsType::Mx }),
-            strs(&["dig", "+short", "+time=2", "+tries=1", "--", "x.org", "MX"])
+            strs(&["dig", "+short", "+time=2", "+tries=1", "-q", "x.org", "-t", "MX"])
         );
         assert_eq!(
             a(Invocation::DnsLookup { name: "1.2.3.4".into(), rtype: DnsType::Ptr }),
@@ -242,6 +258,16 @@ mod tests {
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v[0]["Config"]["Env"], json!(["A=<REDACTED>", "B=<REDACTED>"]));
         assert_eq!(super::redact_env("not json"), "not json");
+        let single: Value = serde_json::from_str(&super::redact_env(r#"{"Config":{"Env":["A=1"]}}"#)).unwrap();
+        assert_eq!(single["Config"]["Env"], json!(["A=<REDACTED>"]));
+    }
+
+    #[test]
+    fn unparseable_inspect_fails_closed() {
+        let (c, _) = ctx(ok("K=secret not json"), Some("docker"), &["web"]);
+        let o = execute(&Invocation::ContainerInspect { name: "web".into() }, &c);
+        assert_eq!(o.content, "INSPECT OUTPUT UNREADABLE");
+        assert!(o.is_error);
     }
 
     #[test]

@@ -55,7 +55,13 @@ pub fn run(
     cancel: &AtomicBool,
 ) -> ToolOutcome {
     let argv = argv(command, as_root);
-    let stdin: Option<Zeroizing<String>> = password.map(|p| Zeroizing::new(format!("{}\n", p.expose())));
+    // Only the root path ever feeds stdin. Pre-size so no un-wiped copy is freed.
+    let stdin: Option<Zeroizing<String>> = password.filter(|_| as_root).map(|p| {
+        let mut b = Zeroizing::new(String::with_capacity(p.expose().len() + 1));
+        b.push_str(p.expose());
+        b.push('\n');
+        b
+    });
     let spec = RunSpec {
         argv: &argv,
         timeout,
@@ -95,7 +101,14 @@ pub fn run(
         RunOutput::Exited { code, stdout, stderr } => {
             let text = format!("{stdout}{stderr}");
             let lower = text.trim().to_lowercase();
+            // Only sudo's own lines count, so a command that prints the phrase is not misread.
+            let all_sudo = text
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .all(|l| l.starts_with("sudo:") || l == "Sorry, try again.");
             let refused = code == 1
+                && all_sudo
                 && if as_root {
                     lower.contains("incorrect password attempt")
                 } else {
@@ -141,7 +154,7 @@ pub fn probe(runner: &dyn Runner) -> Probe {
     let tcp = argv("exec 3<>/dev/tcp/192.0.2.1/9", false);
     let spec = RunSpec { merged: true, ..RunSpec::new(&tcp, STEP) };
     match runner.run_spec(&spec) {
-        RunOutput::Exited { code, stdout, stderr } if code != 0 && format!("{stdout}{stderr}").contains("Operation not permitted") => {
+        RunOutput::Exited { code, stdout, stderr } if code != 0 && format!("{stdout}{stderr}").contains("connect: Operation not permitted") => {
             Probe::Ready
         }
         _ => Probe::NotIsolated,
@@ -213,6 +226,10 @@ mod tests {
         assert_eq!(calls[0].1.as_deref(), Some(&b"hunter2\n"[..]));
         assert!(calls[0].0.iter().all(|a| !a.contains("hunter2")));
         assert!(!format!("{o:?}").contains("hunter2"));
+        drop(calls);
+        let f = Fake::new(vec![exited(0, "")]);
+        run(&f, "id", false, Duration::from_secs(9), Some(&s), &AtomicBool::new(false));
+        assert_eq!(f.calls.lock().unwrap()[0].1, None);
     }
 
     #[test]
@@ -241,6 +258,13 @@ mod tests {
         assert_eq!((o.content.as_str(), o.is_error), ("INSUFFICIENT CLEARANCE", true));
         let o = go(&Fake::new(vec![exited(1, "sudo: a password is required\n")]), false);
         assert_eq!((o.content.as_str(), o.is_error), ("AGENT ACCOUNT OFFLINE", true));
+        let r = |t: &str| go(&Fake::new(vec![exited(1, t)]), true).content;
+        assert!(r("Nov 20 auth: 1 incorrect password attempt\n").starts_with("EXIT 1\n"));
+        assert_eq!(r("Sorry, try again.\nsudo: 1 incorrect password attempt\n"), "INSUFFICIENT CLEARANCE");
+        let u = |t: &str| go(&Fake::new(vec![exited(1, t)]), false).content;
+        assert!(u("x: a password is required\n").starts_with("EXIT 1\n"));
+        assert_eq!(u("sudo: a password is required\n"), "AGENT ACCOUNT OFFLINE");
+        assert_eq!(u("sudo: user is not allowed to execute\n"), "AGENT ACCOUNT OFFLINE");
         let o = go(&Fake::new(vec![exited(3, "x")]), false);
         assert_eq!((o.content.as_str(), o.is_error), ("EXIT 3\nx", false));
         let o = go(&Fake::new(vec![exited(0, " \n")]), false);
@@ -278,7 +302,9 @@ mod tests {
         assert_eq!(p(vec![exited(0, ""), exited(0, "")]), Probe::NotIsolated);
         assert_eq!(p(vec![exited(0, ""), exited(1, "Network is unreachable")]), Probe::NotIsolated);
         assert_eq!(p(vec![exited(0, ""), RunOutput::TimedOut]), Probe::NotIsolated);
+        assert_eq!(p(vec![exited(0, ""), exited(1, "Operation not permitted")]), Probe::NotIsolated);
         assert_eq!(Probe::Ready.status_line(), None);
+        assert_eq!(Probe::AccountOffline.status_line(), Some("AGENT ACCOUNT OFFLINE — SEE DEPLOY"));
         assert_eq!(Probe::NotIsolated.status_line(), Some("AGENT NETWORK NOT ISOLATED — SEE DEPLOY"));
     }
 }

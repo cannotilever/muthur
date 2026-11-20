@@ -192,8 +192,8 @@ All fixed tools run as the operator, with fixed argv, no shell, null stdin, and 
 | `container_inspect` | `{name}` | `<rt> inspect --type container -- <name>`; `Config.Env` values replaced with `<REDACTED>` (keys kept) | 10 s | both |
 | `container_logs` | `{name, lines}` | `<rt> logs --tail <lines> -- <name>` (lines 1..200) | 10 s | both |
 | `ping` | `{host, count}` | `ping -c <count> -W 2 -- <host>` (count 1..10) | 30 s | technical |
-| `traceroute` | `{host}` | `traceroute -q 1 -w 2 -m 30 -- <host>` | 90 s | technical |
-| `dns_lookup` | `{name, type}` | `dig +short +time=2 +tries=1 -- <name> <type>`; for `PTR`: `dig +short +time=2 +tries=1 -x <name>` | 10 s | technical |
+| `traceroute` | `{host}` | `traceroute -q 1 -w 2 -m 30 <host>` | 90 s | technical |
+| `dns_lookup` | `{name, type}` | `dig +short +time=2 +tries=1 -q <name> -t <type>`; for `PTR`: `dig +short +time=2 +tries=1 -x <name>` | 10 s | technical |
 | `port_check` | `{host, port}` | in-process TCP connect, 5 s; `OPEN <ms> MS` / `CLOSED` / `FILTERED` | 6 s | technical |
 | `http_check` | `{url}` | `curl -q -sS -o /dev/null --max-time 10 --max-redirs 0 --proto =http,https -w '%{http_code} %{time_total}' -- <url>` | 15 s | technical |
 
