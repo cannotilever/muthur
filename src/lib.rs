@@ -13,6 +13,7 @@ pub mod muthur;
 pub mod ops;
 pub mod run;
 pub mod scroll;
+pub mod secret;
 pub mod shell;
 pub mod splash;
 pub mod strict;
