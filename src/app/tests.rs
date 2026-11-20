@@ -348,7 +348,7 @@ pub(crate) fn fake_tech(cfg: &crate::config::MuthurSection) -> crate::muthur::Ag
         cfg: cfg.technical_cfg(),
         prompt: crate::muthur::tech_prompt(&agent),
         facts: Box::new(|| "HOST: test".into()),
-        policy: crate::agent::Policy { deny: None, net_allow: Vec::new() },
+        policy: crate::agent::Policy { deny: Some(crate::tools::deny::test_rules()), net_allow: Vec::new() },
         label: agent.label.clone(),
         max_rounds: agent.max_rounds,
         probe: crate::tools::shell::Probe::Ready,

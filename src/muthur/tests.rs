@@ -71,7 +71,7 @@ fn tech_deps(cfg: &MuthurSection, probe: Probe, reviewer_ready: bool) -> AgentDe
         cfg: cfg.technical_cfg(),
         prompt: tech_prompt(&agent),
         facts: Box::new(|| "HOST: testhost".into()),
-        policy: Policy { deny: None, net_allow: Vec::new() },
+        policy: Policy { deny: Some(crate::tools::deny::test_rules()), net_allow: Vec::new() },
         label: agent.label.clone(),
         max_rounds: agent.max_rounds,
         probe,

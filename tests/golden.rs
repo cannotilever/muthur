@@ -51,7 +51,15 @@ fn muthur_tab_probe(
         cfg: cfg.technical_cfg(),
         prompt: muthur::muthur::tech_prompt(&agent),
         facts: Box::new(|| "HOST: test".into()),
-        policy: muthur::agent::Policy { deny: None, net_allow: Vec::new() },
+        policy: muthur::agent::Policy {
+            deny: Some(muthur::tools::deny::DenyRules::new(&muthur::tools::deny::DenyCtx {
+                config_path: "/home/op/.config/muthur/config.toml".into(),
+                state_dir: "/home/op/.local/state/muthur".into(),
+                exe: "/home/op/.local/bin/muthur".into(),
+                operator: "op".into(),
+            }, &[]).unwrap()),
+            net_allow: Vec::new(),
+        },
         label: agent.label.clone(),
         max_rounds: agent.max_rounds,
         probe,

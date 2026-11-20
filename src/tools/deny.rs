@@ -29,17 +29,17 @@ fn build(p: &str) -> Result<Regex, regex::Error> {
 
 impl DenyRules {
     pub fn new(ctx: &DenyCtx, extra: &[String]) -> Result<DenyRules, String> {
-        let op = escape(&ctx.operator);
-        let control = vec![
+        // An empty runtime value (unknown path or user) would match every
+        // command, so its pattern is left out.
+        let who = if ctx.operator.is_empty() { "muthur-agent".to_string() } else { format!("muthur-agent|{}", escape(&ctx.operator)) };
+        let mut control = vec![
             "/etc/sudoers".to_string(),
-            escape(&ctx.config_path),
-            escape(&ctx.state_dir),
-            escape(&ctx.exe),
             r"(sysusers|tmpfiles)\.d/muthur-agent".to_string(),
             r"nftables\.d/muthur-agent".to_string(),
-            format!("{}.*(muthur-agent|{op})", w("usermod|gpasswd|passwd|userdel|chsh")),
+            format!("{}.*({who})", w("usermod|gpasswd|passwd|userdel|chsh")),
             format!(r"{B}nft\W.*(flush|delete|muthur_agent)"),
         ];
+        control.extend([&ctx.config_path, &ctx.state_dir, &ctx.exe].into_iter().filter(|p| !p.is_empty()).map(|p| escape(p)));
         let lockout = vec![
             format!("serial-getty@wy60.*{}", w("stop|mask|disable|kill")),
             format!("{}.*serial-getty@wy60", w("stop|mask|disable|kill")),
@@ -88,11 +88,17 @@ impl DenyRules {
     }
 }
 
+/// The built-in rules for a typical operator, for tests elsewhere.
+#[cfg(test)]
+pub(crate) fn test_rules() -> DenyRules {
+    DenyRules::new(&tests::ctx(), &[]).unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn ctx() -> DenyCtx {
+    pub(super) fn ctx() -> DenyCtx {
         DenyCtx {
             config_path: "/home/op/.config/muthur/config.toml".into(),
             state_dir: "/home/op/.local/state/muthur".into(),
@@ -148,5 +154,16 @@ mod tests {
     fn bad_extra_regex_is_error() {
         let e = DenyRules::new(&ctx(), &["(".into()]).err().unwrap();
         assert!(e.contains("deny"), "{e}");
+    }
+
+    #[test]
+    fn empty_runtime_values_match_nothing() {
+        let blank = DenyCtx { config_path: String::new(), state_dir: String::new(), exe: String::new(), operator: String::new() };
+        let rules = DenyRules::new(&blank, &[]).unwrap();
+        for cmd in ["ls -la", "uptime", "usermod -aG docker alice"] {
+            assert_eq!(rules.check(cmd, true), None, "{cmd:?}");
+        }
+        assert_eq!(rules.check("cat /etc/sudoers", true).as_deref(), Some("CONTROL PLANE"));
+        assert_eq!(rules.check("usermod -L muthur-agent", true).as_deref(), Some("CONTROL PLANE"));
     }
 }

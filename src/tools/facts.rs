@@ -11,7 +11,8 @@ fn os_name() -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
-fn operator() -> String {
+/// The operator's user name: `$USER`, else the name of the real uid.
+pub fn operator() -> String {
     std::env::var("USER")
         .ok()
         .filter(|u| !u.is_empty())

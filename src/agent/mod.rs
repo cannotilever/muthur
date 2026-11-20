@@ -77,6 +77,7 @@ const AUDIT_OFFLINE: &str = "AUDIT LOG OFFLINE";
 const ROUND_LIMIT: &str = "ROUND LIMIT";
 const DUPLICATE_ID: &str = "duplicate call id";
 const UNLISTED: &str = "UNLISTED TARGET";
+const DENY_OFFLINE: &str = "DENY RULES OFFLINE";
 
 #[derive(Debug)]
 enum State {
@@ -342,10 +343,14 @@ impl Turn {
                 (Ok(Invocation::Run { command, as_root, .. }), Some(d)) => d.check(command, *as_root),
                 _ => None,
             };
+            // Defence in depth: startup always builds the tech agent's rules.
+            let rules_offline =
+                matches!(checked, Ok(Invocation::Run { .. })) && defs.agent() == AgentId::Tech && policy.deny.is_none();
             let refusal = match checked {
                 _ if duplicate => Some(DUPLICATE_ID.to_string()),
                 _ if forced => Some(ROUND_LIMIT.to_string()),
                 Err(reason) => Some(reason),
+                Ok(_) if rules_offline => Some(DENY_OFFLINE.to_string()),
                 Ok(_) if rule.is_some() => {
                     slot.deny_rule = rule.clone();
                     rule

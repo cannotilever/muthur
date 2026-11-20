@@ -61,7 +61,8 @@ enum TestcardMode {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let mut cfg = config::load(&cli.config.unwrap_or_else(config::default_path))?;
+    let config_path = cli.config.unwrap_or_else(config::default_path);
+    let mut cfg = config::load(&config_path)?;
     if let Some(d) = cli.device {
         cfg.link.device = Some(d);
     }
@@ -76,7 +77,7 @@ fn main() -> anyhow::Result<()> {
     }
     let (cols, rows) = (cfg.terminal.cols, cfg.terminal.rows);
     let tc = match cli.command {
-        None => return muthur::run::run(&cfg, cli.strict),
+        None => return muthur::run::run(&cfg, &config_path, cli.strict),
         Some(Command::Splash) => return muthur::run::run_splash(&cfg, cli.strict),
         Some(Command::Testcard(tc)) => tc,
     };

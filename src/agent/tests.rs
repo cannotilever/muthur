@@ -233,6 +233,20 @@ fn deny_rule_never_reviewed() {
 }
 
 #[test]
+fn tech_run_refused_without_deny_rules() {
+    let mut t = tturn("list it");
+    let e = t.on_done(&Stop::ToolUse, vec![run_call("c1", "ls", false), ship("c2")], &tech(), &no_policy(), true);
+    assert_eq!(e.iter().filter(|e| kind(e) == "review").count(), 0, "{e:?}");
+    let a = audits(&e);
+    assert_eq!(a[0].decision, Decision::Rejected);
+    assert_eq!(a[0].deny_rule, None);
+    assert_eq!(a[0].output, "NOT AUTHORIZED: DENY RULES OFFLINE");
+    assert_eq!(notes(&e)[0], "RUN  ls  [DENIED: DENY RULES OFFLINE]");
+    // Fixed tools still run.
+    assert!(e.iter().any(|e| matches!(e, Effect::Run { call_id, .. } if call_id == "c2")), "{e:?}");
+}
+
+#[test]
 fn sequential_order() {
     let mut t = tturn("look around");
     let e = start(&mut t, vec![run_call("c1", "ls", false), run_call("c2", "df", false)], true);
