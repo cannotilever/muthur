@@ -31,6 +31,7 @@ pub struct AuditEntry {
     pub tool: String,
     pub args: serde_json::Value,
     pub agent: Option<AgentId>,
+    pub delegated_by: Option<String>,
     pub as_root: bool,
     pub reason: Option<String>,
     pub deny_rule: Option<String>,
@@ -48,6 +49,7 @@ impl AuditEntry {
             tool: tool.into(),
             args,
             agent: None,
+            delegated_by: None,
             as_root: false,
             reason: None,
             deny_rule: None,
@@ -80,6 +82,8 @@ struct Record<'a> {
     tool: &'a str,
     args: &'a serde_json::Value,
     agent: Option<AgentId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delegated_by: &'a Option<String>,
     as_root: bool,
     reason: &'a Option<String>,
     deny_rule: &'a Option<String>,
@@ -129,6 +133,7 @@ impl AuditLog {
             tool: &e.tool,
             args: &e.args,
             agent: e.agent,
+            delegated_by: &e.delegated_by,
             as_root: e.as_root,
             reason: &e.reason,
             deny_rule: &e.deny_rule,
@@ -275,5 +280,20 @@ mod tests {
         assert_eq!(v["review"]["verdict"], "deny");
         assert_eq!(v["decision"], "overridden");
         assert!(v.get("tier").is_none());
+    }
+
+    #[test]
+    fn delegated_by_written_only_when_set() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("audit.jsonl");
+        let mut l = AuditLog::open(p.clone()).unwrap();
+        l.append(&entry("a"), "t1").unwrap();
+        let e = AuditEntry { delegated_by: Some("c1".into()), ..entry("b") };
+        l.append(&e, "t2").unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert!(first.get("delegated_by").is_none());
+        assert!(lines[1].contains("\"delegated_by\":\"c1\""));
     }
 }
