@@ -31,6 +31,9 @@ use std::time::{Duration, Instant};
 const HINT: &str = "U START  R RESTART  D STOP  L LOGS";
 const NO_RUNTIME: &str = "NO CONTAINER RUNTIME";
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(2);
+/// Tier-2 actions (restart, stop) are refused without an audit log, as
+/// MU/TH/UR's tier-2 tools are.
+const AUDIT_OFFLINE: &str = "AUDIT LOG OFFLINE";
 
 /// What CARGO needs from the outside world, injected so tests can fake it.
 pub struct CargoDeps {
@@ -189,6 +192,10 @@ impl CargoTab {
             return;
         }
         let (id, name) = (k.id.clone(), k.name.clone());
+        if verb.confirm() && !self.audit.borrow().is_online() {
+            self.message = Some((AUDIT_OFFLINE.into(), true));
+            return;
+        }
         if verb.confirm() {
             self.prompt = Some(Prompt::new(verb, &id, &name));
         } else {
@@ -234,22 +241,29 @@ impl CargoTab {
             Key::Char('n' | 'N') | Key::Esc => self.prompt = None,
             Key::Char('y' | 'Y') if p.armed((self.deps.now)()) => {
                 let Some(p) = self.prompt.take() else { return };
+                if !self.audit.borrow().is_online() {
+                    self.message = Some((AUDIT_OFFLINE.into(), true));
+                    return;
+                }
                 self.start(p.verb, p.id, p.name);
             }
             _ => {}
         }
     }
 
-    fn record_audit(&mut self, p: &Pending, out: &RunOutput, ms: u64) {
+    /// False when the entry could not be written.
+    fn record_audit(&mut self, p: &Pending, out: &RunOutput, ms: u64) -> bool {
         let entry = audit_entry(p.verb, &p.id, &p.name, p.argv.clone(), out, ms);
         let ts = (self.deps.timestamp)();
         if let Err(e) = self.audit.borrow_mut().append(&entry, &ts) {
             tracing::error!("audit log: cannot record container command: {e}");
+            return false;
         }
+        true
     }
 
     fn action_done(&mut self, p: Pending, out: RunOutput, ms: u64) {
-        self.record_audit(&p, &out, ms);
+        let audited = self.record_audit(&p, &out, ms);
         if self.obscured {
             self.activity = true;
         }
@@ -268,6 +282,7 @@ impl CargoTab {
         }
         self.message = Some(match failure(p.verb, &out) {
             Some(why) => (why, true),
+            None if !audited => (format!("{} {} - {AUDIT_OFFLINE}", p.name.to_uppercase(), p.verb.done()), true),
             None => (format!("{} {}", p.name.to_uppercase(), p.verb.done()), false),
         });
         // Show the new state now rather than at the next 10 s probe.

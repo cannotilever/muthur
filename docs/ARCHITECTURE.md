@@ -287,7 +287,9 @@ Fed by the same snapshots as Utility. Says `NO CONTAINER RUNTIME` or
   returns to the list.
 - **Audit** — every command goes into `audit.jsonl` (shared with MU/TH/UR's
   tools) as `cargo_start`/`cargo_restart`/`cargo_stop`/`cargo_logs`; restart
-  and stop are tier 2 `confirmed`, start and logs tier 1 `auto`.
+  and stop are tier 2 `confirmed`, start and logs tier 1 `auto`. As with
+  MU/TH/UR's tier-2 tools, restart and stop are refused while the audit log
+  is offline (`AUDIT LOG OFFLINE`); a failed write is shown on the message line.
 
 Spec: docs/superpowers/specs/2026-11-19-cargo-actions-design.md
 

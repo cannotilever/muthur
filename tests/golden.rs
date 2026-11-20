@@ -91,12 +91,13 @@ fn check_app(name: &str, app: &mut App) {
 
 /// CARGO shown windowed with 50 containers (unit 03 EXITED, so it sorts
 /// first and starts selected; unit 07 has a long name). Returns the `seq` of
-/// every command the tab started.
-fn cargo_app() -> (App, std::rc::Rc<std::cell::RefCell<Vec<u64>>>) {
+/// every command the tab started, and the directory holding its audit log.
+fn cargo_app() -> (App, std::rc::Rc<std::cell::RefCell<Vec<u64>>>, tempfile::TempDir) {
     use muthur::app::TabId;
     use muthur::cargo::{CargoDeps, CargoTab};
     use muthur::metrics::{Container, Snapshot};
     use muthur::tools::audit::{AuditLog, shared};
+    let dir = tempfile::tempdir().unwrap();
     let seqs: std::rc::Rc<std::cell::RefCell<Vec<u64>>> = Default::default();
     let rec = seqs.clone();
     let deps = CargoDeps {
@@ -105,7 +106,7 @@ fn cargo_app() -> (App, std::rc::Rc<std::cell::RefCell<Vec<u64>>>) {
         timestamp: Box::new(String::new),
     };
     let mut app = App::new(ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 })
-        .with_tab(TabId::Cargo, Box::new(CargoTab::new(deps, shared(AuditLog::offline()))));
+        .with_tab(TabId::Cargo, Box::new(CargoTab::new(deps, shared(AuditLog::open(dir.path().join("audit.jsonl")).unwrap()))));
     let mut containers: Vec<Container> =
         (0..50).map(|i| Container { id: format!("{i:012x}"), name: format!("refinery-unit-{i:02}"), status: "UP".into(), detail: "Up 3 hours".into() }).collect();
     containers[3].status = "EXITED".into();
@@ -113,7 +114,7 @@ fn cargo_app() -> (App, std::rc::Rc<std::cell::RefCell<Vec<u64>>>) {
     containers[7].name = "AN-EXCEPTIONALLY-LONG-CONTAINER-NAME-THAT-WILL-NOT-FIT-IN-THE-PANE".into();
     app.on_metrics(Snapshot { containers: Some(containers), container_runtime: Some("docker".into()), ..Default::default() });
     app.handle_key(Key::F(3));
-    (app, seqs)
+    (app, seqs, dir)
 }
 
 #[test]
@@ -123,7 +124,7 @@ fn windowed_cargo() {
 
 #[test]
 fn cargo_stop_prompt() {
-    let (mut app, _) = cargo_app();
+    let (mut app, _, _dir) = cargo_app();
     for k in [Key::Down, Key::Down, Key::Char('D')] {
         app.handle_key(k);
     }
@@ -133,7 +134,7 @@ fn cargo_stop_prompt() {
 #[test]
 fn cargo_logs() {
     use muthur::tools::runner::RunOutput;
-    let (mut app, seqs) = cargo_app();
+    let (mut app, seqs, _dir) = cargo_app();
     app.handle_key(Key::Char('L'));
     let mut log: String = (0..38).map(|i| format!("2137-11-17T14:{i:02}:00Z refinery: batch {i} nominal\n")).collect();
     log.push_str(&format!("2137-11-17T14:38:00Z refinery: {}\n", "very long line ".repeat(10)));

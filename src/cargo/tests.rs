@@ -248,9 +248,14 @@ fn c(id: &str, name: &str, status: &str) -> Container {
 /// A tab with a recording `run`, a hand-driven clock and a real audit file;
 /// runtime "docker", `list` delivered and rendered once.
 fn harness(list: Vec<Container>) -> H {
+    harness_audit(list, true)
+}
+
+/// `harness`, with the audit log online (a real file) or offline.
+fn harness_audit(list: Vec<Container>, online: bool) -> H {
     let dir = tempfile::tempdir().unwrap();
     let audit_path = dir.path().join("audit.jsonl");
-    let audit = shared(AuditLog::open(audit_path.clone()).unwrap());
+    let audit = shared(if online { AuditLog::open(audit_path.clone()).unwrap() } else { AuditLog::offline() });
     let calls: Calls = Rc::default();
     let clock = Rc::new(Cell::new(Instant::now()));
     let (rec, clk) = (calls.clone(), clock.clone());
@@ -632,4 +637,59 @@ fn refresh_not_undone_by_older_probe() {
     let fresh = Snapshot { containers_at: Some(h.clock.get() + Duration::from_secs(5)), ..snap(Some(vec![c("a1", "web", "EXITED")])) };
     h.t.on_metrics(&fresh);
     assert!(row(&mut h).contains("EXITED"), "newer probe applies");
+}
+
+#[test]
+fn restart_and_stop_refused_when_audit_offline() {
+    let mut h = harness_audit(vec![c("a1", "web", "UP")], false);
+    for k in ['d', 'R'] {
+        h.key(Key::Char(k));
+        let buf = render(&mut h.t, WINDOWED);
+        let s = text(&buf);
+        assert!(!s.contains("Y/N"), "{s}");
+        let (x, y) = find(&buf, "AUDIT LOG OFFLINE").unwrap_or_else(|| panic!("{s}"));
+        assert!(buf[(x, y)].modifier.contains(Modifier::REVERSED));
+    }
+    assert_eq!(h.n_calls(), 0);
+    h.key(Key::Char('U')); // tier 1 still runs, as with MU/TH/UR's tools
+    assert_eq!(h.argv(), v(&["docker", "start", "a1"]));
+}
+
+#[test]
+fn failed_audit_write_is_shown_and_stops_tier2() {
+    let mut h = harness(vec![c("a1", "web", "UP")]);
+    let _ = std::fs::remove_file(&h.audit_path);
+    std::fs::create_dir(&h.audit_path).unwrap(); // appends now fail
+    h.key(Key::Char('U'));
+    h.done(exited(0, "a1\n", ""));
+    let buf = render(&mut h.t, WINDOWED);
+    let s = text(&buf);
+    let (x, y) = find(&buf, "WEB STARTED - AUDIT LOG OFFLINE").unwrap_or_else(|| panic!("{s}"));
+    assert!(buf[(x, y)].modifier.contains(Modifier::REVERSED));
+    h.key(Key::Char('d'));
+    assert!(h.screen().contains("AUDIT LOG OFFLINE"));
+    h.arm();
+    h.key(Key::Char('y'));
+    assert_ne!(h.argv(), v(&["docker", "stop", "a1"]), "stop refused");
+}
+
+#[test]
+fn audit_offline_at_y_refuses() {
+    let mut h = harness(vec![c("a1", "web", "UP")]);
+    h.key(Key::Char('d'));
+    h.arm();
+    h.t.audit.borrow_mut().append(&crate::tools::audit::AuditEntry {
+        tool: "x".into(), args: serde_json::json!({}), tier: 1, decision: crate::tools::audit::Decision::Auto,
+        argv: None, exit: None, ms: 0, output: String::new(),
+    }, "ts").unwrap();
+    std::fs::remove_file(&h.audit_path).unwrap();
+    std::fs::create_dir(&h.audit_path).unwrap();
+    // MU/TH/UR's write fails while the prompt is up: the log is now offline.
+    let _ = h.t.audit.borrow_mut().append(&crate::tools::audit::AuditEntry {
+        tool: "x".into(), args: serde_json::json!({}), tier: 1, decision: crate::tools::audit::Decision::Auto,
+        argv: None, exit: None, ms: 0, output: String::new(),
+    }, "ts");
+    h.key(Key::Char('y'));
+    assert_eq!(h.n_calls(), 0);
+    assert!(h.screen().contains("AUDIT LOG OFFLINE"));
 }
