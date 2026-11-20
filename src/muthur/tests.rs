@@ -1,12 +1,11 @@
 use super::view::wrap;
 use super::*;
 use crate::chatlog::{Assistant, ChatLog};
-use crate::config::{MuthurSection, Provider, ServiceLists, ToolsSection};
+use crate::config::{MuthurSection, Provider, ToolsSection};
 use crate::input::Key;
 use crate::llm::{ChatRequest, LlmError, MessageContent, Stop, StreamEvent, ToolResult};
 use crate::ops::audit::AuditLog;
-use crate::tools::exec::ToolOutcome;
-use crate::tools::{Invocation, ToolDefs, Verb};
+use crate::tools::{Invocation, ToolDefs, ToolOutcome};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use std::cell::{Cell, RefCell};
@@ -44,7 +43,7 @@ fn cfg() -> MuthurSection {
 }
 
 fn tools_cfg() -> ToolsSection {
-    ToolsSection { services: ServiceLists { restart: vec!["nginx".into()], ..Default::default() }, ..Default::default() }
+    ToolsSection::default()
 }
 
 fn harness_with(cfg: MuthurSection, prefill: impl FnOnce(&mut ChatLog)) -> H {
@@ -75,7 +74,7 @@ fn harness_full(cfg: MuthurSection, tools: ToolsSection, audit_online: bool, pre
         timestamp: Box::new(|| "2026-11-18T14:02:00Z".into()),
         run_tool: Box::new(move |req, id, inv| r.borrow_mut().push((req, id, inv))),
     };
-    let t = MuthurTab::new(cfg, ToolDefs::new(&tools), "USCSS NOSTROMO", log, audit, deps);
+    let t = MuthurTab::new(cfg, ToolDefs::persona(&tools), "USCSS NOSTROMO", log, audit, deps);
     H { t, sent, ran, aborted, clock, path, audit_path, audit: shared_audit, _dir: dir }
 }
 
@@ -423,10 +422,10 @@ fn scrolled_back_view_holds_while_output_arrives() {
     assert!(n(&after[37]) > n0, "{} vs {}", after[37], before[37]);
 }
 
-// ---- M5: tool turns ----
+// ---- Persona tool turns ----
 
 fn ok(content: &str) -> ToolOutcome {
-    ToolOutcome { content: content.into(), is_error: false, argv: Some(vec!["systemctl".into()]), exit: Some(json!(0)), ms: 5, audit_output: None }
+    ToolOutcome { content: content.into(), is_error: false, argv: Some(vec!["docker".into()]), exit: Some(json!(0)), ms: 5, audit_output: None }
 }
 
 fn tool_call(id: &str, name: &str, input: serde_json::Value) -> StreamEvent {
@@ -441,19 +440,6 @@ fn tool_use(h: &mut H, req: u64, calls: &[(&str, &str, serde_json::Value)]) {
         raw.push(json!({"type":"tool_use","id":id,"name":name,"input":input}));
     }
     h.t.on_llm(req, StreamEvent::Done { stop: Stop::ToolUse, model: Some("claude-test".into()), raw: Some(raw) });
-}
-
-/// Raises the restart override prompt and renders it twice: the first render
-/// draws it, the second (the first frame has reached the wire) starts arming.
-fn restart_prompt(h: &mut H) {
-    raise_restart(h);
-    screen(&mut h.t, 80, 40);
-    screen(&mut h.t, 80, 40);
-}
-
-fn raise_restart(h: &mut H) {
-    submit(h, "restart nginx");
-    tool_use(h, 1, &[("c1", "restart_service", json!({"unit": "nginx"}))]);
 }
 
 fn last_results(h: &H) -> Vec<ToolResult> {
@@ -472,12 +458,16 @@ fn status_row(h: &mut H) -> String {
     screen(&mut h.t, 80, 40)[37].clone()
 }
 
+fn audit_records(h: &H) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(&h.audit_path).unwrap_or_default().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+}
+
 #[test]
 fn shared_audit_sees_muthur_entries() {
     let mut h = harness();
-    submit(&mut h, "is nginx running");
-    tool_use(&mut h, 1, &[("c1", "service_status", json!({"unit": "nginx"}))]);
-    h.t.on_tool_done(1, "c1".into(), ok("active"));
+    submit(&mut h, "status");
+    tool_use(&mut h, 1, &[("c1", "ship_status", json!({}))]);
+    h.t.on_tool_done(1, "c1".into(), ok("UP"));
     assert!(h.audit.borrow().is_online());
     // Another writer through the same handle lands in the same file.
     let e = crate::ops::audit::AuditEntry::new("cargo_start", json!({}), crate::ops::audit::Decision::Auto);
@@ -489,18 +479,18 @@ fn shared_audit_sees_muthur_entries() {
 #[test]
 fn tool_round_runs_and_respawns() {
     let mut h = harness();
-    submit(&mut h, "is nginx running");
+    submit(&mut h, "what containers run");
     assert!(!h.sent.borrow()[0].1.tools.is_empty());
     assert_eq!(h.sent.borrow()[0].1.tool_choice, crate::llm::ToolChoice::Auto);
     h.t.on_llm(1, StreamEvent::Text("CHECKING.".into()));
-    tool_use(&mut h, 1, &[("c1", "service_status", json!({"unit": "nginx"}))]);
-    assert_eq!(*h.ran.borrow(), vec![(1, "c1".to_string(), Invocation::ServiceStatus { unit: "nginx.service".into() })]);
+    tool_use(&mut h, 1, &[("c1", "containers", json!({}))]);
+    assert_eq!(*h.ran.borrow(), vec![(1, "c1".to_string(), Invocation::Containers)]);
     let s = text(&mut h.t);
-    let (c, a) = (s.find("CHECKING.").unwrap(), s.find("ACCESSING: SERVICE STATUS NGINX.SERVICE").unwrap());
+    let (c, a) = (s.find("CHECKING.").unwrap(), s.find("ACCESSING: CONTAINERS").unwrap());
     assert!(c < a, "{s}");
     assert!(status_row(&mut h).contains("ACCESSING"));
     assert_eq!(h.t.tick_interval(), Some(Duration::from_millis(100)));
-    h.t.on_tool_done(1, "c1".into(), ok("active"));
+    h.t.on_tool_done(1, "c1".into(), ok("web up"));
     {
         let s = h.sent.borrow();
         assert_eq!(s.len(), 2);
@@ -510,91 +500,20 @@ fn tool_round_runs_and_respawns() {
     }
     let r = last_results(&h);
     assert_eq!(r.len(), 1);
-    assert_eq!((r[0].id.as_str(), r[0].content.as_str()), ("c1", "active"));
+    assert_eq!((r[0].id.as_str(), r[0].content.as_str()), ("c1", "web up"));
     let audit = std::fs::read_to_string(&h.audit_path).unwrap();
     let lines: Vec<&str> = audit.lines().collect();
     assert_eq!(lines.len(), 1);
     let rec: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
     assert_eq!(rec["decision"], "auto");
+    assert_eq!(rec["agent"], "muthur");
     // The final answer lands after the note.
-    h.t.on_llm(2, StreamEvent::Text("NGINX ACTIVE.".into()));
+    h.t.on_llm(2, StreamEvent::Text("WEB UP.".into()));
     h.t.on_llm(2, done(Stop::End));
     h.tick(2000);
     let s = text(&mut h.t);
-    assert!(s.find("ACCESSING: SERVICE").unwrap() < s.find("NGINX ACTIVE.").unwrap(), "{s}");
+    assert!(s.find("ACCESSING: CONTAINERS").unwrap() < s.find("WEB UP.").unwrap(), "{s}");
     assert!(status_row(&mut h).contains("READY FOR INQUIRY"));
-}
-
-#[test]
-fn override_prompt_confirms_after_arming() {
-    let mut h = harness();
-    restart_prompt(&mut h);
-    assert!(h.t.take_activity());
-    let row = status_row(&mut h);
-    assert!(row.contains("OVERRIDE REQUIRED -- RESTART NGINX.SERVICE -- CONFIRM Y/N"), "{row}");
-    assert!(h.ran.borrow().is_empty());
-    assert_eq!(h.t.tick_interval(), Some(Duration::from_millis(100)));
-    h.tick(1100);
-    h.t.handle_key(&Key::Char('y'));
-    assert_eq!(
-        *h.ran.borrow(),
-        vec![(1, "c1".to_string(), Invocation::Service { verb: Verb::Restart, unit: "nginx.service".into() })]
-    );
-    assert!(text(&mut h.t).contains("ACCESSING: RESTART NGINX.SERVICE"));
-    assert!(status_row(&mut h).contains("ACCESSING"));
-}
-
-#[test]
-fn override_ignores_keys_during_arming() {
-    let mut h = harness();
-    restart_prompt(&mut h);
-    h.tick(200);
-    h.t.handle_key(&Key::Char('y'));
-    assert!(h.ran.borrow().is_empty());
-    assert!(matches!(h.t.state, State::Override { .. }));
-    assert_eq!(h.t.input, "");
-    h.tick(900);
-    h.t.handle_key(&Key::Char('n'));
-    assert!(h.ran.borrow().is_empty());
-    assert!(text(&mut h.t).contains("ACCESS DENIED: RESTART NGINX.SERVICE"));
-    assert_eq!(h.sent.borrow().len(), 2);
-    let r = last_results(&h);
-    assert_eq!(r[0].content, "DENIED BY OPERATOR");
-    assert!(r[0].is_error);
-}
-
-#[test]
-fn override_other_keys_not_typed() {
-    let mut h = harness();
-    restart_prompt(&mut h);
-    h.tick(1100);
-    h.t.handle_key(&Key::Char('x'));
-    assert_eq!(h.t.input, "");
-    assert!(matches!(h.t.state, State::Override { .. }));
-    assert!(status_row(&mut h).contains("OVERRIDE REQUIRED"));
-}
-
-#[test]
-fn ctrl_c_during_override_aborts() {
-    let mut h = harness();
-    restart_prompt(&mut h);
-    h.tick(1100);
-    h.t.handle_key(&Key::Ctrl('c'));
-    assert_eq!(h.t.state, State::Ready);
-    assert!(h.ran.borrow().is_empty());
-    let recs = records(&h);
-    let n = recs.len();
-    assert_eq!(recs[n - 2]["kind"], "tool");
-    assert_eq!(recs[n - 2]["results"][0]["content"], "ABORTED BY OPERATOR");
-    assert_eq!(recs[n - 1]["kind"], "assistant");
-    assert_eq!(recs[n - 1]["stop"], "interrupted");
-    assert!(text(&mut h.t).contains("[INTERRUPTED]"));
-    let audit = std::fs::read_to_string(&h.audit_path).unwrap();
-    assert!(audit.contains("\"aborted\""), "{audit}");
-    submit(&mut h, "again");
-    let s = h.sent.borrow();
-    assert_eq!(s.len(), 2);
-    assert_eq!(s[1].1.messages.len(), 1, "aborted exchange must be left out: {:?}", s[1].1.messages);
 }
 
 #[test]
@@ -642,18 +561,18 @@ fn round_limit_truncates() {
 fn audit_offline_flash() {
     let mut h = harness_full(cfg(), tools_cfg(), false, |_| {});
     submit(&mut h, "status");
-    tool_use(&mut h, 1, &[("c1", "service_status", json!({"unit": "nginx"}))]);
+    tool_use(&mut h, 1, &[("c1", "containers", json!({}))]);
     assert_eq!(h.ran.borrow().len(), 1);
-    h.t.on_tool_done(1, "c1".into(), ok("active"));
+    h.t.on_tool_done(1, "c1".into(), ok("web up"));
     assert_eq!(h.sent.borrow().len(), 2);
     let row = status_row(&mut h);
     assert!(row.contains("AUDIT LOG OFFLINE"), "{row}");
-    tool_use(&mut h, 2, &[("c2", "restart_service", json!({"unit": "nginx"}))]);
-    assert!(text(&mut h.t).contains("ACCESS DENIED: RESTART NGINX.SERVICE"));
-    assert!(!matches!(h.t.state, State::Override { .. }));
-    assert_eq!(h.ran.borrow().len(), 1);
+    // Review-free tools still run with the audit log offline.
+    tool_use(&mut h, 2, &[("c2", "ship_status", json!({}))]);
+    assert_eq!(h.ran.borrow().len(), 2);
+    h.t.on_tool_done(2, "c2".into(), ok("UP"));
     assert_eq!(h.sent.borrow().len(), 3);
-    assert_eq!(last_results(&h)[0].content, "NOT AUTHORIZED: AUDIT LOG OFFLINE");
+    assert_eq!(last_results(&h)[0].content, "UP");
 }
 
 #[test]
@@ -670,105 +589,21 @@ fn history_shows_tool_notes() {
             is_error: false,
             label: label.into(),
         };
-        l.append_tool(&[r("c1", "ok", "SHIP STATUS"), r("c2", "DENIED BY OPERATOR", "RESTART NGINX.SERVICE")], "ts").unwrap();
+        l.append_tool(&[r("c1", "ok", "SHIP STATUS"), r("c2", "NOT AUTHORIZED: UNKNOWN CONTAINER", "CONTAINER LOGS web 50")], "ts").unwrap();
         let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "NOMINAL.".into(), stop: "end_turn".into(), raw: None };
         l.append_assistant(a, "ts").unwrap();
     });
     let rows = screen(&mut h.t, 61, 40);
     let at = |needle: &str| rows.iter().position(|r| r.contains(needle)).unwrap_or_else(|| panic!("{needle}: {rows:#?}"));
-    let (u, n, d, r) = (at("> STATUS"), at("ACCESSING: SHIP STATUS"), at("ACCESS DENIED: RESTART NGINX.SERVICE"), at("NOMINAL."));
+    let (u, n, d, r) = (at("> STATUS"), at("ACCESSING: SHIP STATUS"), at("ACCESS DENIED: CONTAINER LOGS web 50"), at("NOMINAL."));
     assert!(u < n && n < d && d < r, "{rows:#?}");
 }
 
 #[test]
 fn persona_mentions_tools() {
-    assert!(PERSONA.contains("operator override"));
+    assert!(PERSONA.contains("You cannot change the ship. For changes, tell the operator to open a direct link with /DIRECT."));
+    assert!(!PERSONA.contains("operator override"));
     assert!(!PERSONA.contains("do not yet have access"));
-}
-
-#[test]
-fn override_arms_from_second_render() {
-    let mut h = harness();
-    raise_restart(&mut h);
-    // In the background: no render for a long while, then the operator looks.
-    h.tick(5000);
-    h.t.handle_key(&Key::Char('y'));
-    assert!(h.ran.borrow().is_empty(), "unseen prompt must not be armed");
-    // Drawn once: the frame may still be queued for the wire, so not armed yet.
-    assert!(status_row(&mut h).contains("OVERRIDE REQUIRED"));
-    h.tick(5000);
-    h.t.handle_key(&Key::Char('y'));
-    assert!(h.ran.borrow().is_empty(), "a prompt rendered only once must not be armed");
-    // The second render starts the arming delay.
-    screen(&mut h.t, 80, 40);
-    h.t.handle_key(&Key::Char('y'));
-    assert!(h.ran.borrow().is_empty(), "keys right after the second render are ignored");
-    h.tick(900);
-    h.t.handle_key(&Key::Char('y'));
-    assert!(h.ran.borrow().is_empty());
-    assert!(matches!(h.t.state, State::Override { .. }));
-    h.tick(200);
-    h.t.handle_key(&Key::Char('y'));
-    assert_eq!(h.ran.borrow().len(), 1);
-}
-
-#[test]
-fn override_disarmed_while_obscured() {
-    // Raised under an overlay: rendering under it never arms.
-    let mut h = harness();
-    raise_restart(&mut h);
-    h.t.set_obscured(true);
-    for _ in 0..5 {
-        screen(&mut h.t, 80, 40);
-        h.tick(1000);
-    }
-    h.t.handle_key(&Key::Char('y'));
-    assert!(h.ran.borrow().is_empty(), "a prompt under an overlay must not arm");
-    // Uncovered: one render draws it, the next starts the delay.
-    h.t.set_obscured(false);
-    screen(&mut h.t, 80, 40);
-    h.tick(2000);
-    h.t.handle_key(&Key::Char('y'));
-    assert!(h.ran.borrow().is_empty());
-    screen(&mut h.t, 80, 40);
-    h.t.handle_key(&Key::Char('y'));
-    assert!(h.ran.borrow().is_empty());
-    h.tick(1100);
-    h.t.handle_key(&Key::Char('y'));
-    assert_eq!(h.ran.borrow().len(), 1);
-
-    // Already armed, then covered: arming starts over once uncovered.
-    let mut h = harness();
-    restart_prompt(&mut h);
-    h.tick(1100);
-    h.t.set_obscured(true);
-    screen(&mut h.t, 80, 40);
-    h.t.handle_key(&Key::Char('y'));
-    assert!(h.ran.borrow().is_empty(), "covered prompt is disarmed");
-    h.t.set_obscured(false);
-    screen(&mut h.t, 80, 40);
-    screen(&mut h.t, 80, 40);
-    h.t.handle_key(&Key::Char('y'));
-    assert!(h.ran.borrow().is_empty(), "re-armed from scratch");
-    h.tick(1100);
-    h.t.handle_key(&Key::Char('n'));
-    assert!(text(&mut h.t).contains("ACCESS DENIED: RESTART NGINX.SERVICE"));
-}
-
-#[test]
-fn ctrl_c_aborts_override_during_arming() {
-    for render in [false, true] {
-        let mut h = harness();
-        if render { restart_prompt(&mut h) } else { raise_restart(&mut h) }
-        h.tick(100);
-        h.t.handle_key(&Key::Ctrl('c'));
-        assert_eq!(h.t.state, State::Ready);
-        assert!(h.ran.borrow().is_empty());
-        let recs = records(&h);
-        let n = recs.len();
-        assert_eq!(recs[n - 2]["results"][0]["content"], "ABORTED BY OPERATOR");
-        assert_eq!(recs[n - 1]["stop"], "interrupted");
-    }
 }
 
 #[test]
@@ -797,100 +632,43 @@ fn stream_error_mid_turn_closes_log() {
 }
 
 #[test]
-fn answer_without_turn_returns_ready() {
-    let mut h = harness();
-    restart_prompt(&mut h);
-    h.t.turn = None;
-    h.tick(1100);
-    h.t.handle_key(&Key::Char('y'));
-    assert_eq!(h.t.state, State::Ready);
-}
-
-fn audit_records(h: &H) -> Vec<serde_json::Value> {
-    std::fs::read_to_string(&h.audit_path).unwrap_or_default().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
-}
-
-#[test]
-fn ctrl_c_while_confirmed_restart_runs_is_audited_truthfully() {
-    let mut h = harness();
-    restart_prompt(&mut h);
-    h.tick(1100);
-    h.t.handle_key(&Key::Char('y'));
-    assert_eq!(h.ran.borrow().len(), 1);
-    h.t.handle_key(&Key::Ctrl('c'));
-    assert_eq!(h.t.state, State::Ready);
-    let unknown = "ABORTED BY OPERATOR — COMMAND ALREADY ISSUED, OUTCOME UNKNOWN";
-    let a = audit_records(&h);
-    assert_eq!(a.len(), 1, "{a:?}");
-    assert_eq!(a[0]["decision"], "aborted");
-    assert_eq!(a[0]["argv"], json!(["sudo", "-n", "/usr/bin/systemctl", "restart", "nginx.service"]));
-    assert_eq!(a[0]["output"], unknown);
-    let recs = records(&h);
-    let n = recs.len();
-    assert_eq!(recs[n - 2]["results"][0]["content"], unknown);
-    assert_eq!(recs[n - 1]["stop"], "interrupted");
-    let shown = text(&mut h.t);
-    assert!(shown.contains("ACCESS INTERRUPTED: RESTART NGINX.SERVICE"), "{shown}");
-    assert!(!shown.contains("ACCESS DENIED"), "{shown}");
-    // The command's real outcome arrives later: audited, nothing else.
-    let real = ToolOutcome {
-        content: "COMPLETED: RESTART NGINX.SERVICE".into(),
-        is_error: false,
-        argv: Some(["sudo", "-n", "/usr/bin/systemctl", "restart", "nginx.service"].map(String::from).to_vec()),
-        exit: Some(json!(0)),
-        ms: 850,
-        audit_output: None,
-    };
-    let transcript = h.t.transcript.len();
-    h.t.on_tool_done(1, "c1".into(), real.clone());
-    let a = audit_records(&h);
-    assert_eq!(a.len(), 2, "{a:?}");
-    assert_eq!(a[1]["decision"], "confirmed");
-    assert_eq!(a[1]["tool"], "restart_service");
-    assert!(a[1].get("tier").is_none());
-    assert_eq!(a[1]["exit"], 0);
-    assert_eq!(a[1]["ms"], 850);
-    assert_eq!(a[1]["argv"], a[0]["argv"]);
-    assert_eq!(a[1]["output"], "COMPLETED: RESTART NGINX.SERVICE");
-    assert_eq!(records(&h).len(), n, "no chat log record for the orphan");
-    assert_eq!(h.t.transcript.len(), transcript);
-    assert_eq!(h.sent.borrow().len(), 1);
-    assert_eq!(h.t.state, State::Ready);
-    // Only once.
-    h.t.on_tool_done(1, "c1".into(), real);
-    assert_eq!(audit_records(&h).len(), 2);
-    // History shows the interrupted note.
-    let r = ToolResult { id: "c1".into(), name: "restart_service".into(), content: unknown.into(), is_error: true, label: "RESTART NGINX.SERVICE".into() };
-    assert_eq!(turn::tool_note(&r), "ACCESS INTERRUPTED: RESTART NGINX.SERVICE");
-}
-
-#[test]
-fn ctrl_c_while_tier1_runs_orphan_audited_as_auto() {
+fn ctrl_c_while_tool_runs_orphan_audited_as_auto() {
     let mut h = harness();
     submit(&mut h, "status");
-    tool_use(&mut h, 1, &[("c1", "service_status", json!({"unit": "nginx"}))]);
+    tool_use(&mut h, 1, &[("c1", "containers", json!({}))]);
     h.t.handle_key(&Key::Ctrl('c'));
     let a = audit_records(&h);
     assert_eq!((a.len(), &a[0]["output"], &a[0]["argv"]), (1, &json!("ABORTED BY OPERATOR"), &json!(null)));
     let shown = text(&mut h.t);
     assert!(!shown.contains("ACCESS INTERRUPTED"), "{shown}");
-    h.t.on_tool_done(1, "c1".into(), ok("active"));
+    h.t.on_tool_done(1, "c1".into(), ok("web up"));
     let a = audit_records(&h);
     assert_eq!(a.len(), 2);
     assert_eq!(a[1]["decision"], "auto");
-    assert_eq!(a[1]["output"], "active");
+    assert_eq!(a[1]["output"], "web up");
+    // Only once, and nothing else changes.
+    h.t.on_tool_done(1, "c1".into(), ok("web up"));
+    assert_eq!(audit_records(&h).len(), 2);
+    assert_eq!(h.sent.borrow().len(), 1);
+    assert_eq!(h.t.state, State::Ready);
 }
 
 #[test]
-fn audit_offline_between_prompt_and_yes_refuses() {
+fn tool_note_labels() {
+    let r = |content: &str, label: &str| ToolResult { id: "c1".into(), name: "x".into(), content: content.into(), is_error: true, label: label.into() };
+    assert_eq!(turn::tool_note(&r("UP", "SHIP STATUS")), "ACCESSING: SHIP STATUS");
+    assert_eq!(turn::tool_note(&r("NOT AUTHORIZED: UNKNOWN CONTAINER", "CONTAINER INSPECT db")), "ACCESS DENIED: CONTAINER INSPECT db");
+    assert_eq!(turn::tool_note(&r("ABORTED BY OPERATOR", "CONTAINERS")), "ACCESS DENIED: CONTAINERS");
+    assert_eq!(turn::tool_note(&r(crate::agent::ABORTED_ISSUED, "CONTAINERS")), "ACCESS INTERRUPTED: CONTAINERS");
+}
+
+#[test]
+fn unknown_tool_is_refused_without_running() {
     let mut h = harness();
-    restart_prompt(&mut h);
-    // The audit log goes offline while the prompt is up.
-    *h.t.audit.borrow_mut() = AuditLog::offline();
-    h.tick(1100);
-    h.t.handle_key(&Key::Char('y'));
-    assert!(h.ran.borrow().is_empty(), "tier 2 must not run unaudited");
-    assert!(text(&mut h.t).contains("ACCESS DENIED: RESTART NGINX.SERVICE"));
-    assert_eq!(h.sent.borrow().len(), 2);
-    assert_eq!(last_results(&h)[0].content, "NOT AUTHORIZED: AUDIT LOG OFFLINE");
+    submit(&mut h, "restart nginx");
+    tool_use(&mut h, 1, &[("c1", "run", json!({"command": "systemctl restart nginx", "reason": "r", "as_root": true, "timeout_secs": 0}))]);
+    assert!(h.ran.borrow().is_empty());
+    assert!(text(&mut h.t).contains("ACCESS DENIED: RUN"));
+    assert_eq!(last_results(&h)[0].content, "NOT AUTHORIZED: unknown tool run");
+    assert_eq!(audit_records(&h)[0]["decision"], "rejected");
 }

@@ -35,7 +35,7 @@ pub enum Event {
     Hangup,
     Tick,
     Llm { req_id: u64, ev: crate::llm::StreamEvent },
-    ToolDone { req_id: u64, call_id: String, outcome: crate::tools::exec::ToolOutcome },
+    ToolDone { req_id: u64, call_id: String, outcome: crate::tools::ToolOutcome },
     CargoDone { seq: u64, output: crate::ops::runner::RunOutput, ms: u64 },
 }
 
@@ -56,7 +56,7 @@ pub fn spawn_metrics(
     mut source: Box<dyn MetricsSource + Send>,
     interval: Duration,
     tx: UnboundedSender<Event>,
-    slot: crate::tools::exec::SnapshotSlot,
+    slot: crate::tools::SnapshotSlot,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut errors = 0;
@@ -299,7 +299,7 @@ fn build_muthur(
     cfg: &Config,
     ship: &str,
     tx: UnboundedSender<Event>,
-    slot: crate::tools::exec::SnapshotSlot,
+    slot: crate::tools::SnapshotSlot,
     audit: crate::ops::audit::SharedAudit,
 ) -> anyhow::Result<crate::muthur::MuthurTab> {
     use crate::llm::{LlmError, StreamEvent, client::LlmClient};
@@ -323,12 +323,8 @@ fn build_muthur(
         }
     };
     let year_offset = cfg.chrome.year_offset;
-    let tools = crate::tools::ToolDefs::new(&cfg.tools);
-    let ctx = crate::tools::exec::ExecCtx {
-        runner: std::sync::Arc::new(crate::ops::runner::SystemRunner),
-        snapshot: slot,
-        elevate: tools.elevate(),
-    };
+    let tools = crate::tools::ToolDefs::persona(&cfg.tools);
+    let ctx = crate::tools::fixed::FixedCtx { runner: std::sync::Arc::new(crate::ops::runner::SystemRunner), snapshot: slot };
     let deps = MuthurDeps {
         spawn,
         now: Box::new(std::time::Instant::now),
@@ -338,12 +334,27 @@ fn build_muthur(
             let ctx = ctx.clone();
             let tx = tool_tx.clone();
             tokio::task::spawn_blocking(move || {
-                let outcome = crate::tools::exec::execute(&inv, &ctx);
+                let outcome = persona_tool(&inv, &ctx);
                 let _ = tx.send(Event::ToolDone { req_id, call_id, outcome });
             });
         }),
     };
     Ok(MuthurTab::new(cfg.muthur.clone(), tools, ship, log, audit, deps))
+}
+
+/// Runs one persona tool. The persona has no `run` tool; one arriving here is refused.
+fn persona_tool(inv: &crate::tools::Invocation, ctx: &crate::tools::fixed::FixedCtx) -> crate::tools::ToolOutcome {
+    if matches!(inv, crate::tools::Invocation::Run { .. }) {
+        return crate::tools::ToolOutcome {
+            content: "NOT AUTHORIZED: NOT AVAILABLE".into(),
+            is_error: true,
+            argv: None,
+            exit: None,
+            ms: 0,
+            audit_output: None,
+        };
+    }
+    crate::tools::fixed::execute(inv, ctx)
 }
 
 /// The CARGO tab, running container commands on blocking tasks.
@@ -369,7 +380,7 @@ fn build_cargo(tx: UnboundedSender<Event>, audit: crate::ops::audit::SharedAudit
 fn open_audit_log() -> crate::ops::audit::AuditLog {
     use crate::ops::audit::AuditLog;
     let Some(dir) = dirs::state_dir() else {
-        tracing::error!("no state directory; audit log offline, tier-2 tools disabled");
+        tracing::error!("no state directory; audit log offline, root calls and overrides refused");
         return AuditLog::offline();
     };
     match AuditLog::open(dir.join("muthur/audit.jsonl")) {
@@ -413,7 +424,7 @@ fn open_session(cfg: &Config, strict: bool) -> anyhow::Result<Session> {
 }
 
 /// Start the local metrics poller, or report telemetry offline.
-fn start_metrics(cfg: &Config, tx: &UnboundedSender<Event>, slot: crate::tools::exec::SnapshotSlot) {
+fn start_metrics(cfg: &Config, tx: &UnboundedSender<Event>, slot: crate::tools::SnapshotSlot) {
     match LocalSource::new(cfg.utility.containers, cfg.utility.exclude_fs.clone()) {
         Ok(src) => {
             spawn_metrics(Box::new(src), Duration::from_secs(cfg.utility.interval_secs.max(1)), tx.clone(), slot);
@@ -449,7 +460,7 @@ pub fn run_splash(cfg: &Config, strict: bool) -> anyhow::Result<()> {
     install_panic_hook();
     let Session { link, tx, mut rx, mut terminal, .. } = open_session(cfg, strict)?;
     let ship = ship_name(cfg);
-    start_metrics(cfg, &tx, crate::tools::exec::SnapshotSlot::default());
+    start_metrics(cfg, &tx, crate::tools::SnapshotSlot::default());
     let chrome = ChromeView { ship_name: ship.clone(), year_offset: cfg.chrome.year_offset };
     let mut app = App::new(chrome).with_splash(splash_for(cfg, &ship));
     app.quit_after_splash = true;
@@ -483,7 +494,7 @@ pub fn run(cfg: &Config, strict: bool) -> anyhow::Result<()> {
     });
     let ship = ship_name(cfg);
     let chrome = ChromeView { ship_name: ship.clone(), year_offset: cfg.chrome.year_offset };
-    let slot = crate::tools::exec::SnapshotSlot::default();
+    let slot = crate::tools::SnapshotSlot::default();
     start_metrics(cfg, &tx, slot.clone());
     // One audit log for every writer: MU/TH/UR's tools and CARGO's commands.
     let audit = crate::ops::audit::shared(open_audit_log());
@@ -771,17 +782,29 @@ mod tests {
     #[test]
     fn collector_fills_snapshot_slot() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let slot = crate::tools::exec::SnapshotSlot::default();
+        let slot = crate::tools::SnapshotSlot::default();
         spawn_metrics(Box::new(FakeSource { calls: 0, fail_every_other: false }), Duration::from_millis(10), tx, slot.clone());
         next_metrics(&mut rx).unwrap();
         assert_eq!(slot.lock().unwrap().as_ref().unwrap().host, "HOST1");
+    }
+
+    #[test]
+    fn persona_tool_refuses_run() {
+        let ctx = crate::tools::fixed::FixedCtx {
+            runner: std::sync::Arc::new(crate::ops::runner::SystemRunner),
+            snapshot: crate::tools::SnapshotSlot::default(),
+        };
+        let run = crate::tools::Invocation::Run { command: "id".into(), reason: "r".into(), as_root: false, timeout_secs: 1 };
+        let o = persona_tool(&run, &ctx);
+        assert_eq!((o.content.as_str(), o.is_error, o.argv), ("NOT AUTHORIZED: NOT AVAILABLE", true, None));
+        assert_eq!(persona_tool(&crate::tools::Invocation::ShipStatus, &ctx).content, "TELEMETRY NOT YET AVAILABLE");
     }
 
     #[tokio::test]
     async fn tool_done_event_reaches_muthur() {
         use crate::llm::{Stop, StreamEvent};
         use crate::muthur::{MuthurDeps, MuthurTab};
-        use crate::tools::exec::ToolOutcome;
+        use crate::tools::ToolOutcome;
         let (_, mut t) = setup();
         let dir = tempfile::tempdir().unwrap();
         let log = crate::chatlog::ChatLog::open(dir.path().join("chat.jsonl")).unwrap();
@@ -798,7 +821,7 @@ mod tests {
             timestamp: Box::new(|| "2026-11-18T14:02:00Z".into()),
             run_tool: Box::new(|_, _, _| {}),
         };
-        let tools = crate::tools::ToolDefs::new(&Default::default());
+        let tools = crate::tools::ToolDefs::persona(&Default::default());
         let audit = crate::ops::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap();
         let m = MuthurTab::new(cfg, tools, "USCSS TEST", log, crate::ops::audit::shared(audit), deps);
         let shell = crate::shell::ShellTab::new(

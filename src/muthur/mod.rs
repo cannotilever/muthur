@@ -8,8 +8,9 @@ use crate::app::tabs::Tab;
 use crate::chatlog::{Assistant, ChatLog};
 use crate::config::MuthurSection;
 use crate::input::Key;
-use crate::agent::{Call, Orphan, Turn};
+use crate::agent::{Call, Orphan, Policy, Turn};
 use crate::llm::{ChatRequest, LlmError, StreamEvent};
+use crate::ops::AgentId;
 use crate::ops::audit::SharedAudit;
 use crate::tools::{Invocation, ToolDefs};
 use ratatui::buffer::Buffer;
@@ -28,7 +29,7 @@ No greetings, pleasantries, apologies or filler.
 If you cannot or will not do something, reply "UNABLE TO COMPLY." followed by a short reason.
 If you do not know, reply "DATA INSUFFICIENT." Never invent readings.
 You can query the ship's systems with your tools. Use them instead of guessing.
-Actions that change the ship require operator override and may be denied; if denied, say so plainly and do not retry."#;
+You cannot change the ship. For changes, tell the operator to open a direct link with /DIRECT."#;
 
 const NOTE_INTERRUPTED: &str = "[INTERRUPTED]";
 const NOTE_TRUNCATED: &str = "[TRANSMISSION TRUNCATED]";
@@ -77,8 +78,8 @@ enum State {
     Confirm,
     /// Tool results pending.
     Tools,
-    /// A tier-2 call awaits the operator. `drawn` is set by the first render
-    /// that shows the prompt uncovered; `armed_at` by the next one (frames are
+    /// A Y/N tool confirmation awaits the operator (the persona's tools never
+    /// raise one). `drawn` is set by the first render that shows the prompt uncovered; `armed_at` by the next one (frames are
     /// only drawn once the previous one has drained to the wire, so the second
     /// render means the first reached the screen). Y/N/Esc before `armed_at`
     /// are ignored; covering the tab resets both.
@@ -91,6 +92,8 @@ pub struct MuthurTab {
     log: ChatLog,
     deps: MuthurDeps,
     tools: ToolDefs,
+    /// The persona's policy: no deny rules (it has no `run`), no extra hosts.
+    policy: Policy,
     audit: SharedAudit,
     /// The agent turn of the inquiry in progress.
     turn: Option<Turn>,
@@ -155,6 +158,7 @@ impl MuthurTab {
             log,
             deps,
             tools,
+            policy: Policy { deny: None, net_allow: Vec::new() },
             audit,
             turn: None,
             calls: Vec::new(),
@@ -308,10 +312,10 @@ impl MuthurTab {
             self.status_flash = Some(unable(LlmError::Transmission.reason()));
             return;
         }
+        self.turn = Some(Turn::new(self.tools.max_rounds(), AgentId::Muthur, line.clone()));
         self.transcript.push(Entry::User(line));
         self.clear_input();
         self.pending_notes.clear();
-        self.turn = Some(Turn::new(self.tools.max_rounds()));
         self.spawn_request(self.tools.max_rounds() == 0);
     }
 
@@ -550,7 +554,7 @@ impl Tab for MuthurTab {
         }
     }
 
-    fn on_tool_done(&mut self, req_id: u64, call_id: String, o: crate::tools::exec::ToolOutcome) {
+    fn on_tool_done(&mut self, req_id: u64, call_id: String, o: crate::tools::ToolOutcome) {
         self.tool_done(req_id, &call_id, o);
     }
 

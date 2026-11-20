@@ -105,20 +105,11 @@ uppercase = true
 # PAGEUP = "\u001b[5~"
 
 # ── Tools ────────────────────────────────────────────────────────────────────
-# Lets MU/TH/UR query the ship (read-only tools) and, with operator override,
-# start/stop/restart allowlisted systemd services.
+# Lets MU/TH/UR query the ship with read-only tools (ship status, containers).
+# Changes go through the technical agent (/DIRECT).
 [tools]
 # enabled = true
 # max_rounds = 8            # tool-call rounds per question
-# elevate = "sudo"          # or "doas"; see docs/sudoers.example
-# journal_max_lines = 50
-
-# Units the model may ask to act on (operator still must approve each call).
-# Each needs a matching sudoers/doas rule.
-[tools.services]
-# restart = ["nginx.service"]
-# start = []
-# stop = []
 
 # ── Technical agent ──────────────────────────────────────────────────────────
 # [agent]

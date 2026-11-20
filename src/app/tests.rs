@@ -171,38 +171,6 @@ fn active_tab_told_when_covered() {
     assert_eq!(step(&mut app, &[Key::F(2)]), Some(false));
 }
 
-#[test]
-fn override_under_help_overlay_rearms_after_dismissal() {
-    use crate::llm::{Stop, StreamEvent};
-    let (m, _dir, clock, ran) = fake_muthur_clocked();
-    let mut app = App::new(chrome()).with_tab(TabId::Muthur, Box::new(m));
-    let tick = |ms: u64| clock.set(clock.get() + Duration::from_millis(ms));
-    keys(&mut app, &[Key::F(1)]);
-    keys(&mut app, &"RESTART NGINX".chars().map(Key::Char).collect::<Vec<_>>());
-    keys(&mut app, &[Key::Enter, Key::Ctrl(']'), Key::Char('?')]);
-    let input = serde_json::json!({"unit": "nginx"});
-    app.on_llm(1, StreamEvent::ToolCall { id: "c1".into(), name: "restart_service".into(), input: input.clone() });
-    let raw = vec![serde_json::json!({"type":"tool_use","id":"c1","name":"restart_service","input":input})];
-    app.on_llm(1, StreamEvent::Done { stop: Stop::ToolUse, model: Some("m".into()), raw: Some(raw) });
-    // The prompt is raised under the help overlay and rendered there for a while.
-    for _ in 0..30 {
-        draw(&mut app);
-        tick(100);
-    }
-    keys(&mut app, &[Key::Esc]); // dismisses the overlay only
-    keys(&mut app, &[Key::Char('y')]);
-    assert!(ran.borrow().is_empty(), "prompt never seen must not be armed");
-    draw(&mut app);
-    tick(100);
-    draw(&mut app);
-    tick(500);
-    keys(&mut app, &[Key::Char('y')]);
-    assert!(ran.borrow().is_empty(), "y inside the arming delay after dismissal");
-    tick(600);
-    keys(&mut app, &[Key::Char('y')]);
-    assert_eq!(ran.borrow().len(), 1);
-}
-
 struct Recorder(Arc<Mutex<Vec<Key>>>);
 impl Tab for Recorder {
     fn render(&mut self, _area: Rect, _buf: &mut Buffer) {}
@@ -365,38 +333,9 @@ pub(crate) fn fake_muthur() -> (crate::muthur::MuthurTab, tempfile::TempDir) {
         timestamp: Box::new(|| "2026-11-18T14:02:00Z".into()),
         run_tool: Box::new(|_, _, _| {}),
     };
-    let tools = crate::tools::ToolDefs::new(&crate::config::ToolsSection {
-        services: crate::config::ServiceLists { restart: vec!["nginx".into()], ..Default::default() },
-        ..Default::default()
-    });
+    let tools = crate::tools::ToolDefs::persona(&crate::config::ToolsSection::default());
     let audit = crate::ops::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap();
     (MuthurTab::new(cfg, tools, "USCSS TEST", log, crate::ops::audit::shared(audit), deps), dir)
-}
-
-type Ran = std::rc::Rc<std::cell::RefCell<Vec<String>>>;
-
-/// `fake_muthur` with a hand-driven clock and a record of started tool calls.
-fn fake_muthur_clocked() -> (crate::muthur::MuthurTab, tempfile::TempDir, std::rc::Rc<std::cell::Cell<Instant>>, Ran) {
-    use crate::muthur::{MuthurDeps, MuthurTab};
-    let dir = tempfile::tempdir().unwrap();
-    let log = crate::chatlog::ChatLog::open(dir.path().join("chat.jsonl")).unwrap();
-    let cfg = crate::config::MuthurSection { api_key: Some("sk-test".into()), ..Default::default() };
-    let clock = std::rc::Rc::new(std::cell::Cell::new(Instant::now()));
-    let ran: Ran = Default::default();
-    let (c, r) = (clock.clone(), ran.clone());
-    let deps = MuthurDeps {
-        spawn: Box::new(|_, _| Box::new(|| {})),
-        now: Box::new(move || c.get()),
-        ship_time: Box::new(|| "18 NOV 2137 14:02".into()),
-        timestamp: Box::new(|| "2026-11-18T14:02:00Z".into()),
-        run_tool: Box::new(move |_, id, _| r.borrow_mut().push(id)),
-    };
-    let tools = crate::tools::ToolDefs::new(&crate::config::ToolsSection {
-        services: crate::config::ServiceLists { restart: vec!["nginx".into()], ..Default::default() },
-        ..Default::default()
-    });
-    let audit = crate::ops::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap();
-    (MuthurTab::new(cfg, tools, "USCSS TEST", log, crate::ops::audit::shared(audit), deps), dir, clock, ran)
 }
 
 #[test]

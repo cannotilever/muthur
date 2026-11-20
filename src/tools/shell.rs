@@ -1,6 +1,6 @@
 //! The `run` tool: argv, result mapping, timeout cleanup and the startup probe.
 
-use super::exec::ToolOutcome;
+use super::ToolOutcome;
 use crate::agent::ABORTED_ISSUED;
 use crate::ops::head_tail;
 use crate::ops::runner::{Kill, RunOutput, RunSpec, Runner};

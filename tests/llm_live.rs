@@ -9,7 +9,8 @@ use muthur::config::{MuthurSection, Provider};
 use muthur::llm::client::LlmClient;
 use muthur::llm::{Stop, StreamEvent, ToolResult};
 use muthur::metrics::Snapshot;
-use muthur::tools::exec::{ExecCtx, SnapshotSlot, execute};
+use muthur::tools::SnapshotSlot;
+use muthur::tools::fixed::{FixedCtx, execute};
 use muthur::ops::runner::SystemRunner;
 use muthur::tools::ToolDefs;
 use muthur::config::ToolsSection;
@@ -87,13 +88,13 @@ async fn openai_round_trip() {
     .await;
 }
 
-/// Hand-driven tool loop (tier 1 only): stream, collect ToolCalls, execute,
+/// Hand-driven tool loop (persona tools): stream, collect ToolCalls, execute,
 /// append_tool, window, stream again; at most 3 rounds.
 async fn tool_round_trip(cfg: MuthurSection) {
-    let defs = ToolDefs::new(&ToolsSection::default());
+    let defs = ToolDefs::persona(&ToolsSection::default());
     let slot: SnapshotSlot = SnapshotSlot::default();
     *slot.lock().unwrap() = Some(Snapshot { host: "NOSTROMO".into(), uptime_secs: 3 * 86400, ..Default::default() });
-    let ctx = ExecCtx { runner: std::sync::Arc::new(SystemRunner), snapshot: slot, elevate: defs.elevate() };
+    let ctx = FixedCtx { runner: std::sync::Arc::new(SystemRunner), snapshot: slot };
     let dir = tempfile::tempdir().unwrap();
     let mut log = ChatLog::open(dir.path().join("chat.jsonl")).unwrap();
     let client = LlmClient::new(cfg.clone()).unwrap();

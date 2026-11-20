@@ -1,14 +1,27 @@
 //! Fixed tools: ship status, containers and network checks, run as the operator.
 
-use super::exec::{SnapshotSlot, ToolOutcome, format_snapshot};
 use super::registry::{DnsType, Invocation};
+use crate::metrics::Snapshot;
 use crate::ops::cap;
 use crate::ops::runner::{RunOutput, Runner};
 use serde_json::{Value, json};
 use std::io::ErrorKind;
 use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+pub type SnapshotSlot = Arc<Mutex<Option<Snapshot>>>;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ToolOutcome {
+    pub content: String,
+    pub is_error: bool,
+    pub argv: Option<Vec<String>>,
+    pub exit: Option<Value>,
+    pub ms: u64,
+    /// Full text for the audit log; None means same as `content`.
+    pub audit_output: Option<String>,
+}
 
 #[derive(Clone)]
 pub struct FixedCtx {
@@ -170,6 +183,59 @@ pub fn execute(inv: &Invocation, ctx: &FixedCtx) -> ToolOutcome {
     }
 }
 
+pub fn format_snapshot(s: &Snapshot) -> String {
+    use crate::metrics::{human_bytes, human_rate, human_uptime};
+    let mut l = vec![
+        format!("HOST {}", s.host),
+        format!("UPTIME {}", human_uptime(s.uptime_secs)),
+        format!("LOAD {:.2} {:.2} {:.2}", s.load[0], s.load[1], s.load[2]),
+        format!("CPU {:.0}%", s.cpu_total),
+        format!(
+            "MEMORY {}/{}",
+            human_bytes(s.mem.used),
+            human_bytes(s.mem.total)
+        ),
+        format!(
+            "SWAP {}/{}",
+            human_bytes(s.swap.used),
+            human_bytes(s.swap.total)
+        ),
+    ];
+    for d in &s.disks {
+        l.push(format!("DISK {} {:.0}%", d.mount, d.usage.percent()));
+    }
+    l.push(format!(
+        "NET RX {} TX {}",
+        human_rate(s.net.rx_bps),
+        human_rate(s.net.tx_bps)
+    ));
+    for p in s.top.iter().take(5) {
+        l.push(format!(
+            "PROC {} CPU {:.0}% MEM {}",
+            p.name,
+            p.cpu,
+            human_bytes(p.mem)
+        ));
+    }
+    l.push(match &s.failed_units {
+        None => "FAILED UNITS N/A".into(),
+        Some(u) if u.is_empty() => "FAILED UNITS NONE".into(),
+        Some(u) => format!("FAILED UNITS {}", u.join(", ")),
+    });
+    l.push(match &s.containers {
+        None => "CONTAINERS N/A".into(),
+        Some(c) if c.is_empty() => "CONTAINERS NONE".into(),
+        Some(c) => format!(
+            "CONTAINERS {}",
+            c.iter()
+                .map(|c| format!("{} {}", c.name.to_uppercase(), c.status))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    });
+    l.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,7 +243,6 @@ mod tests {
     use crate::ops::runner::RunSpec;
     use crate::tools::registry::DnsType;
     use std::net::TcpListener;
-    use std::sync::Mutex;
 
     struct Fake {
         calls: Mutex<Vec<Vec<String>>>,
@@ -305,5 +370,26 @@ mod tests {
         assert_eq!(execute(&Invocation::Traceroute { host: "h".into() }, &c).content, "NOT AVAILABLE ON THIS SHIP");
         let (c, _) = ctx(RunOutput::TimedOut, None, &[]);
         assert_eq!(execute(&Invocation::Ping { host: "h".into(), count: 1 }, &c).content, "NO RESPONSE");
+    }
+    #[test]
+    fn ship_status_reads_slot() {
+        let (c, f) = ctx(ok(""), None, &[]);
+        *c.snapshot.lock().unwrap() = None;
+        let o = execute(&Invocation::ShipStatus, &c);
+        assert_eq!((o.content.as_str(), o.is_error, o.argv), ("TELEMETRY NOT YET AVAILABLE", true, None));
+        *c.snapshot.lock().unwrap() = Some(Snapshot { host: "NOSTROMO".into(), failed_units: None, ..Default::default() });
+        let o = execute(&Invocation::ShipStatus, &c);
+        assert!(!o.is_error);
+        assert!(o.content.contains("HOST NOSTROMO") && o.content.contains("FAILED UNITS N/A"), "{}", o.content);
+        assert!(f.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn ship_status_upper_cases_container_names() {
+        let s = Snapshot {
+            containers: Some(vec![Container { id: "x".into(), name: "web".into(), status: "UP".into(), detail: "Up".into() }]),
+            ..Default::default()
+        };
+        assert!(format_snapshot(&s).contains("CONTAINERS WEB UP"), "{}", format_snapshot(&s));
     }
 }

@@ -4,7 +4,7 @@ use super::{unable, MuthurTab, State, NOTE_TRUNCATED};
 use crate::agent::{Effect, ABORTED_ISSUED};
 use crate::input::Key;
 use crate::llm::{LlmError, Stop, ToolResult};
-use crate::tools::exec::ToolOutcome;
+use crate::tools::ToolOutcome;
 
 const AUDIT_OFFLINE: &str = "AUDIT LOG OFFLINE";
 
@@ -28,7 +28,7 @@ impl MuthurTab {
         self.abort = None;
         let calls = std::mem::take(&mut self.calls);
         let effects = match &mut self.turn {
-            Some(t) => t.on_done(&stop, calls, &self.tools, self.audit.borrow().is_online()),
+            Some(t) => t.on_done(&stop, calls, &self.tools, &self.policy, self.audit.borrow().is_online()),
             None => vec![Effect::Finished { truncated: false }],
         };
         if !effects.iter().any(|e| matches!(e, Effect::Finished { .. })) {
@@ -95,7 +95,7 @@ impl MuthurTab {
     /// Resolve any open round as aborted (logged and audited); the caller ends the inquiry.
     pub(super) fn abort_turn(&mut self) {
         if let Some(mut turn) = self.turn.take() {
-            let effects = turn.abort(self.tools.elevate()).into_iter().filter(|e| !matches!(e, Effect::Finished { .. })).collect();
+            let effects = turn.abort().into_iter().filter(|e| !matches!(e, Effect::Finished { .. })).collect();
             self.apply(effects, None);
         }
     }
@@ -123,10 +123,16 @@ impl MuthurTab {
                         self.started = Some((self.deps.now)());
                     }
                 }
-                Effect::Confirm { call_id, prompt } => {
+                Effect::Confirm { call_id, prompt, .. } => {
                     // Armed only from renders, so a prompt raised in the background still gets its delay.
                     self.state = State::Override { call_id, prompt, drawn: false, armed_at: None };
                     self.activity = true;
+                }
+                // The persona's tools are all review-free, so these never arrive (Task 12 wires them).
+                Effect::Review { call_id, .. } | Effect::AskPassword { call_id, .. } | Effect::AskOverride { call_id, .. } => {
+                    tracing::error!("persona turn raised a review or prompt for call {call_id}; aborting");
+                    self.interrupt();
+                    break;
                 }
                 Effect::Note(s) => {
                     if self.revealing {

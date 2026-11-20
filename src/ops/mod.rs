@@ -71,4 +71,19 @@ mod tests {
         let t = head_tail(&"€".repeat(100), 21);
         assert!(std::str::from_utf8(t.as_bytes()).is_ok());
     }
+    #[test]
+    fn cap_truncates_on_char_boundary() {
+        let c = cap("é".repeat(3000));
+        assert!(c.ends_with("\n[TRUNCATED]"));
+        assert!(c.len() <= CAP + 12);
+        assert_eq!(cap("short".into()), "short");
+    }
+
+    #[test]
+    fn cap_cuts_mid_character() {
+        let c = cap(format!("aa{}", "€".repeat(2000)));
+        assert!(c.ends_with("\n[TRUNCATED]"));
+        assert!(c.len() < 4096 + 12 && c.len() > 4000);
+        assert!(c.starts_with("aa€"));
+    }
 }

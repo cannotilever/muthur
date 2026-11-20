@@ -13,7 +13,7 @@ type Clock = std::rc::Rc<std::cell::Cell<std::time::Instant>>;
 
 fn muthur_tab(path: &std::path::Path, prefill: Option<(&str, &str)>) -> (muthur::muthur::MuthurTab, Clock) {
     use muthur::chatlog::{Assistant, ChatLog};
-    use muthur::config::{MuthurSection, Provider, ServiceLists, ToolsSection};
+    use muthur::config::{MuthurSection, Provider, ToolsSection};
     use muthur::muthur::{MuthurDeps, MuthurTab};
     use muthur::{ops::audit::AuditLog, tools::ToolDefs};
     let mut log = ChatLog::open(path.to_path_buf()).unwrap();
@@ -32,10 +32,7 @@ fn muthur_tab(path: &std::path::Path, prefill: Option<(&str, &str)>) -> (muthur:
         run_tool: Box::new(|_, _, _| {}),
     };
     let cfg = MuthurSection { api_key: Some("sk-test".into()), ..Default::default() };
-    let tools = ToolDefs::new(&ToolsSection {
-        services: ServiceLists { restart: vec!["nginx".into()], ..Default::default() },
-        ..Default::default()
-    });
+    let tools = ToolDefs::persona(&ToolsSection::default());
     let audit = AuditLog::open(path.with_file_name("audit.jsonl")).unwrap();
     (MuthurTab::new(cfg, tools, "USCSS TEST", log, muthur::ops::audit::shared(audit), deps), clock)
 }
@@ -287,45 +284,6 @@ fn muthur_windowed() {
     // The reveal cursor is a reverse-video space right after the 20th character.
     assert!(p.screen().cell(11, 41).unwrap().inverse(), "no block cursor after partial reply");
     let path = format!("{}/tests/golden/muthur_windowed.txt", env!("CARGO_MANIFEST_DIR"));
-    if std::env::var("UPDATE_GOLDEN").is_ok() {
-        std::fs::write(&path, &text).unwrap();
-    }
-    let want = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("missing {path}; run with UPDATE_GOLDEN=1"));
-    assert_eq!(text, want);
-}
-
-#[test]
-fn muthur_override() {
-    use muthur::llm::{Stop, StreamEvent};
-    let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 17).unwrap().and_hms_opt(14, 2, 0).unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    let (tab, _clock) = muthur_tab(&dir.path().join("chat.jsonl"), None);
-    let mut app = App::new(ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 })
-        .with_tab(muthur::app::TabId::Muthur, Box::new(tab));
-    app.handle_key(Key::F(1));
-    for c in "RESTART NGINX".chars() {
-        app.handle_key(Key::Char(c));
-    }
-    app.handle_key(Key::Enter);
-    let input = serde_json::json!({"unit": "nginx"});
-    app.on_llm(1, StreamEvent::ToolCall { id: "c1".into(), name: "restart_service".into(), input: input.clone() });
-    let raw = vec![serde_json::json!({"type":"tool_use","id":"c1","name":"restart_service","input":input})];
-    app.on_llm(1, StreamEvent::Done { stop: Stop::ToolUse, model: Some("m".into()), raw: Some(raw) });
-    let mut t = Terminal::new(Wy60Backend::new(StrictWriter::new(Vec::new(), Vt100Dialect), Vt100Dialect, 80, 43)).unwrap();
-    t.clear().unwrap();
-    t.draw(|f| app.render(f, now)).unwrap();
-    let strict = t.backend().writer();
-    assert!(strict.violations.is_empty(), "{:?}", strict.violations);
-    let mut p = vt100::Parser::new(NonZeroU16::new(43).unwrap(), NonZeroU16::new(80).unwrap(), 0);
-    p.process(&strict.inner);
-    let text = p.screen().contents();
-    let row = text.lines().position(|l| l.contains("OVERRIDE REQUIRED")).expect("no override row") as u16;
-    let line = text.lines().nth(row as usize).unwrap();
-    let col = line.chars().position(|c| c == 'O').unwrap() as u16;
-    assert!(p.screen().cell(row, col).unwrap().inverse(), "override row is not reverse video");
-    assert!(text.contains("> RESTART NGINX"), "{text}");
-    assert!(text.contains("OVERRIDE REQUIRED -- RESTART NGINX.SERVICE -- CONFIRM Y/N"), "{text}");
-    let path = format!("{}/tests/golden/muthur_override.txt", env!("CARGO_MANIFEST_DIR"));
     if std::env::var("UPDATE_GOLDEN").is_ok() {
         std::fs::write(&path, &text).unwrap();
     }

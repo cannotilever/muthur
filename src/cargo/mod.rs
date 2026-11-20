@@ -32,7 +32,7 @@ const HINT: &str = "U START  R RESTART  D STOP  L LOGS";
 const NO_RUNTIME: &str = "NO CONTAINER RUNTIME";
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(2);
 /// Tier-2 actions (restart, stop) are refused without an audit log, as
-/// MU/TH/UR's tier-2 tools are.
+/// the agent's root calls and overrides are.
 const AUDIT_OFFLINE: &str = "AUDIT LOG OFFLINE";
 
 /// What CARGO needs from the outside world, injected so tests can fake it.

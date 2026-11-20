@@ -248,35 +248,16 @@ impl MuthurSection {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Elevate {
-    #[default]
-    Sudo,
-    Doas,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
-#[serde(default)]
-pub struct ServiceLists {
-    pub restart: Vec<String>,
-    pub start: Vec<String>,
-    pub stop: Vec<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct ToolsSection {
     pub enabled: bool,
     pub max_rounds: u32,
-    pub elevate: Elevate,
-    pub journal_max_lines: u32,
-    pub services: ServiceLists,
 }
 
 impl Default for ToolsSection {
     fn default() -> Self {
-        Self { enabled: true, max_rounds: 8, elevate: Elevate::Sudo, journal_max_lines: 50, services: ServiceLists::default() }
+        Self { enabled: true, max_rounds: 8 }
     }
 }
 
@@ -508,18 +489,14 @@ mod tests {
     #[test]
     fn tools_section_parses_and_defaults() {
         let d = Config::default().tools;
-        assert!(d.enabled && d.max_rounds == 8 && d.journal_max_lines == 50);
-        assert_eq!(d.elevate, Elevate::Sudo);
-        assert!(d.services.restart.is_empty() && d.services.start.is_empty() && d.services.stop.is_empty());
+        assert!(d.enabled && d.max_rounds == 8);
+        // Removed M5 keys are ignored (and reported by `warnings`).
         let (_d, p) = write_cfg(
             "[tools]\nenabled = false\nmax_rounds = 3\nelevate = \"doas\"\njournal_max_lines = 10\n[tools.services]\nrestart = [\"nginx\"]\n",
             0o600,
         );
         let t = load(&p).unwrap().tools;
-        assert!(!t.enabled);
-        assert_eq!((t.max_rounds, t.journal_max_lines, t.elevate), (3, 10, Elevate::Doas));
-        assert_eq!(t.services.restart, ["nginx"]);
-        assert!(t.services.start.is_empty());
+        assert_eq!(t, ToolsSection { enabled: false, max_rounds: 3 });
     }
 
     #[test]

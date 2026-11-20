@@ -131,7 +131,7 @@ impl App {
         self.tabs[TabId::Cargo.index()].on_cargo_done(seq, out, ms);
     }
 
-    pub fn on_tool_done(&mut self, req_id: u64, call_id: String, outcome: crate::tools::exec::ToolOutcome) {
+    pub fn on_tool_done(&mut self, req_id: u64, call_id: String, outcome: crate::tools::ToolOutcome) {
         self.tabs[TabId::Muthur.index()].on_tool_done(req_id, call_id, outcome);
     }
 
