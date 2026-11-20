@@ -169,16 +169,22 @@ impl Probe {
     }
 }
 
+/// One datagram to TEST-NET-1 from the agent account.
+const PROBE_UDP: &str = "exec 3>/dev/udp/192.0.2.1/9 && echo probe >&3";
+
 pub fn probe(runner: &dyn Runner) -> Probe {
     let mut t = agent_prefix();
     t.push("/usr/bin/true".into());
     if !matches!(runner.run(&t, STEP), RunOutput::Exited { code: 0, .. }) {
         return Probe::AccountOffline;
     }
-    let tcp = argv("exec 3<>/dev/tcp/192.0.2.1/9", false);
-    let spec = RunSpec { merged: true, ..RunSpec::new(&tcp, STEP) };
+    // UDP, not TCP: the rule drops UDP, and netfilter's EPERM reaches a local
+    // UDP sender at once. TCP is rejected with a reset, and "Connection
+    // refused" could just as well come from a remote host.
+    let udp = argv(PROBE_UDP, false);
+    let spec = RunSpec { merged: true, ..RunSpec::new(&udp, STEP) };
     match runner.run_spec(&spec) {
-        RunOutput::Exited { code, stdout, stderr } if code != 0 && format!("{stdout}{stderr}").contains("connect: Operation not permitted") => {
+        RunOutput::Exited { code, stdout, stderr } if code != 0 && format!("{stdout}{stderr}").contains("write error: Operation not permitted") => {
             Probe::Ready
         }
         _ => Probe::NotIsolated,
@@ -365,7 +371,8 @@ mod tests {
     fn probe_states() {
         let p = |r: Vec<RunOutput>| probe(&Fake::new(r));
         assert_eq!(p(vec![exited(1, "")]), Probe::AccountOffline);
-        assert_eq!(p(vec![exited(0, ""), exited(1, "bash: connect: Operation not permitted")]), Probe::Ready);
+        assert_eq!(p(vec![exited(0, ""), exited(1, "bash: line 1: echo: write error: Operation not permitted")]), Probe::Ready);
+        assert_eq!(p(vec![exited(0, ""), exited(1, "bash: connect: Operation not permitted")]), Probe::NotIsolated);
         assert_eq!(p(vec![exited(0, ""), exited(0, "")]), Probe::NotIsolated);
         assert_eq!(p(vec![exited(0, ""), exited(1, "Network is unreachable")]), Probe::NotIsolated);
         assert_eq!(p(vec![exited(0, ""), RunOutput::TimedOut]), Probe::NotIsolated);

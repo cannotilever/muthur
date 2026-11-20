@@ -1,6 +1,10 @@
-# Drops all non-loopback egress from the muthur-agent account, and DNS to
+# Blocks all non-loopback egress from the muthur-agent account, and DNS to
 # loopback resolvers too: a local stub (systemd-resolved on 127.0.0.53) would
 # otherwise forward encoded names to the outside world.
+# TCP is rejected with a reset so connects fail at once ("Connection
+# refused"); a dropped SYN is retried silently until the command times out.
+# Everything else is dropped, which a local sender sees at once as EPERM
+# ("Operation not permitted"); MUTHUR's startup probe relies on that for UDP.
 # The empty declaration plus delete makes re-loading this file idempotent.
 table inet muthur_agent
 delete table inet muthur_agent
@@ -8,8 +12,9 @@ table inet muthur_agent {
 	chain output {
 		type filter hook output priority 0; policy accept;
 		meta skuid "muthur-agent" udp dport { 53, 853 } drop
-		meta skuid "muthur-agent" tcp dport { 53, 853 } drop
+		meta skuid "muthur-agent" tcp dport { 53, 853 } reject with tcp reset
 		oif "lo" accept
+		meta skuid "muthur-agent" meta l4proto tcp reject with tcp reset
 		meta skuid "muthur-agent" drop
 	}
 }

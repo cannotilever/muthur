@@ -35,7 +35,7 @@ The M5 tool set was a fixed list of systemd tools plus allowlisted start/stop/re
 |---|---|
 | Unprivileged execution | A dedicated `muthur-agent` system account, reached with `sudo -n -u muthur-agent`. It has no sudo rights and is not in `docker` or `wheel`. |
 | Root execution | `sudo -S` as the operator. The operator types their password on the WY-60 for every root call. It is never cached by MUTHUR, and sudo's timestamp is bypassed (`-k`). |
-| Exfiltration | nftables drops all non-loopback egress from `muthur-agent`, and its DNS (53, 853) to loopback resolvers. Network diagnostics are fixed tools that run as the operator, behind a target gate. |
+| Exfiltration | nftables blocks all non-loopback egress from `muthur-agent`, and its DNS (53, 853) to loopback resolvers. TCP is rejected with a reset so connects fail fast; everything else is dropped (an immediate EPERM for a local sender). UDP must stay `drop`: the probe relies on its EPERM. Network diagnostics are fixed tools that run as the operator, behind a target gate. |
 | Gate order | Deny rules (code, final), then the reviewer (LLM), then the operator (Y/N, password or OVERRIDE). |
 | Reviewer input | The operator's message, the command, the reason, the `as_root` flag and prior commands. **Never tool output.** |
 | Reviewer failure | Treated as `ask` (`REVIEWER OFFLINE`), never as `allow`. |
@@ -111,15 +111,16 @@ New files in `deploy/`, installed by `make install-system`. `make check-deploy` 
   ```
   Without a pty, sudo stays in the process tree and output arrives on MUTHUR's pipes.
 - **`deploy/nftables/muthur-agent.nft`:** a table `inet muthur_agent` with an `output` chain (hook output, priority 0) containing `oif "lo" accept` then `meta skuid "muthur-agent" drop`. It is installed to `/etc/nftables.d/` and included from `/etc/nftables.conf`. `docs/deploy.md` explains how. The drop covers replies to inbound connections too. Root commands are unaffected, because they already need the password.
-- **`docs/deploy.md`** gains a section on these files, with a check: `sudo -u muthur-agent curl -m 3 https://example.com` must fail with "Operation not permitted".
+- **`docs/deploy.md`** gains a section on these files, with a check: `sudo -u muthur-agent bash -c 'exec 3>/dev/udp/192.0.2.1/9 && echo x >&3'` must fail at once with "write error: Operation not permitted" (TCP only times out; see the probe).
 
 ### Startup probe
 
 At startup, run on a blocking thread, with each step limited to 5 s:
 
 1. `sudo -n -u muthur-agent -- /usr/bin/true`. If this fails, status is `AGENT ACCOUNT OFFLINE — SEE DEPLOY`.
-2. Isolation: as muthur-agent, `/bin/bash --noprofile --norc -c 'exec 3<>/dev/tcp/192.0.2.1/9'` (TEST-NET-1).
-   - Isolated means it fails with `Operation not permitted`, the EPERM that netfilter returns to a local sender.
+2. Isolation: as muthur-agent, `/bin/bash --noprofile --norc -c 'exec 3>/dev/udp/192.0.2.1/9 && echo probe >&3'` (TEST-NET-1).
+   - Isolated means the write fails with `Operation not permitted`, the EPERM that netfilter returns to a local UDP sender.
+   - UDP, not TCP: TCP is rejected with a reset, and "Connection refused" could also come from a remote host, so it proves nothing.
    - Any other result means `AGENT NETWORK NOT ISOLATED — SEE DEPLOY`. That includes success, a timeout, or "Network is unreachable" (no route means the rule is not proven).
 
 If either step fails, `run` is left out of the technical agent's tools, and `/DIRECT` shows the status line in its banner. The fixed tools are still offered. The probe result is fixed for the session.
@@ -432,7 +433,7 @@ Loopback services stay reachable from `muthur-agent`. glibc's nss-resolve talks 
 `cargo test` and `cargo clippy` with no warnings, each run twice: with default features and with `--no-default-features`. The user then:
 - runs the `#[ignore]` live tests;
 - runs `make install-system` on omicron;
-- does a hands-on WY-60 session covering: `/DIRECT`; an allowed read command; an ask → Y/N; a root command with the password, then a wrong password; a reviewer deny → OVERRIDE; Ctrl-C mid-run; an `http_check` to a host they did not mention (it must reach Y/N); and the curl check from `docs/deploy.md`.
+- does a hands-on WY-60 session covering: `/DIRECT`; an allowed read command; an ask → Y/N; a root command with the password, then a wrong password; a reviewer deny → OVERRIDE; Ctrl-C mid-run; an `http_check` to a host they did not mention (it must reach Y/N); and the isolation check from `docs/deploy.md`.
 
 ## Out of scope
 

@@ -231,8 +231,8 @@ the only path to a shell. Settings live in `[tools]`, `[agent]`,
 
 **The agent account.** `run` executes as `muthur-agent`, an unprivileged system
 user reached with `sudo -n -u muthur-agent` (no sudo rights, not in `docker` or
-`wheel`). nftables drops all of its non-loopback egress and its DNS to loopback
-resolvers, so a hijacked command cannot exfiltrate over the network; agent
+`wheel`). nftables blocks all of its non-loopback egress and its DNS to loopback
+resolvers (TCP rejected with a reset, the rest dropped, so both fail at once), so a hijacked command cannot exfiltrate over the network; agent
 commands also run in their own session, with no controlling terminal, so they
 cannot reach the WY-60. With `as_root` the command runs through `sudo -S` as the
 operator, who types their password on the WY-60 for every call; MUTHUR never
@@ -240,7 +240,7 @@ caches it and it only ever reaches sudo's stdin. Network diagnostics are fixed
 tools that run as the operator, behind a target gate: a host must come from the
 operator's message or `[agent] net_allow`, or the call always ends at Y/N.
 A startup probe (each step limited to 5 s, result fixed for the session)
-checks the account and the isolation. Isolated means a connect to TEST-NET-1
+checks the account and the isolation. Isolated means a UDP datagram to TEST-NET-1
 fails with `Operation not permitted`; success, a timeout or `Network is
 unreachable` count as not isolated. If either fails, `run` is withheld and the `/DIRECT` banner says why. Files and install steps:
 `docs/deploy.md`.

@@ -78,18 +78,21 @@ fn files_have_expected_lines() {
         .filter(|l| !l.trim_start().starts_with('#') && l.contains("ALL="))
         .count();
     assert_eq!(grants, 1, "exactly one grant line");
+    // The chain's rules, in order. UDP must stay `drop`: the startup probe
+    // needs the immediate EPERM, and a rejected UDP send reports success.
     let nft = read("deploy/nftables/muthur-agent.nft");
-    assert!(
-        nft.find("oif \"lo\" accept").unwrap() < nft.find("meta skuid \"muthur-agent\" drop").unwrap(),
-        "loopback accept must precede the drop"
-    );
-    assert!(nft.contains("meta skuid \"muthur-agent\" drop"));
-    for proto in ["udp", "tcp"] {
-        let dns = format!("meta skuid \"muthur-agent\" {proto} dport {{ 53, 853 }} drop");
-        let at = nft.find(&dns).unwrap_or_else(|| panic!("missing: {dns}"));
-        assert!(at < nft.find("oif \"lo\" accept").unwrap(), "loopback DNS drop must precede the loopback accept");
-    }
-    assert!(nft.contains("oif \"lo\" accept"));
+    let rules: Vec<&str> = nft
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("meta ") || l.starts_with("oif "))
+        .collect();
+    assert_eq!(rules, [
+        "meta skuid \"muthur-agent\" udp dport { 53, 853 } drop",
+        "meta skuid \"muthur-agent\" tcp dport { 53, 853 } reject with tcp reset",
+        "oif \"lo\" accept",
+        "meta skuid \"muthur-agent\" meta l4proto tcp reject with tcp reset",
+        "meta skuid \"muthur-agent\" drop",
+    ]);
     let sysusers = read("deploy/sysusers.d/muthur-agent.conf");
     assert!(sysusers.contains("m muthur-agent adm"));
     assert!(sysusers.contains("m muthur-agent systemd-journal"));

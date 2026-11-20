@@ -54,7 +54,7 @@ Stopping alone is not enough: udev starts the getty again on the next replug or 
 
 - `sysusers.d` and `tmpfiles.d`: the `muthur-agent` system user (groups `adm`, `systemd-journal`; no sudo rights, not in `docker` or `wheel`) and its home `/var/lib/muthur-agent`.
 - `sudoers.d/muthur-agent`: lets the deploying user run commands as `muthur-agent` without a password. `OPERATOR` is replaced with that user, and `visudo -cf` checks the result before it goes to `/etc/sudoers.d/`.
-- `nftables/muthur-agent.nft`: drops all non-loopback egress from `muthur-agent`, and its DNS (ports 53 and 853) to loopback resolvers as well, installed as `/etc/nftables.d/muthur-agent.nft`.
+- `nftables/muthur-agent.nft`: blocks all non-loopback egress from `muthur-agent`, and its DNS (ports 53 and 853) to loopback resolvers as well. TCP is rejected with a reset, so connects fail at once with "Connection refused"; everything else is dropped, which fails at once with "Operation not permitted". Installed as `/etc/nftables.d/muthur-agent.nft`.
 
 The nft file is loaded at install time. To keep it across reboots, add this line to `/etc/nftables.conf` (and enable `nftables.service`):
 
@@ -62,20 +62,20 @@ The nft file is loaded at install time. To keep it across reboots, add this line
 include "/etc/nftables.d/*.nft"
 ```
 
-Check that the isolation works. This must fail with "Operation not permitted":
+Check that the isolation works. This must fail at once with "write error: Operation not permitted":
 
 ```sh
-sudo -u muthur-agent curl -m 3 https://example.com
+sudo -u muthur-agent bash -c 'exec 3>/dev/udp/192.0.2.1/9 && echo x >&3'
 ```
 
-"Could not resolve host" also proves the rule, since the account's DNS is dropped too.
+TCP fails at once too, with "Connection refused", but that is no proof of the rule: a remote host can refuse a connection as well. Only the UDP check proves it.
 
 Two loopback paths remain that the rule cannot close, so check them by hand:
 
 - **nss-resolve.** With `resolve` in the `hosts:` line of `/etc/nsswitch.conf` (the Arch default), glibc asks systemd-resolved over its varlink socket, not over UDP, and `getent hosts <name>` from `muthur-agent` still resolves. A name built from data leaks that data. Remove `resolve` from `hosts:` (keep `files myhostname dns`) or accept the gap.
 - **Local proxies.** Any HTTP or SOCKS proxy listening on loopback is reachable from the account. Do not run one on this host, or bind it to a non-loopback address only.
 
-At startup MUTHUR probes the account and the isolation, each step limited to 5 s, and the result is fixed for the session. Isolated means a connect to 192.0.2.1 fails with `Operation not permitted`; success, a timeout or `Network is unreachable` all count as not isolated. If either fails, `/DIRECT` shows `AGENT ACCOUNT OFFLINE -- SEE DEPLOY` or `AGENT NETWORK NOT ISOLATED -- SEE DEPLOY` and the `run` tool is withheld.
+At startup MUTHUR probes the account and the isolation, each step limited to 5 s, and the result is fixed for the session. Isolated means a UDP datagram to 192.0.2.1 fails with `Operation not permitted`; success, a timeout or `Network is unreachable` all count as not isolated. If either fails, `/DIRECT` shows `AGENT ACCOUNT OFFLINE -- SEE DEPLOY` or `AGENT NETWORK NOT ISOLATED -- SEE DEPLOY` and the `run` tool is withheld.
 
 ## 7. Checks before a release
 
