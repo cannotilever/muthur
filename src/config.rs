@@ -163,13 +163,16 @@ pub struct LlmOverrides {
 
 impl MuthurSection {
     fn with_overrides(&self, o: &LlmOverrides) -> MuthurSection {
+        fn set(v: &Option<String>) -> Option<&str> {
+            v.as_deref().filter(|s| !s.trim().is_empty())
+        }
         let mut c = self.clone();
         if let Some(v) = o.provider { c.provider = v; }
-        if let Some(v) = &o.base_url { c.base_url = Some(v.clone()); }
-        if let Some(v) = &o.model { c.model = Some(v.clone()); }
-        if let Some(v) = &o.api_key { c.api_key = Some(v.clone()); }
-        if let Some(v) = &o.effort { c.effort = v.clone(); }
-        if let Some(v) = &o.cache_ttl { c.cache_ttl = v.clone(); }
+        if let Some(v) = set(&o.base_url) { c.base_url = Some(v.to_string()); }
+        if let Some(v) = set(&o.model) { c.model = Some(v.to_string()); }
+        if let Some(v) = set(&o.api_key) { c.api_key = Some(v.to_string()); }
+        if let Some(v) = set(&o.effort) { c.effort = v.to_string(); }
+        if let Some(v) = set(&o.cache_ttl) { c.cache_ttl = v.to_string(); }
         if let Some(v) = o.max_tokens { c.max_tokens = v; }
         if let Some(v) = o.fallbacks { c.fallbacks = v; }
         if let Some(v) = o.context_tokens { c.context_tokens = v; }
@@ -190,7 +193,7 @@ impl MuthurSection {
         if self.reviewer.max_tokens.is_none() {
             c.max_tokens = 512;
         }
-        if c.provider == Provider::Anthropic && self.reviewer.model.is_none() {
+        if c.provider == Provider::Anthropic && self.reviewer.model.as_deref().is_none_or(|m| m.trim().is_empty()) {
             c.model = Some("claude-haiku-5-5".into());
         }
         c
@@ -457,6 +460,26 @@ mod tests {
         let c: Config =
             toml::from_str("[muthur]\nprovider = \"openai\"\nmodel = \"q\"\nbase_url = \"http://h\"\n").unwrap();
         assert_eq!(c.muthur.reviewer_cfg().model.as_deref(), Some("q"));
+    }
+
+    #[test]
+    fn blank_overrides_inherit() {
+        let c: Config = toml::from_str(
+            "[muthur]\nmodel = \"m\"\napi_key = \"k\"\nsystem_prompt = \"p\"\n[muthur.technical]\nmodel = \"\"\napi_key = \"  \"\n[muthur.reviewer]\nmodel = \" \"\nmax_tokens = 1000\n",
+        )
+        .unwrap();
+        let t = c.muthur.technical_cfg();
+        assert_eq!(t.model.as_deref(), Some("m"));
+        assert_eq!(t.api_key.as_deref(), Some("k"));
+        assert_eq!(t.system_prompt, None);
+        let r = c.muthur.reviewer_cfg();
+        assert_eq!(r.model.as_deref(), Some("claude-haiku-5-5"));
+        assert_eq!(r.max_tokens, 1000);
+    }
+
+    #[test]
+    fn warnings_ignore_invalid_toml() {
+        assert!(warnings("not [toml", true).is_empty());
     }
 
     #[test]
