@@ -26,6 +26,7 @@ struct H {
     clock: Rc<Cell<Instant>>,
     path: PathBuf,
     audit_path: PathBuf,
+    audit: crate::tools::audit::SharedAudit,
     _dir: tempfile::TempDir,
 }
 
@@ -56,7 +57,8 @@ fn harness_full(cfg: MuthurSection, tools: ToolsSection, audit_online: bool, pre
     let audit_path = dir.path().join("muthur/audit.jsonl");
     let mut log = ChatLog::open(path.clone()).unwrap();
     prefill(&mut log);
-    let audit = if audit_online { AuditLog::open(audit_path.clone()).unwrap() } else { AuditLog::offline() };
+    let audit = crate::tools::audit::shared(if audit_online { AuditLog::open(audit_path.clone()).unwrap() } else { AuditLog::offline() });
+    let shared_audit = audit.clone();
     let sent: Sent = Rc::default();
     let ran: Ran = Rc::default();
     let aborted = Rc::new(Cell::new(false));
@@ -74,7 +76,7 @@ fn harness_full(cfg: MuthurSection, tools: ToolsSection, audit_online: bool, pre
         run_tool: Box::new(move |req, id, inv| r.borrow_mut().push((req, id, inv))),
     };
     let t = MuthurTab::new(cfg, ToolDefs::new(&tools), "USCSS NOSTROMO", log, audit, deps);
-    H { t, sent, ran, aborted, clock, path, audit_path, _dir: dir }
+    H { t, sent, ran, aborted, clock, path, audit_path, audit: shared_audit, _dir: dir }
 }
 
 fn harness() -> H {
@@ -468,6 +470,29 @@ fn records(h: &H) -> Vec<serde_json::Value> {
 
 fn status_row(h: &mut H) -> String {
     screen(&mut h.t, 80, 40)[37].clone()
+}
+
+#[test]
+fn shared_audit_sees_muthur_entries() {
+    let mut h = harness();
+    submit(&mut h, "is nginx running");
+    tool_use(&mut h, 1, &[("c1", "service_status", json!({"unit": "nginx"}))]);
+    h.t.on_tool_done(1, "c1".into(), ok("active"));
+    assert!(h.audit.borrow().is_online());
+    // Another writer through the same handle lands in the same file.
+    let e = crate::tools::audit::AuditEntry {
+        tool: "cargo_start".into(),
+        args: json!({}),
+        tier: 1,
+        decision: crate::tools::audit::Decision::Auto,
+        argv: None,
+        exit: None,
+        ms: 0,
+        output: String::new(),
+    };
+    h.audit.borrow_mut().append(&e, "ts").unwrap();
+    let audit = std::fs::read_to_string(&h.audit_path).unwrap();
+    assert_eq!(audit.lines().count(), 2, "{audit}");
 }
 
 #[test]
@@ -869,7 +894,7 @@ fn audit_offline_between_prompt_and_yes_refuses() {
     let mut h = harness();
     restart_prompt(&mut h);
     // The audit log goes offline while the prompt is up.
-    h.t.audit = AuditLog::offline();
+    *h.t.audit.borrow_mut() = AuditLog::offline();
     h.tick(1100);
     h.t.handle_key(&Key::Char('y'));
     assert!(h.ran.borrow().is_empty(), "tier 2 must not run unaudited");

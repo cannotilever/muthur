@@ -1,0 +1,43 @@
+ USCSS TEST qq MU/TH/UR 6000                                  17 NOV 2137 14:02 
+
+ FOLDERS           l CARGO - 50 CONTAINERS (1-35) qqqqqqqqqqqqqqqqqqqqqqqqqqqqqk
+                   x NAME                                                STATUSx
+ lqqqqqqqqqqqqqqk  x>REFINERY-UNIT-03                                    EXITEDx
+ x MU/TH/UR     x  x REFINERY-UNIT-00                                    UP    x
+ x              x  x REFINERY-UNIT-01                                    UP    x
+ x              x  x REFINERY-UNIT-02                                    UP    x
+ mqqqqqqqqqqqqqqj  x REFINERY-UNIT-04                                    UP    x
+                   x REFINERY-UNIT-05                                    UP    x
+ lqqqqqqqqqqqqqqk  x REFINERY-UNIT-06                                    UP    x
+ x UTILITY      x  x AN-EXCEPTIONALLY-LONG-CONTAINER-NAME-THAT-WILL-NOT- UP    x
+ x              x  x REFINERY-UNIT-08                                    UP    x
+ x              x  x REFINERY-UNIT-09                                    UP    x
+ mqqqqqqqqqqqqqqj  x REFINERY-UNIT-10                                    UP    x
+                   x REFINERY-UNIT-11                                    UP    x
+ lqqqqqqqqqqqqqqk  x REFINERY-UNIT-12                                    UP    x
+ x CARGO        x  x REFINERY-UNIT-13                                    UP    x
+ x              tqqu REFINERY-UNIT-14                                    UP    x
+ x              x  x REFINERY-UNIT-15                                    UP    x
+ mqqqqqqqqqqqqqqj  x REFINERY-UNIT-16                                    UP    x
+                   x REFINERY-UNIT-17                                    UP    x
+ lqqqqqqqqqqqqqqk  x REFINERY-UNIT-18                                    UP    x
+ x SHELL        x  x REFINERY-UNIT-19                                    UP    x
+ x              x  x REFINERY-UNIT-20                                    UP    x
+ x              x  x REFINERY-UNIT-21                                    UP    x
+ mqqqqqqqqqqqqqqj  x REFINERY-UNIT-22                                    UP    x
+                   x REFINERY-UNIT-23                                    UP    x
+                   x REFINERY-UNIT-24                                    UP    x
+                   x REFINERY-UNIT-25                                    UP    x
+                   x REFINERY-UNIT-26                                    UP    x
+                   x REFINERY-UNIT-27                                    UP    x
+                   x REFINERY-UNIT-28                                    UP    x
+                   x REFINERY-UNIT-29                                    UP    x
+                   x REFINERY-UNIT-30                                    UP    x
+                   x REFINERY-UNIT-31                                    UP    x
+                   x REFINERY-UNIT-32                                    UP    x
+                   x REFINERY-UNIT-33                                    UP    x
+                   x REFINERY-UNIT-34                                    UP    x
+                   xREFINERY-UNIT-03: EXITED (137) 2 HOURS AGO                 x
+                   xU START  R RESTART  D STOP  L LOGS                         x
+                   mqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqj
+ F1-F4 SELECT .... ^] F FULLSCREEN .... SH-F15/16 SCROLL .... ^] ? HELP

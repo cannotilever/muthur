@@ -24,6 +24,11 @@ pub struct Snapshot {
     pub failed_units: Option<Vec<String>>,
     /// `None` when no container runtime answers.
     pub containers: Option<Vec<Container>>,
+    /// The runtime command that produced `containers` (`docker`/`podman`).
+    pub container_runtime: Option<String>,
+    /// When `containers` was probed. Containers are probed less often than
+    /// snapshots are sent, so consecutive snapshots repeat an older list.
+    pub containers_at: Option<std::time::Instant>,
 }
 
 /// Bytes used of bytes total.
@@ -62,8 +67,14 @@ pub struct Proc {
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Container {
+    /// Short ID: what commands target.
+    pub id: String,
+    /// As the runtime reports it; display sites upper-case it.
     pub name: String,
+    /// First word of `detail`, upper-cased (`UP`, `EXITED`, …).
     pub status: String,
+    /// Full status text, e.g. `Exited (137) 2 hours ago`.
+    pub detail: String,
 }
 
 pub trait MetricsSource {

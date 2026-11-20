@@ -36,6 +36,7 @@ pub enum Event {
     Tick,
     Llm { req_id: u64, ev: crate::llm::StreamEvent },
     ToolDone { req_id: u64, call_id: String, outcome: crate::tools::exec::ToolOutcome },
+    CargoDone { seq: u64, output: crate::tools::runner::RunOutput, ms: u64 },
 }
 
 /// The chrome is laid out for 80×43; smaller screens cannot hold it.
@@ -188,6 +189,10 @@ pub async fn event_loop<W: Write>(
                     app.on_tool_done(req_id, call_id, outcome);
                     dirty = true;
                 }
+                Some(Event::CargoDone { seq, output, ms }) => {
+                    app.on_cargo_done(seq, output, ms);
+                    dirty = true;
+                }
                 Some(Event::Hangup) | None => return Ok(()),
             },
             Some(ev) = pty_rx.recv() => {
@@ -280,6 +285,7 @@ fn build_muthur(
     ship: &str,
     tx: UnboundedSender<Event>,
     slot: crate::tools::exec::SnapshotSlot,
+    audit: crate::tools::audit::SharedAudit,
 ) -> anyhow::Result<crate::muthur::MuthurTab> {
     use crate::llm::{LlmError, StreamEvent, client::LlmClient};
     use crate::muthur::{Abort, MuthurDeps, MuthurTab};
@@ -322,8 +328,26 @@ fn build_muthur(
             });
         }),
     };
-    let audit = open_audit_log();
     Ok(MuthurTab::new(cfg.muthur.clone(), tools, ship, log, audit, deps))
+}
+
+/// The CARGO tab, running container commands on blocking tasks.
+fn build_cargo(tx: UnboundedSender<Event>, audit: crate::tools::audit::SharedAudit) -> crate::cargo::CargoTab {
+    use crate::tools::runner::{Runner, SystemRunner};
+    let deps = crate::cargo::CargoDeps {
+        run: Box::new(move |seq, argv, timeout, merged| {
+            let tx = tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let start = Instant::now();
+                let output = if merged { SystemRunner.run_merged(&argv, timeout) } else { SystemRunner.run(&argv, timeout) };
+                let ms = start.elapsed().as_millis() as u64;
+                let _ = tx.send(Event::CargoDone { seq, output, ms });
+            });
+        }),
+        now: Box::new(Instant::now),
+        timestamp: Box::new(|| chrono::Local::now().to_rfc3339()),
+    };
+    crate::cargo::CargoTab::new(deps, audit)
 }
 
 fn open_audit_log() -> crate::tools::audit::AuditLog {
@@ -444,8 +468,11 @@ pub fn run(cfg: &Config, strict: bool) -> anyhow::Result<()> {
     let chrome = ChromeView { ship_name: ship.clone(), year_offset: cfg.chrome.year_offset };
     let slot = crate::tools::exec::SnapshotSlot::default();
     start_metrics(cfg, &tx, slot.clone());
-    let muthur = build_muthur(cfg, &chrome.ship_name, tx.clone(), slot)?;
-    let mut app = App::assemble(chrome, UtilityTab::new(), muthur, shell);
+    // One audit log for every writer: MU/TH/UR's tools and CARGO's commands.
+    let audit = crate::tools::audit::shared(open_audit_log());
+    let muthur = build_muthur(cfg, &chrome.ship_name, tx.clone(), slot, audit.clone())?;
+    let cargo = build_cargo(tx.clone(), audit);
+    let mut app = App::assemble(chrome, muthur, UtilityTab::new(), cargo, shell);
     if cfg.chrome.splash {
         app = app.with_splash(splash_for(cfg, &ship));
     }
@@ -671,14 +698,8 @@ mod tests {
     #[tokio::test]
     async fn metrics_event_reaches_utility() {
         let (_, mut t) = setup();
-        let mut app = crate::app::App::with_tabs(
-            ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 },
-            [
-                Box::new(crate::utility::UtilityTab::new()),
-                Box::new(crate::app::PlaceholderTab { id: crate::app::TabId::Muthur }),
-                Box::new(crate::app::PlaceholderTab { id: crate::app::TabId::Shell }),
-            ],
-        );
+        let mut app = crate::app::App::new(ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 })
+            .with_tab(crate::app::TabId::Utility, Box::new(crate::utility::UtilityTab::new()));
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let snap = crate::metrics::Snapshot { host: "NOSTROMO".into(), cpu_cores: vec![1.0], ..Default::default() };
         tx.send(Event::Metrics(Box::new(snap))).unwrap();
@@ -700,12 +721,13 @@ mod tests {
         );
         let mut app = App::assemble(
             ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 },
-            crate::utility::UtilityTab::new(),
             m,
+            crate::utility::UtilityTab::new(),
+            crate::cargo::CargoTab::detached(),
             shell,
         );
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut ks = vec![Key::F(2)];
+        let mut ks = vec![Key::F(1)];
         ks.extend("HI".chars().map(Key::Char));
         ks.push(Key::Enter);
         tx.send(Event::Keys(ks)).unwrap();
@@ -756,7 +778,7 @@ mod tests {
         };
         let tools = crate::tools::ToolDefs::new(&Default::default());
         let audit = crate::tools::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap();
-        let m = MuthurTab::new(cfg, tools, "USCSS TEST", log, audit, deps);
+        let m = MuthurTab::new(cfg, tools, "USCSS TEST", log, crate::tools::audit::shared(audit), deps);
         let shell = crate::shell::ShellTab::new(
             crate::shell::ShellConfig { command: "sh".into(), args: vec!["-c".into(), "sleep 2".into()], scrollback: 10 },
             crate::scroll::HintSlot::default(),
@@ -764,12 +786,13 @@ mod tests {
         );
         let mut app = App::assemble(
             ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 },
-            crate::utility::UtilityTab::new(),
             m,
+            crate::utility::UtilityTab::new(),
+            crate::cargo::CargoTab::detached(),
             shell,
         );
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut ks = vec![Key::F(2)];
+        let mut ks = vec![Key::F(1)];
         ks.extend("HI".chars().map(Key::Char));
         ks.push(Key::Enter);
         tx.send(Event::Keys(ks)).unwrap();

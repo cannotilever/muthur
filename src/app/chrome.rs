@@ -1,7 +1,7 @@
 //! The personal-terminal chrome: title bar, FOLDERS sidebar, connector,
 //! footer, prefix strip and overlays. Laid out for 80×43.
 
-use super::tabs::TabId;
+use super::tabs::{TABS, TabId};
 use chrono::{Datelike, NaiveDateTime};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -18,10 +18,10 @@ pub const BOX_GAP: u16 = 1;
 /// The tab's area in windowed mode.
 pub const CONTENT: Rect = Rect { x: 19, y: 2, width: 61, height: 40 };
 
-const FOOTER: &str = "F1-F3 SELECT .... ^] F FULLSCREEN .... SH-F15/16 SCROLL .... ^] ? HELP";
+const FOOTER: &str = "F1-F4 SELECT .... ^] F FULLSCREEN .... SH-F15/16 SCROLL .... ^] ? HELP";
 const PREFIX: &str = "PREFIX: F FULL  R REDRAW  D DATE  ? HELP  Q QUIT  ] SEND ^]";
 const HELP: [&str; 11] = [
-    "F1 / F2 / F3     SELECT FOLDER",
+    "F1 - F4          SELECT FOLDER",
     "SH-F15 / SH-F16  SCROLL UP / DOWN",
     "^] F             FULLSCREEN",
     "^] R             REDRAW SCREEN",
@@ -56,7 +56,7 @@ pub fn title_bar(buf: &mut Buffer, width: u16, ship: &str, date: &str) {
     buf.set_stringn(0, TITLE_ROW, line, width as usize, reverse());
 }
 
-pub fn sidebar(buf: &mut Buffer, active: TabId, activity: &[bool; 3]) {
+pub fn sidebar(buf: &mut Buffer, active: TabId, activity: &[bool; TABS]) {
     buf.set_string(BOX_X, 2, "FOLDERS", Style::new());
     for id in TabId::ALL {
         let top = box_top(id);

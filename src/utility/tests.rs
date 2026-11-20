@@ -27,7 +27,9 @@ pub(crate) fn snap() -> Snapshot {
             Proc { pid: 77, name: "FISH".into(), cpu: 1.0, mem: 8 << 20 },
         ],
         failed_units: Some(vec!["AUTORANDR".into()]),
-        containers: Some(vec![Container { name: "WEB".into(), status: "UP".into() }]),
+        containers: Some(vec![Container { id: "1".into(), name: "web".into(), status: "UP".into(), ..Default::default() }]),
+        container_runtime: Some("docker".into()),
+        containers_at: None,
     }
 }
 
@@ -81,7 +83,7 @@ fn windowed_shows_all_panels() {
     }
     assert!(s.contains("UPTIME 3D 02:05") && s.contains("LOAD 0.42 0.38 0.30"), "{s}");
     assert!(s.contains("12.0G/32.0G") && s.contains("RESTIC") && s.contains("RX 4.5K/S"), "{s}");
-    assert!(s.contains("WEB UP"), "{s}");
+    assert!(s.contains("CONTAINERS 1 (SEE CARGO)"), "{s}");
     let (x, y) = find(&buf, "FAILED AUTORANDR").expect("failed unit");
     assert!(buf[(x, y)].modifier.contains(Modifier::REVERSED));
     // Nothing escapes the content pane.
@@ -216,5 +218,18 @@ fn print_layouts() {
     }
     for a in [WINDOWED, FULL] {
         println!("{}", text(&render(&mut t, a)));
+    }
+}
+
+#[test]
+fn many_containers_are_one_summary_line() {
+    let many: Vec<Container> = (0..60).map(|i| Container { id: format!("{i}"), name: format!("svc{i}"), status: "UP".into(), ..Default::default() }).collect();
+    let mut t = UtilityTab::new();
+    t.on_snapshot(Snapshot { containers: Some(many), ..snap() });
+    for area in [WINDOWED, FULL] {
+        let s = text(&render(&mut t, area));
+        assert!(s.contains("CONTAINERS 60 (SEE CARGO)"), "{s}");
+        assert!(!s.contains("SVC0"), "{s}");
+        assert!(s.contains(" DISKS ") && s.contains(" PROCESSES "), "{s}");
     }
 }

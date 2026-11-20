@@ -223,7 +223,7 @@ pub fn format_snapshot(s: &Snapshot) -> String {
         Some(c) => format!(
             "CONTAINERS {}",
             c.iter()
-                .map(|c| format!("{} {}", c.name, c.status))
+                .map(|c| format!("{} {}", c.name.to_uppercase(), c.status))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -233,6 +233,16 @@ pub fn format_snapshot(s: &Snapshot) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ship_status_upper_cases_container_names() {
+        use crate::metrics::Container;
+        let s = Snapshot {
+            containers: Some(vec![Container { id: "x".into(), name: "web".into(), status: "UP".into(), detail: "Up".into() }]),
+            ..Default::default()
+        };
+        assert!(format_snapshot(&s).contains("CONTAINERS WEB UP"), "{}", format_snapshot(&s));
+    }
+
     use super::*;
     use crate::tools::{UnitState, Verb};
 
