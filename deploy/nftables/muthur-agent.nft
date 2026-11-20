@@ -1,0 +1,8 @@
+# Drops all non-loopback egress from the muthur-agent account.
+table inet muthur_agent {
+	chain output {
+		type filter hook output priority 0; policy accept;
+		oif "lo" accept
+		meta skuid "muthur-agent" drop
+	}
+}

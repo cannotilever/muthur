@@ -48,6 +48,28 @@ sudo udevadm control --reload
 
 Stopping alone is not enough: udev starts the getty again on the next replug or boot, so move the rule aside until the cause is fixed. Put it back and run `make install-system` to restore.
 
-## 6. Sudoers for tier 2 tools
+## 6. The agent account
 
-Review `docs/sudoers.example`, then install it by hand (for example with `visudo -f /etc/sudoers.d/muthur`). It is never installed by the Makefile.
+`make install-system` also sets up the technical agent's account (skip it with `make AGENT=0 install-system`, and build without the agent with `make AGENT=0 deploy`). It installs, from `deploy/`:
+
+- `sysusers.d` and `tmpfiles.d`: the `muthur-agent` system user (groups `adm`, `systemd-journal`; no sudo rights, not in `docker` or `wheel`) and its home `/var/lib/muthur-agent`.
+- `sudoers.d/muthur-agent`: lets the deploying user run commands as `muthur-agent` without a password. `OPERATOR` is replaced with that user, and `visudo -cf` checks the result before it goes to `/etc/sudoers.d/`.
+- `nftables/muthur-agent.nft`: drops all non-loopback egress from `muthur-agent`, installed as `/etc/nftables.d/muthur-agent.nft`.
+
+The nft file is loaded at install time. To keep it across reboots, add this line to `/etc/nftables.conf` (and enable `nftables.service`):
+
+```
+include "/etc/nftables.d/*.nft"
+```
+
+Check that the isolation works. This must fail with "Operation not permitted":
+
+```sh
+sudo -u muthur-agent curl -m 3 https://example.com
+```
+
+At startup MUTHUR probes the account and the isolation. If either fails, `/DIRECT` shows `AGENT ACCOUNT OFFLINE -- SEE DEPLOY` or `AGENT NETWORK NOT ISOLATED -- SEE DEPLOY` and the `run` tool is withheld.
+
+## 7. Checks before a release
+
+`make check-deploy` lints the deploy files (udev, getty drop-in, sudoers template, nft, sysusers); each check is skipped when its tool is missing. `make check` runs `cargo clippy -D warnings` and `cargo test` with default features and again with `--no-default-features`.

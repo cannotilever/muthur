@@ -53,7 +53,7 @@ serial-getty@wy60 (38400, XON/XOFF, TERM=vt100)
   refuses to start if the file is group/world readable (must be `0600`).
   Annotated example with every key and its default: `docs/config.example.toml`.
 - Logs: `~/.local/state/muthur/muthur.log` (tracing, rotated) plus a separate
-  LLM tool-call audit log.
+  tool-call audit log.
 
 ## Modes
 
@@ -143,8 +143,11 @@ Single Rust crate, tokio runtime.
 | `tabs::shell` | PTY + virtual terminal + translation (see below). |
 | `llm` | Streaming LLM client (reqwest + rustls/ring, no aws-lc): Anthropic Messages and OpenAI-compatible protocols, SSE parsing, typed `LlmError`s, idle timeout. Each request runs as a tokio task and sends `Event::Llm` to the loop. Deploy note: Alpine needs the `ca-certificates` package for TLS. |
 | `chatlog` | Append-only JSONL chat history at `$XDG_STATE_HOME/muthur/chat.jsonl` (epochs, context window/trim, purge). |
-| `tools` | Tool registry and safety tiers (`mod`), fixed-argv execution with timeouts (`exec`, `runner`), JSONL audit log (`audit`). |
-| `agent` | Pure tool-turn state machine: round cap, tier-2 confirmation queue, aborts; emits effects the MU/TH/UR tab carries out. |
+| `ops` | Always built: `Runner` (fixed-argv execution, timeouts, stdin, kill), JSONL audit log, output `cap`. Shared with the Cargo tab. |
+| `tools` | Feature `agent`: per-agent tool registry, fixed tools (`exec`), `run` (`shell`), deny rules (`deny`), network target gate (`netgate`). |
+| `review` | Feature `agent`: the reviewer LLM request and verdict. |
+| `secret` | Feature `agent`: zeroize-on-drop password buffer. |
+| `agent` | Feature `agent`: pure tool-turn state machine: round cap, review / confirm / password / override stages, aborts; emits effects the MU/TH/UR tab carries out. |
 | `metrics` | `MetricsSource` trait; `LocalSource` for v1. |
 | `splash` | Boot splash state machine and renderer (logo, status lines, skip on key) that `App` plays before the TUI; also `muthur splash` preview. See [M6 spec](superpowers/specs/2026-11-19-m6-splash-deploy-design.md). |
 | `testcard` | `muthur testcard` subcommand: attribute / line-drawing probe and key-echo mode. |
@@ -200,7 +203,7 @@ All keys live in the `[muthur]` table of the config file (which must be
 
 - **vLLM:** set `context_tokens` to about 0.75 × the server's
   `max_model_len` (the chars/4 estimate is rough and the reply needs room).
-- **vLLM tools:** tool calling needs the server started with
+- **vLLM tools:** tool calling (both agents and the reviewer) needs the server started with
   `--enable-auto-tool-choice --tool-call-parser <parser>` (parser depends on the model).
 - **Chat log:** `~/.local/state/muthur/chat.jsonl`, mode `0600`, append-only
   JSONL. If it cannot be opened, a fresh temporary log is created in
@@ -215,46 +218,69 @@ All keys live in the `[muthur]` table of the config file (which must be
 
 ### Tools & safety
 
-MU/TH/UR can call tools in a bounded loop (`[tools].max_rounds`, default 8; at
-the cap the model is asked for a final answer with tools disabled). Tools are
-fixed argv commands; arbitrary shell execution never exists, and unit names are
-validated before they reach an argument list.
+Spec: docs/superpowers/specs/2026-11-19-m7-technical-agent-design.md
 
-| Tool | Tier | Does |
-|---|---|---|
-| `ship_status` | 1 | latest metrics snapshot (uptime, load, CPU, memory, disks, network, top processes, failed units, containers) |
-| `service_status` | 1 | `systemctl status` for one unit |
-| `journal` | 1 | last N journal lines for one unit (N capped by `journal_max_lines`) |
-| `list_units` | 1 | units in state running / failed / inactive |
-| `listening_ports` | 1 | listening sockets and their processes |
-| `restart_service`, `start_service`, `stop_service` | 2 | the verb on a unit from the `[tools.services]` allowlist; offered to the model only when its list is non-empty |
+Two agents share the MU/TH/UR tab. The **persona** (default) has read-only
+tools: `ship_status`, `containers`, `container_inspect`, `container_logs`
+(`[tools].max_rounds`, default 8). `/DIRECT` switches to the **technical
+agent**, which adds `run` (arbitrary shell command), `ping`, `traceroute`,
+`dns_lookup`, `port_check` and `http_check` (`[agent].max_rounds`, default 24);
+`/MUTHUR` switches back. Fixed tools use fixed argv with no shell; `run` is
+the only path to a shell. Settings live in `[tools]`, `[agent]`,
+`[muthur.technical]` and `[muthur.reviewer]` (see `docs/config.example.toml`).
 
-- **Tier 1** is read-only and runs automatically (5 s timeout).
-- **Tier 2** runs only after the operator answers `OVERRIDE REQUIRED -- <ACTION> -- CONFIRM Y/N`, shown in
-  reverse video on the status row. Y/N/Esc are ignored until one second after
-  the prompt is known to be on screen (the arming delay): the clock starts on
-  the second uncovered render showing it (draws wait for the output queue to
-  drain, so the first frame has then reached the wire), and it is reset while
-  the tab is hidden or covered by the help overlay, a message overlay or the
-  prefix strip (`Tab::set_obscured`). A keystroke typed before the prompt
-  appeared cannot approve it; Ctrl-C always aborts. Tier-2 commands run via
-  `sudo -n` or `doas -n` (`elevate`) with a 30 s timeout. `docs/sudoers.example`
-  has the matching sudoers / doas rules, one per verb and unit.
-- **Audit log:** every call, run or refused, is appended to
-  `$XDG_STATE_HOME/muthur/audit.jsonl` (`~/.local/state/muthur/audit.jsonl`,
-  mode 0600) when it is resolved, before its result goes back to the model.
-  A running command cannot be cancelled, so Ctrl-C during one writes an
-  `aborted` record at once (for a confirmed tier-2 call: with the issued
-  `argv` and `OUTCOME UNKNOWN`, shown as `ACCESS INTERRUPTED`), then a second
-  record (`confirmed` / `auto`) with the real exit and output when the command
-  finishes. If the log cannot be opened at startup or a write fails, tier-2
-  calls are refused (`AUDIT LOG OFFLINE`), including at the moment the
-  operator confirms.
-- **`[tools]` keys:** `enabled` (true), `max_rounds` (8), `elevate`
-  (`"sudo"` or `"doas"`), `journal_max_lines` (50), and `[tools.services]`
-  `restart` / `start` / `stop` lists. See `docs/config.example.toml`.
-- Tool turns are recorded in the chat log, so history redisplays them as
-  `ACCESSING: ...` notes and later requests replay them to the model.
+**The agent account.** `run` executes as `muthur-agent`, an unprivileged system
+user reached with `sudo -n -u muthur-agent` (no sudo rights, not in `docker` or
+`wheel`). nftables drops all of its non-loopback egress, so a hijacked command
+cannot exfiltrate. With `as_root` the command runs through `sudo -S` as the
+operator, who types their password on the WY-60 for every call; MUTHUR never
+caches it and it only ever reaches sudo's stdin. Network diagnostics are fixed
+tools that run as the operator, behind a target gate: a host must come from the
+operator's message or `[agent] net_allow`, or the call always ends at Y/N.
+A startup probe checks the account and the isolation; if either fails, `run`
+is withheld and the `/DIRECT` banner says why. Files and install steps:
+`docs/deploy.md`.
+
+**The gates**, in order; the first refusal ends the call:
+
+1. **Deny rules** (code, final): `USE AS_ROOT`, `CONTROL PLANE`, `LOCKOUT`,
+   `DESTRUCTIVE`, plus `[agent] deny` regexes. Not overridable; the reviewer
+   never sees the command.
+2. **Reviewer:** a second LLM (`[muthur.reviewer]`) returns allow / ask / deny
+   from the operator's message, the command, the reason and earlier calls.
+   It never sees tool output. If it is unreachable the call goes to `ask`
+   (`REVIEWER OFFLINE`), never `allow`.
+3. **Operator:** `ask` shows `CONFIRM -- <cmd> -- Y/N`; a root call shows
+   `CLEARANCE REQUIRED -- <cmd> -- PASSWORD:` instead; a reviewer `deny` can
+   be forced only by typing `OVERRIDE` (audited as `overridden`). All prompts
+   are reverse video on the status row. Keys are ignored until one second
+   after the prompt is known to be on screen (the arming delay): the clock
+   starts on the second uncovered render showing it and resets while the tab
+   is hidden or covered (`Tab::set_obscured`), so type-ahead cannot approve
+   anything. Ctrl-C always aborts.
+4. **Audit log:** every call, run or refused, is appended to
+   `~/.local/state/muthur/audit.jsonl` (mode 0600) with the agent, `as_root`,
+   reason, deny rule, review verdict and decision; root argv never holds the
+   password, and `run` output is kept up to 64 KB. If the log cannot be
+   written, root calls and overrides are refused (`AUDIT LOG OFFLINE`).
+   A running command cannot be cancelled cleanly, so Ctrl-C kills the sudo
+   process; for a root call the audit says `OUTCOME UNKNOWN`.
+
+The model sees at most 8 KB of `run` output (first 4 KB and last 4 KB); fixed
+tools are capped at 4 KB. Tool turns are recorded in the chat log, tagged by
+agent, and redisplayed as `RUN` lines.
+
+**The `agent` feature.** All LLM tool use, for both agents, sits behind the
+Cargo feature `agent`, on by default. `make AGENT=0 build` (or
+`cargo build --no-default-features`) builds MUTHUR as a plain chat: requests
+carry no tools, `/DIRECT` is an unknown command, and no code path can run a
+command for a model. CARGO's key-driven container actions are not agentic and
+stay. `make AGENT=0 install-system` skips the agent-account files. `make check`
+runs clippy and tests in both modes.
+
+**Known gap.** Everything the technical agent reads goes to the LLM provider.
+For sensitive hosts, point `[muthur.technical]` at a local vLLM. The reviewer
+sees commands but no output, so it can stay remote.
 
 ### Utility tab
 
@@ -302,8 +328,8 @@ Fed by the same snapshots as Utility. Says `NO CONTAINER RUNTIME` or
   refetches, Esc returns to the list.
 - **Audit** — every command goes into `audit.jsonl` (shared with MU/TH/UR's
   tools) as `cargo_start`/`cargo_restart`/`cargo_stop`/`cargo_logs`; restart
-  and stop are tier 2 `confirmed`, start and logs tier 1 `auto`. As with
-  MU/TH/UR's tier-2 tools, restart and stop are refused while the audit log
+  and stop are `confirmed`, start and logs `auto`. As with
+  root agent calls, restart and stop are refused while the audit log
   is offline (`AUDIT LOG OFFLINE`); a failed write is shown on the message line.
   A log fetch closed with Esc is still audited when it finishes, and commands
   still running when muthur quits are recorded as `aborted`.
@@ -334,9 +360,9 @@ for multi-server monitoring — tools then get a "which host" parameter.
 | **M2** | Shell tab: PTY, `vt100` translation, scrollback, fullscreen/SIGWINCH, passthrough. |
 | **M3** | Utility tab + `LocalSource`. |
 | **M4** | MU/TH/UR chat: streaming, persona, reveal, persistent log. |
-| **M5** | Tools: tier 1, then tier 2 with confirmation. |
+| **M5** | Tools: tier 1, then tier 2 with confirmation (replaced in M7). |
 | **M6** | Splash, deploy tooling (udev rule, getty override, fish snippet, make deploy). Spec: docs/superpowers/specs/2026-11-19-m6-splash-deploy-design.md |
-| **M7** | Polish, from operating a deployed build. |
+| **M7** | Technical agent: `/DIRECT`, `run` as `muthur-agent` or root, reviewer, network isolation, `agent` feature. Spec: docs/superpowers/specs/2026-11-19-m7-technical-agent-design.md |
 
 ## Deferred (post-v1)
 
