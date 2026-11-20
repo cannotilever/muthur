@@ -81,12 +81,3 @@ At startup MUTHUR probes the account and the isolation, each step limited to 5 s
 
 `make check-deploy` lints the deploy files (udev, getty drop-in, sudoers template, nft, sysusers); each check is skipped when its tool is missing. `make check` runs `cargo clippy -D warnings` and `cargo test` with default features and again with `--no-default-features`.
 
-### Hands-on checks on the WY-60 (M8, delegation)
-
-There is no earlier manual checklist; these are the M8 items. Run each in persona mode, with `[tools] delegate_report` set to `"relayed"`, then again with `"verbatim"`:
-
-1. Ask "check why nginx is failing". Expect `DELEGATING TO SCIENCE OFFICER`, one `SCIENCE OFFICER: <command>  [<verdict>]` line per command, and MU/TH/UR's own answer; in verbatim mode also `SCIENCE OFFICER REPORTS:` and the report.
-2. Make one step need root. Expect `CLEARANCE REQUIRED -- <cmd> -- PASSWORD:`, and that the password appears nowhere in `chat.jsonl` or `audit.jsonl`.
-3. Make the reviewer deny one step (and refuse the override). Expect the officer to report it, and MU/TH/UR to say so.
-4. Press Ctrl-C during a delegation. Expect `[INTERRUPTED]` on screen (and a `SCIENCE OFFICER: <command>  [ABORTED]` line for any command that had not started yet) and a ready prompt; `ABORTED BY OPERATOR` appears only in `chat.jsonl` and `audit.jsonl`.
-5. Restart MUTHUR. Expect the same exchange redisplayed with the same delegation lines, with no `DIRECT LINK` banner.
