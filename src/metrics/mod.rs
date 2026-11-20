@@ -77,6 +77,9 @@ pub struct Container {
     pub detail: String,
 }
 
+/// The latest snapshot, kept by the metrics poller for the fixed tools.
+pub type SnapshotSlot = std::sync::Arc<std::sync::Mutex<Option<Snapshot>>>;
+
 pub trait MetricsSource {
     fn snapshot(&mut self) -> anyhow::Result<Snapshot>;
 }

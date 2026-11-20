@@ -1,27 +1,39 @@
 //! MU/TH/UR: the LLM chat tab.
 pub mod text;
 pub mod reveal;
+#[cfg(feature = "agent")]
 mod turn;
+#[cfg(not(feature = "agent"))]
+mod plain;
 pub mod view;
 
 use crate::app::tabs::Tab;
 use crate::chatlog::{Assistant, ChatLog};
-use crate::config::{AgentSection, MuthurSection};
+#[cfg(feature = "agent")]
+use crate::config::AgentSection;
+use crate::config::MuthurSection;
 use crate::input::Key;
+#[cfg(feature = "agent")]
 use crate::agent::{Call, Orphan, Policy, Turn};
 use crate::llm::{ChatRequest, LlmError, StreamEvent};
 use crate::ops::AgentId;
 use crate::ops::audit::SharedAudit;
+#[cfg(feature = "agent")]
 use crate::review::{Review, ReviewInput, Verdict};
+#[cfg(feature = "agent")]
 use crate::secret::Secret;
+#[cfg(feature = "agent")]
 use crate::tools::shell::Probe;
+#[cfg(feature = "agent")]
 use crate::tools::{Invocation, ToolDefs};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Widget};
 use reveal::Reveal;
+#[cfg(feature = "agent")]
 use std::sync::Arc;
+#[cfg(feature = "agent")]
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 use text::{ascii_safe, display_text, Cleaner};
@@ -36,6 +48,19 @@ If you do not know, reply "DATA INSUFFICIENT." Never invent readings.
 You can query the ship's systems with your tools. Use them instead of guessing.
 You cannot change the ship. For changes, tell the operator to open a direct link with /DIRECT."#;
 
+/// The default persona prompt. Without the `agent` feature its last two
+/// lines, about the tools and `/DIRECT`, are left out.
+#[cfg(feature = "agent")]
+fn persona() -> &'static str {
+    PERSONA
+}
+
+#[cfg(not(feature = "agent"))]
+fn persona() -> &'static str {
+    PERSONA.rsplitn(3, '\n').last().unwrap_or(PERSONA)
+}
+
+#[cfg(feature = "agent")]
 /// The technical agent's system prompt; `{FACTS}` is filled with the host facts
 /// at the first `/DIRECT` of the session.
 pub const TECH_PROMPT: &str = r#"You are the technical agent of this server, working for its operator through a direct link on a text terminal.
@@ -50,25 +75,34 @@ Host facts:
 
 const NOTE_INTERRUPTED: &str = "[INTERRUPTED]";
 const NOTE_TRUNCATED: &str = "[TRANSMISSION TRUNCATED]";
+#[cfg(feature = "agent")]
 const HELP: &str = "/DIRECT  OPEN DIRECT LINK\n/MUTHUR  CLOSE DIRECT LINK\n/PURGE   CLEAR MEMORY BANKS\n/HELP    THIS LIST\n^C       ABORT TRANSMISSION\nPGUP/PGDN SCROLL";
+#[cfg(not(feature = "agent"))]
+const HELP: &str = "/PURGE   CLEAR MEMORY BANKS\n/HELP    THIS LIST\n^C       ABORT TRANSMISSION\nPGUP/PGDN SCROLL";
 const STAND_BY: &str = "PROCESSING — STAND BY";
+#[cfg(feature = "agent")]
 const IN_PROGRESS: &str = "INQUIRY IN PROGRESS";
+#[cfg(feature = "agent")]
 const LINK_CLOSED: &str = "DIRECT LINK CLOSED";
+#[cfg(feature = "agent")]
 const REVIEWER_OFFLINE: &str = "REVIEWER OFFLINE";
 /// The fewest columns worth showing of a prompt's command or note.
+#[cfg(feature = "agent")]
 const MIN_PART: usize = 8;
 const TICK: Duration = Duration::from_millis(100);
 
 /// The configured system prompt (blank counts as unset) or `PERSONA`, with "{SHIP}" filled in.
 pub fn system_prompt(cfg: &MuthurSection, ship: &str) -> String {
-    cfg.system_prompt().unwrap_or(PERSONA).replace("{SHIP}", ship)
+    cfg.system_prompt().unwrap_or(persona()).replace("{SHIP}", ship)
 }
 
+#[cfg(feature = "agent")]
 /// `[agent] system_prompt` (blank counts as unset) or `TECH_PROMPT`, `{FACTS}` still unfilled.
 pub fn tech_prompt(agent: &AgentSection) -> String {
     agent.system_prompt().unwrap_or(TECH_PROMPT).to_string()
 }
 
+#[cfg(feature = "agent")]
 fn link_banner(label: &str) -> String {
     format!("DIRECT LINK: {label}")
 }
@@ -87,6 +121,7 @@ fn strip_ship_time(s: &str) -> &str {
 
 pub type Abort = Box<dyn FnOnce()>;
 
+#[cfg(feature = "agent")]
 /// Starts one tool call: request id, call id, the call, a root `run`'s
 /// password, and the flag that cancels it.
 pub type RunTool = Box<dyn FnMut(u64, String, Invocation, Option<Secret>, Arc<AtomicBool>)>;
@@ -99,15 +134,18 @@ pub struct MuthurDeps {
     pub ship_time: Box<dyn Fn() -> String>,
     /// RFC 3339, for the log.
     pub timestamp: Box<dyn Fn() -> String>,
+    #[cfg(feature = "agent")]
     /// Start a tool run for request `req_id`; its outcome comes back through
     /// `on_tool_done`. A root `run` gets the operator's password, moved in;
     /// setting the flag cancels the run.
     pub run_tool: RunTool,
+    #[cfg(feature = "agent")]
     /// Ask the reviewer about a call of request `req_id`; the verdict comes
     /// back through `on_review`, and the returned closure cancels the review.
     pub review: Box<dyn FnMut(u64, String, ReviewInput) -> Abort>,
 }
 
+#[cfg(feature = "agent")]
 /// The technical agent behind `/DIRECT`.
 pub struct AgentDeps {
     pub defs: ToolDefs,
@@ -125,6 +163,7 @@ pub struct AgentDeps {
     pub reviewer_ready: bool,
 }
 
+#[cfg(feature = "agent")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Persona,
@@ -147,14 +186,19 @@ enum State {
     Streaming,
     /// `/PURGE` asked; waiting for Y.
     Confirm,
+    #[cfg(feature = "agent")]
     /// Tool results pending.
     Tools,
+    #[cfg(feature = "agent")]
     /// The reviewer is judging a call.
     Reviewing,
+    #[cfg(feature = "agent")]
     /// Y/N for a call the reviewer answered `ask` (the persona never gets here).
     Ask { call_id: String, prompt: String, note: String, drawn: bool, armed_at: Option<Instant> },
+    #[cfg(feature = "agent")]
     /// The operator's password for a root call.
     Password { call_id: String, prompt: String, secret: Secret, drawn: bool, armed_at: Option<Instant> },
+    #[cfg(feature = "agent")]
     /// The reviewer denied; typing OVERRIDE forces the call.
     OverridePrompt { call_id: String, prompt: String, note: String, typed: String, drawn: bool, armed_at: Option<Instant> },
 }
@@ -166,6 +210,7 @@ impl PartialEq for State {
     }
 }
 
+#[cfg(feature = "agent")]
 impl State {
     /// The arming fields of a tool prompt.
     fn arming(&mut self) -> Option<(&mut bool, &mut Option<Instant>)> {
@@ -197,26 +242,40 @@ pub struct MuthurTab {
     system: String,
     log: ChatLog,
     deps: MuthurDeps,
+    #[cfg(feature = "agent")]
     tools: ToolDefs,
+    #[cfg(feature = "agent")]
     /// The persona's policy: no deny rules (it has no `run`), no extra hosts.
     policy: Policy,
+    #[cfg(feature = "agent")]
     tech: AgentDeps,
+    #[cfg(feature = "agent")]
     /// The technical system prompt, fixed at the first `/DIRECT`.
     tech_system: Option<String>,
+    #[cfg(feature = "agent")]
     mode: Mode,
+    /// The audit log (tool calls only, so unused without the `agent` feature).
+    #[cfg_attr(not(feature = "agent"), allow(dead_code))]
     audit: SharedAudit,
+    #[cfg(feature = "agent")]
     /// Cancels the review in flight.
     review_abort: Option<Abort>,
+    #[cfg(feature = "agent")]
     /// The last verdict accepted, by call id, for the pending block of a prompt.
     last_review: Option<(String, Review)>,
+    #[cfg(feature = "agent")]
     /// The password just given, until the root `Run` for its call takes it.
     secret: Option<(String, Secret)>,
+    #[cfg(feature = "agent")]
     /// Cancels the command running now.
     cancel: Option<Arc<AtomicBool>>,
+    #[cfg(feature = "agent")]
     /// The agent turn of the inquiry in progress.
     turn: Option<Turn>,
+    #[cfg(feature = "agent")]
     /// Tool calls received in the current stream.
     calls: Vec<Call>,
+    #[cfg(feature = "agent")]
     /// Calls aborted while running, by request id: their outcomes are still audited.
     orphans: Vec<(u64, Orphan)>,
     transcript: Vec<Entry>,
@@ -251,34 +310,45 @@ pub struct MuthurTab {
 impl MuthurTab {
     pub fn new(
         cfg: MuthurSection,
-        persona_tools: ToolDefs,
+        #[cfg(feature = "agent")] persona_tools: ToolDefs,
         ship: &str,
         log: ChatLog,
         audit: SharedAudit,
         deps: MuthurDeps,
-        tech: AgentDeps,
+        #[cfg(feature = "agent")] tech: AgentDeps,
     ) -> Self {
-        let transcript = redisplay(&log, &cfg, &tech.label);
-        Self {
+        let mut tab = Self {
             system: system_prompt(&cfg, ship),
             reveal: Reveal::new(cfg.reveal_cps),
             cfg,
             log,
             deps,
+            #[cfg(feature = "agent")]
             tools: persona_tools,
+            #[cfg(feature = "agent")]
             policy: Policy { deny: None, net_allow: Vec::new() },
+            #[cfg(feature = "agent")]
             tech,
+            #[cfg(feature = "agent")]
             tech_system: None,
+            #[cfg(feature = "agent")]
             mode: Mode::Persona,
             audit,
+            #[cfg(feature = "agent")]
             review_abort: None,
+            #[cfg(feature = "agent")]
             last_review: None,
+            #[cfg(feature = "agent")]
             secret: None,
+            #[cfg(feature = "agent")]
             cancel: None,
+            #[cfg(feature = "agent")]
             turn: None,
+            #[cfg(feature = "agent")]
             calls: Vec::new(),
+            #[cfg(feature = "agent")]
             orphans: Vec::new(),
-            transcript,
+            transcript: Vec::new(),
             input: String::new(),
             cursor: 0,
             state: State::Ready,
@@ -297,9 +367,17 @@ impl MuthurTab {
             last_total: 0,
             cursor_pos: None,
             obscured: false,
-        }
+        };
+        tab.transcript = tab.redisplay();
+        tab
     }
 
+    #[cfg(feature = "agent")]
+    fn redisplay(&self) -> Vec<Entry> {
+        redisplay(&self.log, &self.cfg, &self.tech.label)
+    }
+
+    #[cfg(feature = "agent")]
     fn direct(&self) -> bool {
         self.mode == Mode::Direct
     }
@@ -309,6 +387,7 @@ impl MuthurTab {
     }
 
     /// The connection settings of the current agent.
+    #[cfg(feature = "agent")]
     fn llm_cfg(&self) -> &MuthurSection {
         if self.direct() { &self.tech.cfg } else { &self.cfg }
     }
@@ -320,7 +399,7 @@ impl MuthurTab {
 
     /// An inquiry is in progress: streaming, reviewing, running tools or prompting.
     fn in_turn(&self) -> bool {
-        self.busy() || self.state.prompting() || matches!(self.state, State::Tools | State::Reviewing)
+        self.busy() || self.state.prompting() || self.tool_phase().is_some()
     }
 
     /// Persona text is uppercased when configured; direct mode keeps its case.
@@ -404,9 +483,31 @@ impl MuthurTab {
             self.activity = true;
         }
         self.abort = None;
-        self.turn = None;
+        self.drop_turn();
         self.state = State::Ready;
         self.settle();
+    }
+
+    /// The M4 completion path.
+    fn finish(&mut self, stop: Option<&crate::llm::Stop>, truncated: bool) {
+        match stop {
+            Some(crate::llm::Stop::Refusal) => self.status_flash = Some(unable(LlmError::Restricted.reason())),
+            Some(crate::llm::Stop::MaxTokens) => self.pending_notes.push(NOTE_TRUNCATED.into()),
+            _ => {}
+        }
+        if truncated {
+            self.pending_notes.push(NOTE_TRUNCATED.into());
+        }
+        self.abort = None;
+        self.drop_turn();
+        self.state = State::Ready;
+        self.activity = true;
+        self.settle();
+    }
+
+    #[cfg(feature = "agent")]
+    fn drop_turn(&mut self) {
+        self.turn = None;
     }
 
     fn enter(&mut self) {
@@ -416,8 +517,7 @@ impl MuthurTab {
             return;
         }
         let cmd = line.to_uppercase();
-        if cmd == "/DIRECT" || cmd == "/MUTHUR" {
-            self.switch(if cmd == "/DIRECT" { Mode::Direct } else { Mode::Persona });
+        if self.link_command(&cmd) {
             return;
         }
         if self.in_turn() {
@@ -438,7 +538,20 @@ impl MuthurTab {
         }
     }
 
+    /// `/DIRECT` and `/MUTHUR`: true when `cmd` is one, now handled.
+    #[cfg(feature = "agent")]
+    fn link_command(&mut self, cmd: &str) -> bool {
+        let to = match cmd {
+            "/DIRECT" => Mode::Direct,
+            "/MUTHUR" => Mode::Persona,
+            _ => return false,
+        };
+        self.switch(to);
+        true
+    }
+
     /// `/DIRECT` or `/MUTHUR`: switch agents between inquiries.
+    #[cfg(feature = "agent")]
     fn switch(&mut self, to: Mode) {
         if self.in_turn() {
             self.status_flash = Some(IN_PROGRESS.into());
@@ -467,6 +580,7 @@ impl MuthurTab {
     }
 
     /// The current agent's tool definitions.
+    #[cfg(feature = "agent")]
     fn defs(&self) -> &ToolDefs {
         if self.direct() { &self.tech.defs } else { &self.tools }
     }
@@ -485,12 +599,31 @@ impl MuthurTab {
             self.status_flash = Some(unable(LlmError::Transmission.reason()));
             return;
         }
-        let max_rounds = if self.direct() { self.tech.max_rounds } else { self.tools.max_rounds() };
-        self.turn = Some(Turn::new(max_rounds, agent, line.clone()));
+        let forced_final = self.begin_turn(agent, &line);
         self.transcript.push(if self.direct() { Entry::Command(line) } else { Entry::User(line) });
         self.clear_input();
         self.pending_notes.clear();
-        self.spawn_request(max_rounds == 0);
+        self.spawn_request(forced_final);
+    }
+
+    /// Start the agent turn of an inquiry; true when it allows no tool rounds.
+    #[cfg(feature = "agent")]
+    fn begin_turn(&mut self, agent: AgentId, line: &str) -> bool {
+        let max_rounds = if self.direct() { self.tech.max_rounds } else { self.tools.max_rounds() };
+        self.turn = Some(Turn::new(max_rounds, agent, line.to_string()));
+        max_rounds == 0
+    }
+
+    /// For the next request of the turn: the system prompt, the tools (as
+    /// hashed for the log's epochs, and as sent) and whether past exchanges go
+    /// report-only. Clears the tool calls of the last stream.
+    #[cfg(feature = "agent")]
+    fn request_parts(&mut self) -> (String, String, Vec<crate::llm::ToolSpec>, bool) {
+        self.calls.clear();
+        let direct = self.direct();
+        let system = if direct { self.tech_system.clone().unwrap_or_default() } else { self.system.clone() };
+        let defs = self.defs();
+        (system, defs.json(), defs.specs().to_vec(), direct)
     }
 
     /// Send the next request of the turn, from the log's message window.
@@ -499,17 +632,13 @@ impl MuthurTab {
         self.reveal.reset();
         self.cleaner = Cleaner::new();
         self.partial_raw.clear();
-        self.calls.clear();
         self.revealing = true;
-        let direct = self.direct();
+        let (system, tools_json, specs, report_only_past) = self.request_parts();
         let cfg = self.llm_cfg();
         let (provider, budget) = (cfg.provider, cfg.context_tokens);
         let model = cfg.model().unwrap_or_default().to_string();
-        let system = if direct { self.tech_system.clone().unwrap_or_default() } else { self.system.clone() };
-        let defs = self.defs();
-        let (tools_json, specs) = (defs.json(), defs.specs().to_vec());
         let agent = self.agent();
-        let messages = match self.log.window(agent, provider, &model, &system, &tools_json, budget, direct) {
+        let messages = match self.log.window(agent, provider, &model, &system, &tools_json, budget, report_only_past) {
             Ok(m) => m,
             Err(e) => {
                 tracing::error!("chat log: cannot build message window: {e}");
@@ -572,6 +701,7 @@ impl MuthurTab {
 
     /// The lines shown under the transcript while a prompt is up: the call's
     /// full command or label, then the reviewer's note when there is one.
+    #[cfg(feature = "agent")]
     fn pending_block(&self) -> Vec<String> {
         let (call_id, prompt) = match &self.state {
             State::Ask { call_id, prompt, .. }
@@ -595,58 +725,77 @@ impl MuthurTab {
         std::iter::once(prompt.clone()).chain(note).collect()
     }
 
-    /// The status row at `width` columns, and whether it is reverse video.
-    fn status_text(&self, now: Instant, width: usize) -> (String, bool) {
-        // A tool prompt: `<head> -- <part…> -- <tail>`, the part cut to fit.
-        // Too narrow for a useful part, it is left out, then the head too:
-        // the tail says what to type.
+    /// The status row of a tool prompt at `width` columns: `<head> -- <part…>
+    /// -- <tail>`, the part cut to fit. Too narrow for a useful part, it is
+    /// left out, then the head too: the tail says what to type.
+    #[cfg(feature = "agent")]
+    fn prompt_status(&self, width: usize) -> Option<String> {
         let prompt = |head: &str, part: &str, tail: String| {
             let fixed = head.len() + tail.len() + 8;
-            let text = if width >= fixed + MIN_PART {
+            if width >= fixed + MIN_PART {
                 format!("{head} -- {} -- {tail}", fit(part, width - fixed))
             } else if width >= head.len() + 4 + tail.len() {
                 format!("{head} -- {tail}")
             } else {
                 tail
-            };
-            (text, true)
+            }
         };
         match &self.state {
-            State::Confirm => return ("CONFIRM Y/N".into(), true),
-            State::Ask { prompt: cmd, .. } => return prompt("CONFIRM", cmd, "Y/N".into()),
+            State::Ask { prompt: cmd, .. } => Some(prompt("CONFIRM", cmd, "Y/N".into())),
             State::Password { prompt: cmd, secret, .. } => {
-                return prompt("CLEARANCE REQUIRED", cmd, format!("PASSWORD: {}", "*".repeat(secret.chars())));
+                Some(prompt("CLEARANCE REQUIRED", cmd, format!("PASSWORD: {}", "*".repeat(secret.chars()))))
             }
             State::OverridePrompt { note, typed, .. } => {
                 let mut tail = "TYPE OVERRIDE TO FORCE, ESC TO REFUSE".to_string();
                 if !typed.is_empty() {
                     tail = format!("{tail} {}", ascii_safe(typed));
                 }
-                return prompt("DENIED BY REVIEWER", note, tail);
+                Some(prompt("DENIED BY REVIEWER", note, tail))
             }
-            _ => {}
+            _ => None,
+        }
+    }
+
+    /// The status word while a tool round is under way: the reviewer judging
+    /// a call, or a call running.
+    #[cfg(feature = "agent")]
+    fn tool_phase(&self) -> Option<&'static str> {
+        match self.state {
+            State::Reviewing => Some("REVIEWING"),
+            State::Tools if self.direct() => Some("EXECUTING"),
+            State::Tools => Some("ACCESSING"),
+            _ => None,
+        }
+    }
+
+    /// The status row at `width` columns, and whether it is reverse video.
+    fn status_text(&self, now: Instant, width: usize) -> (String, bool) {
+        if self.state == State::Confirm {
+            return ("CONFIRM Y/N".into(), true);
+        }
+        if let Some(p) = self.prompt_status(width) {
+            return (p, true);
         }
         if let Some(f) = &self.status_flash {
             return (ascii_safe(f), true);
         }
-        let s = match self.state {
-            State::Waiting | State::Tools | State::Reviewing => {
+        let word = match self.state {
+            State::Streaming => return ("RECEIVING".into(), false),
+            State::Waiting => Some("PROCESSING"),
+            _ => self.tool_phase(),
+        };
+        let s = match word {
+            Some(word) => {
                 let secs = self.started.map_or(0, |t| now.saturating_duration_since(t).as_secs());
-                let word = match self.state {
-                    State::Reviewing => "REVIEWING",
-                    State::Tools if self.direct() => "EXECUTING",
-                    State::Tools => "ACCESSING",
-                    _ => "PROCESSING",
-                };
                 format!("{word}{}", ".".repeat(1 + (secs % 3) as usize))
             }
-            State::Streaming => "RECEIVING".into(),
-            _ => "READY FOR INQUIRY".into(),
+            None => "READY FOR INQUIRY".into(),
         };
         (s, false)
     }
 }
 
+#[cfg(feature = "agent")]
 /// `s` on one row in at most `max` columns: ASCII, controls as spaces, and cut
 /// with `…` (drawn as `...`) when too long.
 fn fit(s: &str, max: usize) -> String {
@@ -663,6 +812,7 @@ fn fit(s: &str, max: usize) -> String {
 /// The transcript rebuilt from the chat log: both agents' exchanges in log
 /// order, with a banner wherever the agent changes. MUTHUR starts in persona
 /// mode, so a log that ends in direct mode gets a closing banner.
+#[cfg(feature = "agent")]
 fn redisplay(log: &ChatLog, cfg: &MuthurSection, label: &str) -> Vec<Entry> {
     let mut transcript = Vec::new();
     let mut prev = AgentId::Muthur;
@@ -680,25 +830,30 @@ fn redisplay(log: &ChatLog, cfg: &MuthurSection, label: &str) -> Vec<Entry> {
             transcript.push(Entry::User(user));
             transcript.extend(ex.tools.iter().map(|r| Entry::Note(turn::tool_note(r))));
         }
-        let Some((text, stop)) = ex.reply else { continue };
-        if stop == "error" {
-            continue;
-        }
-        let shown = display_text(&text, cfg.uppercase && !tech);
-        let shown = shown.trim_end_matches('\n');
-        if !shown.is_empty() {
-            transcript.push(Entry::Reply(shown.to_string()));
-        }
-        match stop.as_str() {
-            "interrupted" => transcript.push(Entry::Note(NOTE_INTERRUPTED.into())),
-            "max_tokens" => transcript.push(Entry::Note(NOTE_TRUNCATED.into())),
-            _ => {}
-        }
+        push_reply(&mut transcript, ex.reply, cfg.uppercase && !tech);
     }
     if prev == AgentId::Tech {
         transcript.push(Entry::Note(LINK_CLOSED.into()));
     }
     transcript
+}
+
+/// A logged reply as redisplayed, with its note; nothing for a failed request.
+fn push_reply(transcript: &mut Vec<Entry>, reply: Option<(String, String)>, uppercase: bool) {
+    let Some((text, stop)) = reply else { return };
+    if stop == "error" {
+        return;
+    }
+    let shown = display_text(&text, uppercase);
+    let shown = shown.trim_end_matches('\n');
+    if !shown.is_empty() {
+        transcript.push(Entry::Reply(shown.to_string()));
+    }
+    match stop.as_str() {
+        "interrupted" => transcript.push(Entry::Note(NOTE_INTERRUPTED.into())),
+        "max_tokens" => transcript.push(Entry::Note(NOTE_TRUNCATED.into())),
+        _ => {}
+    }
 }
 
 impl Tab for MuthurTab {
@@ -844,7 +999,7 @@ impl Tab for MuthurTab {
                 self.reveal.push(&s, (self.deps.now)());
                 self.state = State::Streaming;
             }
-            StreamEvent::ToolCall { id, name, input } => self.calls.push(Call { id, name, input }),
+            StreamEvent::ToolCall { id, name, input } => self.tool_call(id, name, input),
             StreamEvent::Done { stop, model, raw } => self.stream_done(stop, model, raw),
             StreamEvent::Error(e) => {
                 self.abort_turn();
@@ -853,10 +1008,12 @@ impl Tab for MuthurTab {
         }
     }
 
+    #[cfg(feature = "agent")]
     fn on_tool_done(&mut self, req_id: u64, call_id: String, o: crate::tools::ToolOutcome) {
         self.tool_done(req_id, &call_id, o);
     }
 
+    #[cfg(feature = "agent")]
     fn on_review(&mut self, req_id: u64, call_id: String, review: Review) {
         self.review_done(req_id, &call_id, review);
     }
@@ -870,7 +1027,7 @@ impl Tab for MuthurTab {
     }
 
     fn tick_interval(&self) -> Option<Duration> {
-        let animating = self.state.prompting() || matches!(self.state, State::Waiting | State::Tools | State::Reviewing);
+        let animating = self.state.prompting() || self.state == State::Waiting || self.tool_phase().is_some();
         (!self.reveal.caught_up() || animating).then_some(TICK)
     }
 }

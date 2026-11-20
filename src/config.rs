@@ -486,6 +486,21 @@ mod tests {
         assert!(warnings("[agent]\nlabel=\"X\"\n", true).is_empty());
     }
 
+    /// The sections of the agent build warn only in a build without it, and
+    /// load either way: one config file serves both builds.
+    #[test]
+    fn agent_sections_warn_when_not_built() {
+        let text = "[tools]\nenabled = true\n[agent]\nlabel = \"X\"\n[muthur.technical]\nmodel = \"m\"\n[muthur.reviewer]\nmodel = \"r\"\n";
+        let w = warnings(text, cfg!(feature = "agent"));
+        if cfg!(feature = "agent") {
+            assert!(w.is_empty(), "{w:?}");
+        } else {
+            assert_eq!(w, ["agent feature not built; [tools] [agent] [muthur.technical] [muthur.reviewer] ignored"]);
+        }
+        let (_d, p) = write_cfg(text, 0o600);
+        assert_eq!(load(&p).unwrap().agent.label, "X");
+    }
+
     #[test]
     fn tools_section_parses_and_defaults() {
         let d = Config::default().tools;

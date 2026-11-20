@@ -35,7 +35,9 @@ pub enum Event {
     Hangup,
     Tick,
     Llm { req_id: u64, ev: crate::llm::StreamEvent },
+    #[cfg(feature = "agent")]
     ToolDone { req_id: u64, call_id: String, outcome: crate::tools::ToolOutcome },
+    #[cfg(feature = "agent")]
     Review { req_id: u64, call_id: String, review: crate::review::Review },
     CargoDone { seq: u64, output: crate::ops::runner::RunOutput, ms: u64 },
 }
@@ -57,7 +59,7 @@ pub fn spawn_metrics(
     mut source: Box<dyn MetricsSource + Send>,
     interval: Duration,
     tx: UnboundedSender<Event>,
-    slot: crate::tools::SnapshotSlot,
+    slot: crate::metrics::SnapshotSlot,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut errors = 0;
@@ -198,10 +200,12 @@ pub async fn event_loop<W: Write>(
                     app.on_llm(req_id, ev);
                     dirty = true;
                 }
+                #[cfg(feature = "agent")]
                 Some(Event::ToolDone { req_id, call_id, outcome }) => {
                     app.on_tool_done(req_id, call_id, outcome);
                     dirty = true;
                 }
+                #[cfg(feature = "agent")]
                 Some(Event::Review { req_id, call_id, review }) => {
                     app.on_review(req_id, call_id, review);
                     dirty = true;
@@ -301,15 +305,26 @@ fn open_chat_log() -> anyhow::Result<crate::chatlog::ChatLog> {
 }
 
 /// What startup settles for the technical agent before the TUI starts.
+#[cfg(feature = "agent")]
 struct TechStartup {
     policy: crate::agent::Policy,
     probe: crate::tools::shell::Probe,
     reviewer_ready: bool,
 }
 
+/// Without the `agent` feature there is no technical agent to check.
+#[cfg(not(feature = "agent"))]
+struct TechStartup;
+
+#[cfg(not(feature = "agent"))]
+fn tech_startup(_cfg: &Config, _config_path: &std::path::Path) -> anyhow::Result<TechStartup> {
+    Ok(TechStartup)
+}
+
 /// Startup checks for the technical agent, on the calling thread: the deny
 /// rules and `net_allow` (a bad entry is a startup error), the reviewer's
 /// readiness and the agent-account probe.
+#[cfg(feature = "agent")]
 fn tech_startup(cfg: &Config, config_path: &std::path::Path) -> anyhow::Result<TechStartup> {
     let ctx = deny_ctx(config_path, dirs::state_dir().as_deref());
     let policy = tech_policy(&cfg.agent, &ctx)?;
@@ -328,6 +343,7 @@ fn tech_startup(cfg: &Config, config_path: &std::path::Path) -> anyhow::Result<T
 
 /// The runtime values the CONTROL PLANE rule protects. An unknown value is
 /// left empty, and `DenyRules` skips empty patterns.
+#[cfg(feature = "agent")]
 fn deny_ctx(config_path: &std::path::Path, state_base: Option<&std::path::Path>) -> crate::tools::deny::DenyCtx {
     crate::tools::deny::DenyCtx {
         // `--config` may be relative; commands name it by its full path.
@@ -340,6 +356,7 @@ fn deny_ctx(config_path: &std::path::Path, state_base: Option<&std::path::Path>)
 
 /// The technical agent's policy, with its deny rules always built. A bad
 /// `[agent] deny` regex or `net_allow` host is an error naming the entry.
+#[cfg(feature = "agent")]
 fn tech_policy(agent: &crate::config::AgentSection, ctx: &crate::tools::deny::DenyCtx) -> anyhow::Result<crate::agent::Policy> {
     if let Some((i, h)) = agent.net_allow.iter().enumerate().find(|(_, h)| !crate::tools::netgate::valid_host(h)) {
         anyhow::bail!("bad [agent] net_allow entry {} ({h:?}): not a valid host", i + 1);
@@ -348,11 +365,13 @@ fn tech_policy(agent: &crate::config::AgentSection, ctx: &crate::tools::deny::De
     Ok(crate::agent::Policy { deny: Some(deny), net_allow: agent.net_allow.clone() })
 }
 
+#[cfg(feature = "agent")]
 type ReviewFn = Box<dyn FnMut(u64, String, crate::review::ReviewInput) -> crate::muthur::Abort>;
 
 /// Reviews run as tasks on the reviewer's client and come back as
 /// `Event::Review`; aborting cancels the request. A reviewer that is not
 /// ready answers REVIEWER OFFLINE at once.
+#[cfg(feature = "agent")]
 fn review_dispatch(cfg: &crate::config::MuthurSection, ready: bool, tx: UnboundedSender<Event>) -> ReviewFn {
     use crate::review::Review;
     let model = cfg.model().unwrap_or_default().to_string();
@@ -382,24 +401,13 @@ fn llm_client(cfg: crate::config::MuthurSection, who: &str) -> Option<std::sync:
         .map(std::sync::Arc::new)
 }
 
-fn build_muthur(
-    cfg: &Config,
-    ship: &str,
-    tx: UnboundedSender<Event>,
-    slot: crate::tools::SnapshotSlot,
-    audit: crate::ops::audit::SharedAudit,
-    startup: TechStartup,
-) -> anyhow::Result<crate::muthur::MuthurTab> {
+type Client = Option<std::sync::Arc<crate::llm::client::LlmClient>>;
+
+/// Starts each agent's requests on its client; an agent without one gets NO CARRIER.
+fn spawner(persona: Client, technical: Client, tx: UnboundedSender<Event>) -> Box<dyn FnMut(u64, crate::ops::AgentId, crate::llm::ChatRequest) -> crate::muthur::Abort> {
     use crate::llm::{LlmError, StreamEvent};
-    use crate::muthur::{Abort, AgentDeps, MuthurDeps, MuthurTab};
     use crate::ops::AgentId;
-    let log = open_chat_log()?;
-    let tool_tx = tx.clone();
-    let tech_cfg = cfg.muthur.technical_cfg();
-    let persona = llm_client(cfg.muthur.clone(), "persona");
-    let technical = llm_client(tech_cfg.clone(), "technical");
-    let review = review_dispatch(&cfg.muthur.reviewer_cfg(), startup.reviewer_ready, tx.clone());
-    let spawn: Box<dyn FnMut(u64, AgentId, crate::llm::ChatRequest) -> Abort> = Box::new(move |req_id, agent, req| {
+    Box::new(move |req_id, agent, req| {
         let client = match agent {
             AgentId::Muthur => &persona,
             AgentId::Tech => &technical,
@@ -414,14 +422,56 @@ fn build_muthur(
                 Box::new(|| {})
             }
         }
-    });
+    })
+}
+
+/// The ship's time for logged inquiries, e.g. "18 NOV 2137 14:02".
+fn ship_time(cfg: &Config) -> Box<dyn Fn() -> String> {
     let year_offset = cfg.chrome.year_offset;
+    Box::new(move || crate::app::chrome::format_date(chrono::Local::now().naive_local(), year_offset))
+}
+
+#[cfg(not(feature = "agent"))]
+fn build_muthur(
+    cfg: &Config,
+    ship: &str,
+    tx: UnboundedSender<Event>,
+    _slot: crate::metrics::SnapshotSlot,
+    audit: crate::ops::audit::SharedAudit,
+    _startup: TechStartup,
+) -> anyhow::Result<crate::muthur::MuthurTab> {
+    let log = open_chat_log()?;
+    let deps = crate::muthur::MuthurDeps {
+        spawn: spawner(llm_client(cfg.muthur.clone(), "persona"), None, tx),
+        now: Box::new(std::time::Instant::now),
+        ship_time: ship_time(cfg),
+        timestamp: Box::new(|| chrono::Local::now().to_rfc3339()),
+    };
+    Ok(crate::muthur::MuthurTab::new(cfg.muthur.clone(), ship, log, audit, deps))
+}
+
+#[cfg(feature = "agent")]
+fn build_muthur(
+    cfg: &Config,
+    ship: &str,
+    tx: UnboundedSender<Event>,
+    slot: crate::metrics::SnapshotSlot,
+    audit: crate::ops::audit::SharedAudit,
+    startup: TechStartup,
+) -> anyhow::Result<crate::muthur::MuthurTab> {
+    use crate::muthur::{AgentDeps, MuthurDeps, MuthurTab};
+    let log = open_chat_log()?;
+    let tool_tx = tx.clone();
+    let tech_cfg = cfg.muthur.technical_cfg();
+    let persona = llm_client(cfg.muthur.clone(), "persona");
+    let technical = llm_client(tech_cfg.clone(), "technical");
+    let review = review_dispatch(&cfg.muthur.reviewer_cfg(), startup.reviewer_ready, tx.clone());
     let tools = crate::tools::ToolDefs::persona(&cfg.tools);
     let ctx = crate::tools::fixed::FixedCtx { runner: std::sync::Arc::new(crate::ops::runner::SystemRunner), snapshot: slot.clone() };
     let deps = MuthurDeps {
-        spawn,
+        spawn: spawner(persona, technical, tx),
         now: Box::new(std::time::Instant::now),
-        ship_time: Box::new(move || crate::app::chrome::format_date(chrono::Local::now().naive_local(), year_offset)),
+        ship_time: ship_time(cfg),
         timestamp: Box::new(|| chrono::Local::now().to_rfc3339()),
         run_tool: Box::new(move |req_id, call_id, inv, secret, cancel| {
             let ctx = ctx.clone();
@@ -454,6 +504,7 @@ fn build_muthur(
 
 /// Runs one tool call: `run` through the shell runner (the password, if any,
 /// is dropped and wiped when it returns), the others as fixed tools.
+#[cfg(feature = "agent")]
 fn execute_tool(
     inv: &crate::tools::Invocation,
     ctx: &crate::tools::fixed::FixedCtx,
@@ -536,7 +587,7 @@ fn open_session(cfg: &Config, strict: bool) -> anyhow::Result<Session> {
 }
 
 /// Start the local metrics poller, or report telemetry offline.
-fn start_metrics(cfg: &Config, tx: &UnboundedSender<Event>, slot: crate::tools::SnapshotSlot) {
+fn start_metrics(cfg: &Config, tx: &UnboundedSender<Event>, slot: crate::metrics::SnapshotSlot) {
     match LocalSource::new(cfg.utility.containers, cfg.utility.exclude_fs.clone()) {
         Ok(src) => {
             spawn_metrics(Box::new(src), Duration::from_secs(cfg.utility.interval_secs.max(1)), tx.clone(), slot);
@@ -572,7 +623,7 @@ pub fn run_splash(cfg: &Config, strict: bool) -> anyhow::Result<()> {
     install_panic_hook();
     let Session { link, tx, mut rx, mut terminal, .. } = open_session(cfg, strict)?;
     let ship = ship_name(cfg);
-    start_metrics(cfg, &tx, crate::tools::SnapshotSlot::default());
+    start_metrics(cfg, &tx, crate::metrics::SnapshotSlot::default());
     let chrome = ChromeView { ship_name: ship.clone(), year_offset: cfg.chrome.year_offset };
     let mut app = App::new(chrome).with_splash(splash_for(cfg, &ship));
     app.quit_after_splash = true;
@@ -609,7 +660,7 @@ pub fn run(cfg: &Config, config_path: &std::path::Path, strict: bool) -> anyhow:
     });
     let ship = ship_name(cfg);
     let chrome = ChromeView { ship_name: ship.clone(), year_offset: cfg.chrome.year_offset };
-    let slot = crate::tools::SnapshotSlot::default();
+    let slot = crate::metrics::SnapshotSlot::default();
     start_metrics(cfg, &tx, slot.clone());
     // One audit log for every writer: MU/TH/UR's tools and CARGO's commands.
     let audit = crate::ops::audit::shared(open_audit_log());
@@ -897,23 +948,25 @@ mod tests {
     #[test]
     fn collector_fills_snapshot_slot() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let slot = crate::tools::SnapshotSlot::default();
+        let slot = crate::metrics::SnapshotSlot::default();
         spawn_metrics(Box::new(FakeSource { calls: 0, fail_every_other: false }), Duration::from_millis(10), tx, slot.clone());
         next_metrics(&mut rx).unwrap();
         assert_eq!(slot.lock().unwrap().as_ref().unwrap().host, "HOST1");
     }
 
+    #[cfg(feature = "agent")]
     #[test]
     fn execute_tool_runs_fixed_tools() {
         let ctx = crate::tools::fixed::FixedCtx {
             runner: std::sync::Arc::new(crate::ops::runner::SystemRunner),
-            snapshot: crate::tools::SnapshotSlot::default(),
+            snapshot: crate::metrics::SnapshotSlot::default(),
         };
         let cancel = std::sync::atomic::AtomicBool::new(false);
         let o = execute_tool(&crate::tools::Invocation::ShipStatus, &ctx, None, &cancel);
         assert_eq!(o.content, "TELEMETRY NOT YET AVAILABLE");
     }
 
+    #[cfg(feature = "agent")]
     #[tokio::test]
     async fn tool_done_event_reaches_muthur() {
         use crate::llm::{Stop, StreamEvent};
@@ -968,6 +1021,7 @@ mod tests {
         assert_eq!(spawned.get(), 2, "tool result did not trigger a second request");
     }
 
+    #[cfg(feature = "agent")]
     #[tokio::test]
     async fn review_event_reaches_muthur() {
         use crate::llm::{Stop, StreamEvent};
@@ -1026,6 +1080,7 @@ mod tests {
         assert_eq!(*ran.borrow(), ["c1"], "an allow verdict did not start the run");
     }
 
+    #[cfg(feature = "agent")]
     fn deny_ctx_for_tests() -> crate::tools::deny::DenyCtx {
         crate::tools::deny::DenyCtx {
             config_path: "/home/op/.config/muthur/config.toml".into(),
@@ -1035,6 +1090,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "agent")]
     #[test]
     fn tech_policy_builds_deny_rules() {
         let agent = crate::config::AgentSection { deny: vec!["^shutdown".into()], net_allow: vec!["example.com".into()], ..Default::default() };
@@ -1043,6 +1099,7 @@ mod tests {
         assert_eq!(p.net_allow, ["example.com"]);
     }
 
+    #[cfg(feature = "agent")]
     #[test]
     fn tech_policy_rejects_bad_entries() {
         let agent = crate::config::AgentSection { deny: vec!["ok".into(), "(".into()], ..Default::default() };
@@ -1053,6 +1110,7 @@ mod tests {
         assert!(e.contains("net_allow") && e.contains("bad host!"), "{e}");
     }
 
+    #[cfg(feature = "agent")]
     #[test]
     fn deny_ctx_uses_the_state_dir_and_config_path() {
         let c = deny_ctx(std::path::Path::new("/etc/muthur.toml"), Some(std::path::Path::new("/var/state")));
@@ -1063,6 +1121,7 @@ mod tests {
         assert_eq!(c.state_dir, "", "no state dir: the pattern is skipped");
     }
 
+    #[cfg(feature = "agent")]
     #[tokio::test]
     async fn review_dispatch_offline_when_not_ready() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();

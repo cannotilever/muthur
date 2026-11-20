@@ -131,10 +131,12 @@ impl App {
         self.tabs[TabId::Cargo.index()].on_cargo_done(seq, out, ms);
     }
 
+    #[cfg(feature = "agent")]
     pub fn on_tool_done(&mut self, req_id: u64, call_id: String, outcome: crate::tools::ToolOutcome) {
         self.tabs[TabId::Muthur.index()].on_tool_done(req_id, call_id, outcome);
     }
 
+    #[cfg(feature = "agent")]
     pub fn on_review(&mut self, req_id: u64, call_id: String, review: crate::review::Review) {
         self.tabs[TabId::Muthur.index()].on_review(req_id, call_id, review);
     }

@@ -331,15 +331,24 @@ pub(crate) fn fake_muthur() -> (crate::muthur::MuthurTab, tempfile::TempDir) {
         now: Box::new(Instant::now),
         ship_time: Box::new(|| "18 NOV 2137 14:02".into()),
         timestamp: Box::new(|| "2026-11-18T14:02:00Z".into()),
+        #[cfg(feature = "agent")]
         run_tool: Box::new(|_, _, _, _, _| {}),
+        #[cfg(feature = "agent")]
         review: Box::new(|_, _, _| Box::new(|| {})),
     };
-    let tools = crate::tools::ToolDefs::persona(&crate::config::ToolsSection::default());
-    let audit = crate::ops::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap();
-    let tech = fake_tech(&cfg);
-    (MuthurTab::new(cfg, tools, "USCSS TEST", log, crate::ops::audit::shared(audit), deps, tech), dir)
+    let audit = crate::ops::audit::shared(crate::ops::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap());
+    #[cfg(feature = "agent")]
+    let tab = {
+        let tools = crate::tools::ToolDefs::persona(&crate::config::ToolsSection::default());
+        let tech = fake_tech(&cfg);
+        MuthurTab::new(cfg, tools, "USCSS TEST", log, audit, deps, tech)
+    };
+    #[cfg(not(feature = "agent"))]
+    let tab = MuthurTab::new(cfg, "USCSS TEST", log, audit, deps);
+    (tab, dir)
 }
 
+#[cfg(feature = "agent")]
 /// A technical agent with `run`, the default `[agent]`, a passing probe and reviewer.
 pub(crate) fn fake_tech(cfg: &crate::config::MuthurSection) -> crate::muthur::AgentDeps {
     let agent = crate::config::AgentSection::default();
@@ -356,8 +365,10 @@ pub(crate) fn fake_tech(cfg: &crate::config::MuthurSection) -> crate::muthur::Ag
     }
 }
 
+#[cfg(feature = "agent")]
 type Ran = std::rc::Rc<std::cell::RefCell<Vec<String>>>;
 
+#[cfg(feature = "agent")]
 /// `fake_muthur` with a hand-driven clock and a record of started tool calls.
 fn fake_muthur_clocked() -> (crate::muthur::MuthurTab, tempfile::TempDir, std::rc::Rc<std::cell::Cell<Instant>>, Ran) {
     use crate::muthur::{MuthurDeps, MuthurTab};
@@ -381,6 +392,7 @@ fn fake_muthur_clocked() -> (crate::muthur::MuthurTab, tempfile::TempDir, std::r
     (MuthurTab::new(cfg, tools, "USCSS TEST", log, crate::ops::audit::shared(audit), deps, tech), dir, clock, ran)
 }
 
+#[cfg(feature = "agent")]
 #[test]
 fn prompt_under_help_overlay_rearms_after_dismissal() {
     use crate::llm::{Stop, StreamEvent};

@@ -1,3 +1,4 @@
+#[cfg(feature = "agent")]
 pub mod agent;
 pub mod app;
 pub mod backend;
@@ -11,13 +12,16 @@ pub mod llm;
 pub mod metrics;
 pub mod muthur;
 pub mod ops;
+#[cfg(feature = "agent")]
 pub mod review;
 pub mod run;
 pub mod scroll;
+#[cfg(feature = "agent")]
 pub mod secret;
 pub mod shell;
 pub mod splash;
 pub mod strict;
 pub mod testcard;
+#[cfg(feature = "agent")]
 pub mod tools;
 pub mod utility;

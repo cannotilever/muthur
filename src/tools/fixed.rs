@@ -7,10 +7,10 @@ use crate::ops::runner::{RunOutput, Runner};
 use serde_json::{Value, json};
 use std::io::ErrorKind;
 use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-pub type SnapshotSlot = Arc<Mutex<Option<Snapshot>>>;
+pub use crate::metrics::SnapshotSlot;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolOutcome {
@@ -243,6 +243,7 @@ mod tests {
     use crate::ops::runner::RunSpec;
     use crate::tools::registry::DnsType;
     use std::net::TcpListener;
+    use std::sync::Mutex;
 
     struct Fake {
         calls: Mutex<Vec<Vec<String>>>,

@@ -1,10 +1,10 @@
 //! MU/TH/UR tool turns: carrying out `agent::Effect`s, reviews and the
 //! operator's Y/N, password and OVERRIDE prompts.
 
-use super::{unable, Entry, MuthurTab, State, NOTE_TRUNCATED};
-use crate::agent::{Effect, ABORTED_ISSUED};
+use super::{Entry, MuthurTab, State};
+use crate::agent::{Call, Effect, ABORTED_ISSUED};
 use crate::input::Key;
-use crate::llm::{LlmError, Stop, ToolResult};
+use crate::llm::{Stop, ToolResult};
 use crate::review::Review;
 use crate::secret::Secret;
 use crate::tools::ToolOutcome;
@@ -55,6 +55,11 @@ impl MuthurTab {
             self.settle_segment();
         }
         self.apply(effects, Some(&stop));
+    }
+
+    /// A tool call of the stream; the turn takes them when it ends.
+    pub(super) fn tool_call(&mut self, id: String, name: String, input: serde_json::Value) {
+        self.calls.push(Call { id, name, input });
     }
 
     /// A tool outcome for request `req_id`. The late outcome of a call aborted
@@ -277,22 +282,5 @@ impl MuthurTab {
             tracing::error!("audit log: cannot record tool call: {e}");
             self.status_flash = Some(AUDIT_OFFLINE.into());
         }
-    }
-
-    /// The M4 completion path.
-    fn finish(&mut self, stop: Option<&Stop>, truncated: bool) {
-        match stop {
-            Some(Stop::Refusal) => self.status_flash = Some(unable(LlmError::Restricted.reason())),
-            Some(Stop::MaxTokens) => self.pending_notes.push(NOTE_TRUNCATED.into()),
-            _ => {}
-        }
-        if truncated {
-            self.pending_notes.push(NOTE_TRUNCATED.into());
-        }
-        self.abort = None;
-        self.turn = None;
-        self.state = State::Ready;
-        self.activity = true;
-        self.settle();
     }
 }

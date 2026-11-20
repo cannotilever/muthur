@@ -1,6 +1,9 @@
 HOST   ?= omicron
 TARGET := x86_64-unknown-linux-musl
 BIN    := target/$(TARGET)/release/muthur
+# AGENT=0 builds without the technical agent (`--no-default-features`).
+AGENT  ?= 1
+FEATURES := $(if $(filter 0,$(AGENT)),--no-default-features,)
 
 UDEV   := deploy/udev/99-wy60.rules
 DROPIN := deploy/systemd/serial-getty@wy60.service.d/override.conf
@@ -8,7 +11,7 @@ DROPIN := deploy/systemd/serial-getty@wy60.service.d/override.conf
 .PHONY: build deploy install-system check-deploy
 
 build:
-	cargo build --release --target $(TARGET)
+	cargo build --release --target $(TARGET) $(FEATURES)
 
 deploy: build
 	ssh $(HOST) 'mkdir -p ~/.local/bin ~/.config/fish/conf.d'

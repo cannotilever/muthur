@@ -70,8 +70,10 @@ pub trait Tab {
     fn on_cargo_done(&mut self, _seq: u64, _out: crate::ops::runner::RunOutput, _ms: u64) {}
     /// A streamed LLM event for request `_req_id` (MU/TH/UR only).
     fn on_llm(&mut self, _req_id: u64, _ev: crate::llm::StreamEvent) {}
+    #[cfg(feature = "agent")]
     /// The outcome of tool call `_call_id` started for request `_req_id` (MU/TH/UR only).
     fn on_tool_done(&mut self, _req_id: u64, _call_id: String, _o: crate::tools::ToolOutcome) {}
+    #[cfg(feature = "agent")]
     /// The reviewer's verdict on call `_call_id` of request `_req_id` (MU/TH/UR only).
     fn on_review(&mut self, _req_id: u64, _call_id: String, _review: crate::review::Review) {}
     /// Called before every render: true when the tab is not visible as drawn,
