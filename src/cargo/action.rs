@@ -150,11 +150,23 @@ pub(super) fn audit_entry(verb: Verb, id: &str, name: &str, argv: Vec<String>, o
         RunOutput::NotFound => (json!("not_found"), String::new()),
         RunOutput::TimedOut => (json!("timeout"), String::new()),
     };
+    let decision = if verb.confirm() { Decision::Confirmed } else { Decision::Auto };
+    entry(verb, id, name, argv, decision, exit, ms, output)
+}
+
+/// A command still running when CARGO went away (muthur quit): its outcome
+/// is unknown, but that it was issued is recorded.
+pub(super) fn aborted_entry(verb: Verb, id: &str, name: &str, argv: Vec<String>) -> AuditEntry {
+    entry(verb, id, name, argv, Decision::Aborted, json!("interrupted"), 0, String::new())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn entry(verb: Verb, id: &str, name: &str, argv: Vec<String>, decision: Decision, exit: serde_json::Value, ms: u64, output: String) -> AuditEntry {
     AuditEntry {
         tool: format!("cargo_{}", verb.word()),
         args: json!({ "id": id, "name": name }),
         tier: if verb.confirm() { 2 } else { 1 },
-        decision: if verb.confirm() { Decision::Confirmed } else { Decision::Auto },
+        decision,
         argv: Some(argv),
         exit: Some(exit),
         ms,

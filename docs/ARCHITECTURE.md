@@ -277,19 +277,26 @@ Fed by the same snapshots as Utility. Says `NO CONTAINER RUNTIME` or
 - **Actions** — `U` start, `R` restart, `D` stop, either case, on the
   selected container by ID (`<docker|podman> <verb> <id>`, argv only, 30 s
   timeout, no elevation: the account is in the `docker` group). Restart and
-  stop ask `<VERB> <NAME>? Y/N`, armed like MU/TH/UR's override prompt (on
+  stop ask `<VERB> <NAME> (<ID>)? Y/N` (a long name is cut in the middle so
+  the question and ID always show), armed like MU/TH/UR's override prompt (on
   screen uncovered for `ARMING`, 1 s); N or Esc cancels. One command at a
   time (`BUSY`); progress, result and errors (reverse video) show on the
-  message line, and a `ps --all` refresh follows each action.
+  message line, and a `ps --all` refresh follows each action. STATUS is a
+  fixed 10 columns, so an in-flight `RESTARTING` never shifts the rows. If a
+  probe comes back empty-handed (daemon busy), the last list stays and the
+  message line says `RUNTIME NOT ANSWERING`.
 - **Logs** — `L` fetches `logs --tail 200` (stdout and stderr merged, 10 s)
   into a full-pane view: escape sequences and control characters stripped,
-  lines wrapped, opened at the newest line, scrollable; `L` refetches, Esc
-  returns to the list.
+  lines wrapped (newest 64 KiB kept), opened at the newest line, scrollable
+  with scroll hints so a line scroll does not repaint the pane; `L`
+  refetches, Esc returns to the list.
 - **Audit** — every command goes into `audit.jsonl` (shared with MU/TH/UR's
   tools) as `cargo_start`/`cargo_restart`/`cargo_stop`/`cargo_logs`; restart
   and stop are tier 2 `confirmed`, start and logs tier 1 `auto`. As with
   MU/TH/UR's tier-2 tools, restart and stop are refused while the audit log
   is offline (`AUDIT LOG OFFLINE`); a failed write is shown on the message line.
+  A log fetch closed with Esc is still audited when it finishes, and commands
+  still running when muthur quits are recorded as `aborted`.
 
 Spec: docs/superpowers/specs/2026-11-19-cargo-actions-design.md
 

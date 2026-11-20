@@ -766,3 +766,66 @@ fn log_scrolling_sends_scroll_hints() {
     render(&mut h.t, WINDOWED);
     assert_eq!(h.hints.take(), None, "new text, not a scroll");
 }
+
+#[test]
+fn cancelled_log_fetch_is_still_audited() {
+    let mut h = harness(vec![c("a1", "web", "UP")]);
+    h.key(Key::Char('L'));
+    let log_seq = h.last().0;
+    h.key(Key::Esc);
+    h.t.on_cargo_done(log_seq, exited(0, "x\n", ""), 7);
+    let a = h.audit();
+    assert_eq!(a.len(), 1, "{a:?}");
+    assert_eq!((&a[0]["tool"], &a[0]["exit"]), (&"cargo_logs".into(), &0.into()));
+    assert!(!h.screen().contains("LOGS -"));
+}
+
+#[test]
+fn pending_commands_audited_as_aborted_on_drop() {
+    let mut h = harness(vec![c("a1", "web", "UP")]);
+    h.key(Key::Char('L'));
+    h.key(Key::Esc); // fetch still running, result discarded
+    h.key(Key::Char('U')); // still running at quit
+    let H { t, audit_path, _dir, .. } = h;
+    drop(t);
+    let a: Vec<serde_json::Value> =
+        std::fs::read_to_string(&audit_path).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let tools: Vec<&str> = a.iter().map(|e| e["tool"].as_str().unwrap()).collect();
+    assert_eq!(tools, vec!["cargo_start", "cargo_logs"], "{a:?}");
+    for e in &a {
+        assert_eq!((&e["decision"], &e["exit"]), (&"aborted".into(), &"interrupted".into()));
+    }
+}
+
+#[test]
+fn runtime_not_answering_keeps_list() {
+    let mut h = harness(vec![c("a1", "web", "UP")]);
+    h.key(Key::Char('d'));
+    h.t.on_metrics(&Snapshot { containers: None, container_runtime: None, ..Default::default() });
+    let s = h.screen();
+    assert!(s.contains(">WEB") && s.contains("STOP WEB (A1)? Y/N"), "prompt kept\n{s}");
+    h.key(Key::Esc);
+    let s = h.screen();
+    assert!(s.contains("RUNTIME NOT ANSWERING") && s.contains("U START"), "{s}");
+    h.key(Key::Char('U'));
+    assert_eq!(h.argv(), v(&["docker", "start", "a1"]));
+    h.t.on_metrics(&snap(Some(vec![c("a1", "web", "UP")])));
+    assert!(!h.screen().contains("NOT ANSWERING"));
+}
+
+#[test]
+fn hold_empty_keeps_log_view_and_messages() {
+    let mut h = harness(vec![c("a1", "web", "UP"), c("b2", "db", "UP")]);
+    h.key(Key::Char('L'));
+    h.done(exited(0, "x\n", ""));
+    h.t.on_metrics(&snap(Some(vec![])));
+    assert!(h.screen().contains("LOGS - WEB"), "log view stays open");
+    h.key(Key::Esc);
+    assert!(h.screen().contains("HOLD EMPTY"));
+    let mut h = harness(vec![c("a1", "web", "UP"), c("b2", "db", "UP")]);
+    h.key(Key::Down);
+    h.key(Key::Char('d'));
+    h.t.on_metrics(&snap(Some(vec![])));
+    let s = h.screen();
+    assert!(s.contains("HOLD EMPTY") && s.contains("DB GONE"), "{s}");
+}
