@@ -332,7 +332,7 @@ fn build_muthur(
 }
 
 /// The CARGO tab, running container commands on blocking tasks.
-fn build_cargo(tx: UnboundedSender<Event>, audit: crate::tools::audit::SharedAudit) -> crate::cargo::CargoTab {
+fn build_cargo(tx: UnboundedSender<Event>, audit: crate::tools::audit::SharedAudit, hints: HintSlot) -> crate::cargo::CargoTab {
     use crate::tools::runner::{Runner, SystemRunner};
     let deps = crate::cargo::CargoDeps {
         run: Box::new(move |seq, argv, timeout, merged| {
@@ -346,6 +346,7 @@ fn build_cargo(tx: UnboundedSender<Event>, audit: crate::tools::audit::SharedAud
         }),
         now: Box::new(Instant::now),
         timestamp: Box::new(|| chrono::Local::now().to_rfc3339()),
+        hints,
     };
     crate::cargo::CargoTab::new(deps, audit)
 }
@@ -461,7 +462,7 @@ pub fn run(cfg: &Config, strict: bool) -> anyhow::Result<()> {
     // Bounded: when the loop falls behind (passthrough at 38400 baud), the
     // reader thread blocks, the PTY fills, and the program writing blocks too.
     let (pty_tx, mut pty_rx) = tokio::sync::mpsc::channel(PTY_QUEUE);
-    let shell = ShellTab::new(shell_cfg, hints, move |e| {
+    let shell = ShellTab::new(shell_cfg, hints.clone(), move |e| {
         let _ = pty_tx.blocking_send(e);
     });
     let ship = ship_name(cfg);
@@ -471,7 +472,7 @@ pub fn run(cfg: &Config, strict: bool) -> anyhow::Result<()> {
     // One audit log for every writer: MU/TH/UR's tools and CARGO's commands.
     let audit = crate::tools::audit::shared(open_audit_log());
     let muthur = build_muthur(cfg, &chrome.ship_name, tx.clone(), slot, audit.clone())?;
-    let cargo = build_cargo(tx.clone(), audit);
+    let cargo = build_cargo(tx.clone(), audit, hints);
     let mut app = App::assemble(chrome, muthur, UtilityTab::new(), cargo, shell);
     if cfg.chrome.splash {
         app = app.with_splash(splash_for(cfg, &ship));

@@ -20,7 +20,7 @@ use crate::metrics::{Container, Snapshot};
 use crate::tools::audit::{AuditLog, SharedAudit, shared};
 use crate::tools::runner::RunOutput;
 use crate::utility::widgets::message_panel;
-use action::{Prompt, Verb, audit_entry, failure};
+use action::{Prompt, Verb, aborted_entry, audit_entry, failure};
 use list::{Selection, draw_list};
 use logview::LogView;
 use ratatui::buffer::Buffer;
@@ -42,6 +42,8 @@ pub struct CargoDeps {
     pub run: Box<dyn FnMut(u64, Vec<String>, Duration, bool)>,
     pub now: Box<dyn Fn() -> Instant>,
     pub timestamp: Box<dyn Fn() -> String>,
+    /// Scroll hints for the backend (the log view scrolls by line).
+    pub hints: crate::scroll::HintSlot,
 }
 
 enum State {
@@ -72,6 +74,11 @@ pub struct CargoTab {
     offline: bool,
     prompt: Option<Prompt>,
     action: Option<Pending>,
+    /// Log fetches whose view was closed: still audited when they finish.
+    discarded: Vec<Pending>,
+    /// A snapshot came without a container list after one was shown (the
+    /// runtime did not answer the probe): the last list stays.
+    not_answering: bool,
     /// `seq` of the `ps` refresh in flight, and when it was started.
     refresh: Option<(u64, Instant)>,
     /// When the list on screen was probed (snapshot probe or refresh start).
@@ -97,6 +104,8 @@ impl CargoTab {
             offline: false,
             prompt: None,
             action: None,
+            discarded: Vec::new(),
+            not_answering: false,
             refresh: None,
             list_at: None,
             seq: 0,
@@ -109,7 +118,12 @@ impl CargoTab {
 
     /// A tab that runs nothing and audits nowhere (tests, previews).
     pub fn detached() -> Self {
-        let deps = CargoDeps { run: Box::new(|_, _, _, _| {}), now: Box::new(Instant::now), timestamp: Box::new(String::new) };
+        let deps = CargoDeps {
+            run: Box::new(|_, _, _, _| {}),
+            now: Box::new(Instant::now),
+            timestamp: Box::new(String::new),
+            hints: Default::default(),
+        };
         Self::new(deps, shared(AuditLog::offline()))
     }
 
@@ -129,6 +143,12 @@ impl CargoTab {
         {
             return;
         }
+        // A probe that timed out (daemon busy): keep the list and the runtime.
+        if s.containers.is_none() && matches!(self.state, State::Manifest(Some(_))) {
+            self.not_answering = true;
+            return;
+        }
+        self.not_answering = false;
         self.runtime = s.container_runtime.clone();
         self.list_at = s.containers_at;
         self.set_list(s.containers.clone());
@@ -166,15 +186,18 @@ impl CargoTab {
         }
     }
 
-    fn message_line(&self) -> (String, bool) {
+    fn message_line(&self, width: usize) -> (String, bool) {
         if let Some(p) = &self.prompt {
-            return (p.text(), false);
+            return (p.text(width), false);
         }
         if let Some(m) = &self.message {
             return m.clone();
         }
         if self.offline {
             return ("TELEMETRY OFFLINE".into(), false);
+        }
+        if self.not_answering {
+            return ("RUNTIME NOT ANSWERING".into(), false);
         }
         (self.detail_line(), false)
     }
@@ -216,10 +239,7 @@ impl CargoTab {
         match key {
             Key::Esc => {
                 self.logs = None;
-                // Its result, if still coming, is for a view that is gone.
-                if self.action.as_ref().is_some_and(|p| p.verb == Verb::Logs) {
-                    self.action = None;
-                }
+                self.discard_log_fetch();
             }
             Key::Char('l' | 'L') if self.action.is_none() => {
                 if let Some(v) = &self.logs {
@@ -232,6 +252,16 @@ impl CargoTab {
                     v.key(k);
                 }
             }
+        }
+    }
+
+    /// A log fetch in flight is for a view that is gone: its result is only
+    /// audited, and other commands may start meanwhile.
+    fn discard_log_fetch(&mut self) {
+        if self.action.as_ref().is_some_and(|p| p.verb == Verb::Logs)
+            && let Some(p) = self.action.take()
+        {
+            self.discarded.push(p);
         }
     }
 
@@ -253,9 +283,12 @@ impl CargoTab {
 
     /// False when the entry could not be written.
     fn record_audit(&mut self, p: &Pending, out: &RunOutput, ms: u64) -> bool {
-        let entry = audit_entry(p.verb, &p.id, &p.name, p.argv.clone(), out, ms);
+        self.append_audit(&audit_entry(p.verb, &p.id, &p.name, p.argv.clone(), out, ms))
+    }
+
+    fn append_audit(&mut self, entry: &crate::tools::audit::AuditEntry) -> bool {
         let ts = (self.deps.timestamp)();
-        if let Err(e) = self.audit.borrow_mut().append(&entry, &ts) {
+        if let Err(e) = self.audit.borrow_mut().append(entry, &ts) {
             tracing::error!("audit log: cannot record container command: {e}");
             return false;
         }
@@ -264,9 +297,8 @@ impl CargoTab {
 
     fn action_done(&mut self, p: Pending, out: RunOutput, ms: u64) {
         let audited = self.record_audit(&p, &out, ms);
-        if self.obscured {
-            self.activity = true;
-        }
+        // The App lights `*` only when CARGO is not the folder on screen.
+        self.activity = true;
         if p.verb == Verb::Logs {
             match (failure(p.verb, &out), out) {
                 (None, RunOutput::Exited { stdout, .. }) => {
@@ -296,23 +328,29 @@ impl CargoTab {
 
 impl Tab for CargoTab {
     fn render(&mut self, area: Rect, buf: &mut Buffer) {
-        let (message, reverse) = self.message_line();
+        let (message, reverse) = self.message_line(area.width.saturating_sub(2) as usize);
         let hint = if self.runtime.is_some() { HINT } else { NO_RUNTIME };
         let busy = self
             .action
             .as_ref()
             .filter(|p| p.verb != Verb::Logs)
-            .map(|p| (p.id.clone(), format!("{}...", p.verb.progress())));
+            .map(|p| (p.id.clone(), p.verb.progress().to_string()));
         let lines: Vec<Line<'static>> = match &self.state {
             State::Awaiting => vec![Line::from("AWAITING TELEMETRY")],
             State::Offline(why) => vec![Line::from("TELEMETRY OFFLINE"), Line::from(why.clone())],
             State::Manifest(None) => vec![Line::from(NO_RUNTIME)],
-            State::Manifest(Some(c)) if c.is_empty() => vec![Line::from("HOLD EMPTY")],
             State::Manifest(Some(_)) if self.logs.is_some() => {
                 if let Some(v) = &mut self.logs {
-                    v.render(area, buf);
+                    v.render(area, buf, &self.deps.hints);
                 }
                 return;
+            }
+            State::Manifest(Some(c)) if c.is_empty() => {
+                let mut l = vec![Line::from("HOLD EMPTY")];
+                if let Some((m, _)) = &self.message {
+                    l.push(Line::from(m.clone()));
+                }
+                l
             }
             State::Manifest(Some(c)) => {
                 let over = busy.as_ref().map(|(id, s)| (id.as_str(), s.as_str()));
@@ -344,7 +382,7 @@ impl Tab for CargoTab {
         let State::Manifest(Some(c)) = &self.state else { return };
         match key {
             // Changed your mind while the logs are coming: drop them.
-            Key::Esc if self.action.as_ref().is_some_and(|p| p.verb == Verb::Logs) => self.action = None,
+            Key::Esc => self.discard_log_fetch(),
             Key::Up => self.sel.up(c),
             Key::Down => self.sel.down(c),
             Key::PageUp => self.sel.page_up(c),
@@ -382,6 +420,9 @@ impl Tab for CargoTab {
             && let Some(p) = self.action.take()
         {
             self.action_done(p, out, ms);
+        } else if let Some(i) = self.discarded.iter().position(|p| p.seq == seq) {
+            let p = self.discarded.remove(i);
+            self.record_audit(&p, &out, ms);
         }
     }
 
@@ -395,6 +436,17 @@ impl Tab for CargoTab {
 
     fn take_activity(&mut self) -> bool {
         std::mem::take(&mut self.activity)
+    }
+}
+
+/// Commands still running when muthur quits are recorded as aborted: what
+/// they did is unknown, but that they were issued is not lost.
+impl Drop for CargoTab {
+    fn drop(&mut self) {
+        let pending: Vec<Pending> = self.action.take().into_iter().chain(self.discarded.drain(..)).collect();
+        for p in pending {
+            self.append_audit(&aborted_entry(p.verb, &p.id, &p.name, p.argv));
+        }
     }
 }
 

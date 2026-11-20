@@ -16,6 +16,8 @@ use ratatui::layout::Position;
 pub use tabs::{PlaceholderTab, TABS, Tab, TabId};
 
 /// How long a Y/N prompt must be on screen before Y counts (MU/TH/UR, CARGO).
+/// Keys sooner than this after the prompt is seen are ignored (see
+/// `muthur::State::Override`, `cargo::action::Prompt`).
 pub const ARMING: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// What the title bar shows.

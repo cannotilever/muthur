@@ -98,13 +98,35 @@ impl Prompt {
         Self { verb, id: id.into(), name: name.into(), drawn: false, armed_at: None }
     }
 
-    pub(super) fn text(&self) -> String {
-        format!("{} {}? Y/N", self.verb.word(), self.name).to_uppercase()
+    /// `STOP <NAME> (<ID>)? Y/N`, at most `max` wide: a long name is cut in
+    /// the middle so the question and the ID always show.
+    pub(super) fn text(&self, max: usize) -> String {
+        let tail = format!(" ({})? Y/N", self.id);
+        let head = format!("{} ", self.verb.word());
+        let room = max.saturating_sub(head.chars().count() + tail.chars().count());
+        format!("{head}{}{tail}", middle_cut(&self.name, room)).to_uppercase()
     }
 
     pub(super) fn armed(&self, now: Instant) -> bool {
         self.armed_at.is_some_and(|t| now >= t)
     }
+}
+
+/// `s` in at most `max` characters, cut in the middle with `~`.
+fn middle_cut(s: &str, max: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max {
+        return s.to_string();
+    }
+    if max < 3 {
+        return chars[..max].iter().collect();
+    }
+    let keep = max - 1;
+    let (front, back) = (keep - keep / 2, keep / 2);
+    let mut out: String = chars[..front].iter().collect();
+    out.push('~');
+    out.extend(&chars[chars.len() - back..]);
+    out
 }
 
 /// The message-line text for a failed command; `None` when it succeeded.
@@ -128,11 +150,23 @@ pub(super) fn audit_entry(verb: Verb, id: &str, name: &str, argv: Vec<String>, o
         RunOutput::NotFound => (json!("not_found"), String::new()),
         RunOutput::TimedOut => (json!("timeout"), String::new()),
     };
+    let decision = if verb.confirm() { Decision::Confirmed } else { Decision::Auto };
+    entry(verb, id, name, argv, decision, exit, ms, output)
+}
+
+/// A command still running when CARGO went away (muthur quit): its outcome
+/// is unknown, but that it was issued is recorded.
+pub(super) fn aborted_entry(verb: Verb, id: &str, name: &str, argv: Vec<String>) -> AuditEntry {
+    entry(verb, id, name, argv, Decision::Aborted, json!("interrupted"), 0, String::new())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn entry(verb: Verb, id: &str, name: &str, argv: Vec<String>, decision: Decision, exit: serde_json::Value, ms: u64, output: String) -> AuditEntry {
     AuditEntry {
         tool: format!("cargo_{}", verb.word()),
         args: json!({ "id": id, "name": name }),
         tier: if verb.confirm() { 2 } else { 1 },
-        decision: if verb.confirm() { Decision::Confirmed } else { Decision::Auto },
+        decision,
         argv: Some(argv),
         exit: Some(exit),
         ms,

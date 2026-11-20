@@ -104,6 +104,7 @@ fn cargo_app() -> (App, std::rc::Rc<std::cell::RefCell<Vec<u64>>>, tempfile::Tem
         run: Box::new(move |seq, _, _, _| rec.borrow_mut().push(seq)),
         now: Box::new(std::time::Instant::now),
         timestamp: Box::new(String::new),
+        hints: Default::default(),
     };
     let mut app = App::new(ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 })
         .with_tab(TabId::Cargo, Box::new(CargoTab::new(deps, shared(AuditLog::open(dir.path().join("audit.jsonl")).unwrap()))));
