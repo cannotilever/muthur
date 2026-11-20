@@ -86,8 +86,9 @@ fn drain<R: Read + Send + 'static>(mut r: R, keep: Option<usize>) -> mpsc::Recei
 }
 
 fn drain_bounded(r: &mut impl Read, keep: usize) -> Vec<u8> {
-    let half = keep / 2;
-    let mut head: Vec<u8> = Vec::with_capacity(half);
+    let half = keep / 2; // tail size
+    let head_cap = keep - half;
+    let mut head: Vec<u8> = Vec::with_capacity(head_cap);
     let mut tail: VecDeque<u8> = VecDeque::with_capacity(half);
     let mut total = 0usize;
     let mut chunk = [0u8; 8192];
@@ -98,7 +99,7 @@ fn drain_bounded(r: &mut impl Read, keep: usize) -> Vec<u8> {
         };
         total += n;
         let mut data = &chunk[..n];
-        let room = half - head.len();
+        let room = head_cap - head.len();
         let (h, rest) = data.split_at(room.min(data.len()));
         head.extend_from_slice(h);
         data = rest;
@@ -218,38 +219,53 @@ fn spawn_and_wait(spec: &RunSpec) -> RunOutput {
         };
         (child, drain(out, keep), drain(err, keep))
     };
-    if let (Some(bytes), Some(mut sin)) = (spec.stdin, child.stdin.take()) {
-        // Tiny payloads; a child that exits early just breaks the pipe.
-        let _ = sin.write_all(bytes);
-    }
     let deadline = Instant::now() + timeout;
     let pgid = Pid::from_raw(child.id() as i32);
-    let mut cancelled = false;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(s)) => break Some(s),
-            Ok(None) => {
-                cancelled = spec.cancel.is_some_and(|c| c.load(Ordering::SeqCst));
-                if !cancelled && Instant::now() < deadline {
-                    std::thread::sleep(Duration::from_millis(20));
-                    continue;
+    let sin = child.stdin.take();
+    let (status, cancelled) = std::thread::scope(|sc| {
+        // The write runs off-thread so a child that never reads stdin cannot
+        // stall the timeout or cancel. Killing the child breaks the pipe.
+        if let (Some(bytes), Some(mut sin)) = (spec.stdin, sin) {
+            sc.spawn(move || {
+                let _ = sin.write_all(bytes);
+            });
+        }
+        let mut cancelled = false;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(s)) => break Some(s),
+                Ok(None) => {
+                    cancelled = spec.cancel.is_some_and(|c| c.load(Ordering::SeqCst));
+                    if !cancelled && Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(20));
+                        continue;
+                    }
+                }
+                Err(_) => {}
+            }
+            let mut reaped = false;
+            if let Kill::Graceful(g) = spec.kill {
+                let _ = killpg(pgid, Signal::SIGTERM);
+                let end = Instant::now() + g;
+                while Instant::now() < end && !reaped {
+                    reaped = matches!(child.try_wait(), Ok(Some(_)));
+                    if !reaped {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
                 }
             }
-            Err(_) => {}
-        }
-        if let Kill::Graceful(g) = spec.kill {
-            let _ = killpg(pgid, Signal::SIGTERM);
-            let end = Instant::now() + g;
-            while Instant::now() < end && !matches!(child.try_wait(), Ok(Some(_))) {
-                std::thread::sleep(Duration::from_millis(10));
+            // Never signal a reaped child's pgid: it may have been recycled.
+            if !reaped {
+                let _ = killpg(pgid, Signal::SIGKILL);
+                let _ = child.wait();
             }
-        }
+            break None;
+        };
+        // Stragglers in the group (grandchildren holding the pipes) die too,
+        // which also closes any stdin pipe the writer is blocked on.
         let _ = killpg(pgid, Signal::SIGKILL);
-        let _ = child.wait();
-        break None;
-    };
-    // Stragglers in the group (grandchildren holding the pipes) die too.
-    let _ = killpg(pgid, Signal::SIGKILL);
+        (status, cancelled)
+    });
     let wait = deadline.saturating_duration_since(Instant::now()) + GRACE;
     let end = Instant::now() + wait;
     let collect = |rx: &mpsc::Receiver<Vec<u8>>| rx.recv_timeout(end.saturating_duration_since(Instant::now()));
@@ -403,5 +419,22 @@ mod tests {
         assert_eq!(kept + n, 300, "{s}");
         data.truncate(10);
         assert_eq!(drain_bounded(&mut data.as_slice(), 50), data);
+    }
+
+    #[test]
+    fn stdin_write_cannot_block_timeout() {
+        let a = v(&["sh", "-c", "sleep 5"]);
+        let big = vec![b'x'; 200_000];
+        let mut s = RunSpec::new(&a, Duration::from_millis(300));
+        s.stdin = Some(&big);
+        let t = Instant::now();
+        assert_eq!(SystemRunner.run_spec(&s), RunOutput::TimedOut);
+        assert!(t.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn keep_odd_limit_loses_no_byte() {
+        let data = b"abcdefghi".to_vec();
+        assert_eq!(drain_bounded(&mut data.as_slice(), 9), data);
     }
 }
