@@ -1152,6 +1152,7 @@ mod tests {
             args: serde_json::json!({}),
             unknown_target: false,
             prior: vec![],
+            delegated_task: None,
         };
         let _abort = review(7, "c9".into(), input);
         match rx.try_recv() {

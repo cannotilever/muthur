@@ -610,6 +610,7 @@ impl Turn {
                     args: slot.call.input.clone(),
                     unknown_target: slot.unknown_target,
                     prior: self.prior.clone(),
+                    delegated_task: None,
                 };
                 out.push(Effect::Review { call_id: slot.call.id.clone(), input });
                 slot.state = State::Reviewing(inv);

@@ -203,6 +203,7 @@ mod agentic {
             args: json!({"command": command, "reason": "test", "as_root": as_root}),
             unknown_target: false,
             prior: vec![],
+            delegated_task: None,
         };
         let r = run(&client, mk("why is the disk full", "ls /var/log", false)).await;
         println!("--- {r:?}");
