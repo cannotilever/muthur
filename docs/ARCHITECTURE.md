@@ -370,6 +370,7 @@ for multi-server monitoring — tools then get a "which host" parameter.
 | **M5** | Tools: tier 1, then tier 2 with confirmation (replaced in M7). |
 | **M6** | Splash, deploy tooling (udev rule, getty override, fish snippet, make deploy). Spec: docs/superpowers/specs/2026-11-19-m6-splash-deploy-design.md |
 | **M7** | Technical agent: `/DIRECT`, `run` as `muthur-agent` or root, reviewer, network isolation, `agent` feature. Spec: docs/superpowers/specs/2026-11-19-m7-technical-agent-design.md |
+| **M8** | Persona `delegate(task)`: MU/TH/UR hands self-contained tasks to the technical agent; relayed or verbatim report. Spec: docs/superpowers/specs/2026-11-20-m8-delegate-design.md |
 
 ## Deferred (post-v1)
 
