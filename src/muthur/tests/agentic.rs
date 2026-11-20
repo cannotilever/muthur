@@ -1250,3 +1250,94 @@ fn ctrl_c_during_delegation_ends_inquiry() {
     submit(&mut h, "status");
     assert_eq!(h.agents.borrow().last(), Some(&AgentId::Muthur));
 }
+
+#[test]
+fn ctrl_c_at_child_password_aborts_everything() {
+    let mut h = harness();
+    submit(&mut h, "restart nginx");
+    delegate(&mut h, 1, "d1", "restart nginx");
+    tool_use(&mut h, 2, &[("c1", "run", run_call("systemctl restart nginx", true))]);
+    h.t.on_review(2, "c1".into(), review(Verdict::Allow, "operator asked"));
+    seen(&mut h);
+    h.tick(1100);
+    type_str(&mut h.t, "abc");
+    let State::Password { secret, .. } = &h.t.state else { panic!("{:?}", h.t.state) };
+    assert_eq!(secret.chars(), 3);
+    h.t.handle_key(&Key::Ctrl('c'));
+    assert!(h.t.secret.is_none());
+    assert_eq!(h.t.state, State::Ready);
+    assert!(h.ran.borrow().is_empty());
+    let recs = records(&h);
+    let child_tool = recs.iter().rfind(|r| r["kind"] == "tool" && r["delegated"] == "d1").unwrap();
+    assert_eq!(child_tool["results"][0]["content"], "ABORTED BY OPERATOR");
+    let persona_tool = recs.iter().rfind(|r| r["kind"] == "tool" && r["agent"] == "muthur").unwrap();
+    assert_eq!(persona_tool["results"][0]["content"], "ABORTED BY OPERATOR");
+    let a = audit_records(&h);
+    let del = a.iter().find(|e| e["tool"] == "delegate").unwrap_or_else(|| panic!("{a:#?}"));
+    assert_eq!(del["decision"], "aborted");
+    assert_eq!(h.sent.borrow().len(), 2);
+    let chat = std::fs::read_to_string(&h.path).unwrap();
+    assert!(!chat.contains("abc"));
+}
+
+#[test]
+fn ctrl_c_running_root_in_delegation_orphan_audited() {
+    let mut h = harness();
+    submit(&mut h, "restart nginx");
+    delegate(&mut h, 1, "d1", "restart nginx");
+    tool_use(&mut h, 2, &[("c1", "run", run_call("systemctl restart nginx", true))]);
+    h.t.on_review(2, "c1".into(), review(Verdict::Allow, "operator asked"));
+    seen(&mut h);
+    h.tick(1100);
+    type_str(&mut h.t, "hunter2");
+    h.t.handle_key(&Key::Enter);
+    assert_eq!(h.ran.borrow().len(), 1);
+    let flag = h.cancels.borrow()[0].clone();
+    h.t.handle_key(&Key::Ctrl('c'));
+    assert!(flag.load(Ordering::SeqCst));
+    assert_eq!(h.t.state, State::Ready);
+    h.t.on_tool_done(2, "c1".into(), exit_outcome(0, 1));
+    let a = audit_records(&h);
+    let late = a.iter().rfind(|e| e["tool"] == "run").unwrap_or_else(|| panic!("{a:#?}"));
+    assert_eq!((&late["delegated_by"], &late["decision"]), (&json!("d1"), &json!("confirmed")));
+    let n = a.len();
+    h.t.on_tool_done(2, "c1".into(), exit_outcome(0, 1));
+    assert_eq!(audit_records(&h).len(), n);
+    assert!(!std::fs::read_to_string(&h.audit_path).unwrap().contains("hunter2"));
+}
+
+#[test]
+fn ctrl_c_while_child_streams() {
+    let mut h = harness();
+    submit(&mut h, "why is nginx down");
+    delegate(&mut h, 1, "d1", "check nginx");
+    h.t.on_llm(2, StreamEvent::Text("Checking".into()));
+    h.t.handle_key(&Key::Ctrl('c'));
+    let recs = records(&h);
+    let i = recs.iter().rposition(|r| r["delegated"] == "d1" && r["kind"] == "assistant").unwrap();
+    assert_eq!(recs[i]["stop"], "interrupted");
+    let j = recs.iter().rposition(|r| r["kind"] == "tool" && r["agent"] == "muthur").unwrap();
+    let k = recs.iter().rposition(|r| r["kind"] == "assistant" && r["agent"] == "muthur").unwrap();
+    assert!(i < j && j < k, "{recs:#?}");
+    assert_eq!(recs[k]["stop"], "interrupted");
+    let rows = screen(&mut h.t, 61, 40);
+    assert!(rows.iter().any(|r| r.contains("[INTERRUPTED]")), "{rows:#?}");
+}
+
+#[test]
+fn ctrl_c_while_child_reviewing() {
+    let mut h = harness();
+    submit(&mut h, "check it");
+    delegate(&mut h, 1, "d1", "check nginx");
+    tool_use(&mut h, 2, &[("c1", "run", run_call("uptime", false))]);
+    assert!(status_row(&mut h).contains("REVIEWING"));
+    h.t.handle_key(&Key::Ctrl('c'));
+    assert!(h.review_aborted.get());
+    assert_eq!(h.t.state, State::Ready);
+    let recs = records(&h);
+    let child_tool = recs.iter().rfind(|r| r["kind"] == "tool" && r["delegated"] == "d1").unwrap();
+    assert_eq!(child_tool["results"][0]["content"], "ABORTED BY OPERATOR");
+    // A verdict arriving after the abort does nothing.
+    h.t.on_review(2, "c1".into(), review(Verdict::Allow, "ok"));
+    assert!(h.ran.borrow().is_empty());
+}
