@@ -343,6 +343,8 @@ impl App {
     fn reinit(&mut self, now: std::time::Instant) {
         tracing::info!(splash = self.splash_factory.is_some(), "break: re-initialising screen");
         self.redraw = true;
+        // The screen is back: the countdown to standby starts again.
+        self.last_key = Some(now);
         if let Some(f) = &self.splash_factory {
             let mut sp = f(now);
             if let Some(s) = &self.last_snapshot {

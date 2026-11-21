@@ -1121,3 +1121,17 @@ fn prompt_showing_blocks_standby() {
     app.poll_standby(t0 + D + S, now());
     assert!(app.standby_active(), "the countdown still runs from the last key");
 }
+
+#[test]
+fn break_restarts_countdown() {
+    let (mut app, t0) = standby_app();
+    app.poll_standby(t0 + D, now());
+    let tb = t0 + D + S;
+    app.handle_keys_at(vec![BREAK], tb);
+    let after = tb + Duration::from_secs(5);
+    app.poll_settle(after);
+    app.poll_standby(after, now());
+    assert!(!app.standby_active(), "Break woke standby but it re-entered at once");
+    app.poll_standby(after + D, now());
+    assert!(app.standby_active(), "the countdown runs from the re-init");
+}
