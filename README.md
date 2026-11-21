@@ -45,7 +45,7 @@ The project does two jobs:
   abort questionnaire.
 - **Cargo tab.** The container manifest for Docker or Podman, with
   start/restart/stop and a log viewer.
-- **Shell tab.** fish on a PTY. Its output is translated through a virtual
+- **Shell tab.** Your login shell (bash, zsh or fish) on a PTY. Its output is translated through a virtual
   terminal (colour becomes bold, reverse or underline; Unicode becomes DEC
   Special Graphics), and it has scrollback, fullscreen, and an emergency
   untranslated passthrough mode.
@@ -94,7 +94,7 @@ Note that some features such as service management and power control rely on sys
 | Geometry | 80×43, WY-60 status line disabled |
 | Cable | USB FTDI → DB9, DB9 → DB25 null modem |
 | Link | 38400 baud, XON/XOFF |
-| Host | Linux x86_64 (Arch or Alpine) |
+| Host | Linux x86_64 or aarch64, systemd |
 
 Measured key sequences and capabilities are in [docs/hardware.md](docs/hardware.md).
 
@@ -105,6 +105,7 @@ Requires a recent stable Rust toolchain (edition 2024).
 ```sh
 rustup target add x86_64-unknown-linux-musl
 make build            # static musl release binary
+make BUILD=zigbuild ARCH=aarch64 build   # aarch64 (needs cargo-zigbuild)
 make AGENT=0 build    # without the technical agent / LLM tools
 make check            # clippy + tests, with and without the agent feature
 ```
@@ -135,23 +136,28 @@ file is readable by group or others, because it holds the API key.
 install -Dm600 docs/config.example.toml ~/.config/muthur/config.toml
 ```
 
+`install.sh` does this for you and asks for the API key (see Deploying).
+
 Every key is optional. The default LLM is Anthropic `claude-sonnet-5-5`. Set
 `[muthur] provider = "openai"` with a `base_url` and `model` for vLLM or
 another OpenAI-compatible server. Logs go to `~/.local/state/muthur/`.
 
 ## Deploying
 
-The production layout is: udev creates `/dev/wy60`, `serial-getty@wy60` logs
-in, and a fish snippet runs `muthur`. If MUTHUR exits, you land in plain fish.
+The production layout is: udev creates `/dev/muthur-tty`,
+`serial-getty@muthur-tty` logs in, and a hook in your login shell's profile
+(bash, zsh or fish) runs `muthur`. If MUTHUR exits, you land in your login
+shell.
 
 ```sh
-make install-system   # udev rule, getty drop-in, agent account (sudo on host)
-make deploy           # build and upload the binary and fish snippet
-make HOST=other deploy
+./install.sh                # on the host: adapter, udev, getty, agent, hook, config
+make install                # build, then ./install.sh
+make HOST=other deploy      # build here, upload, run install.sh over ssh
 ```
 
-[docs/deploy.md](docs/deploy.md) covers the first-time walkthrough, rollback,
-recovering from a getty loop, and the agent account.
+[docs/deploy.md](docs/deploy.md) covers the flags, what gets installed,
+migrating from the old `wy60` names, uninstalling, recovering from a getty
+loop, and the agent account.
 
 ## Keys
 

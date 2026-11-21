@@ -21,7 +21,7 @@ It exists for two reasons:
 | Cable | USB FTDI → DB9, DB9 → DB25 null modem |
 | Speed | **38400 baud** |
 | Flow control | **XON/XOFF** (RTS/CTS tested: does not work with this cabling) |
-| Host | Dedicated server, Arch or Alpine, x86_64 |
+| Host | Dedicated server, Linux with systemd, x86_64 or aarch64 |
 
 Consequences:
 
@@ -35,20 +35,21 @@ Consequences:
 ## Deployment & process model
 
 ```
-udev rule ─► /dev/wy60 (stable symlink to the FTDI adapter)
-serial-getty@wy60 (38400, XON/XOFF, TERM=vt100)
+udev rule ─► /dev/muthur-tty (stable symlink to the USB serial adapter)
+serial-getty@muthur-tty (38400, XON/XOFF, TERM=vt100)
   └─ login
-      └─ fish  (conf.d/muthur.fish: if on /dev/wy60 → run `muthur`, NOT exec)
+      └─ login shell (bash, zsh or fish; hook sets MUTHUR_LOGIN, runs
+         `muthur-login`, which checks the tty is /dev/muthur-tty and runs `muthur`, NOT exec)
           └─ muthur
-              └─ fish (Shell tab, on a PTY, TERM=vt100)
+              └─ login shell (Shell tab, on a PTY, TERM=vt100)
 ```
 
 - Authentication is delegated to agetty/login.
-- If MUTHUR exits or crashes, the user lands in plain fish — an out-of-process
+- If MUTHUR exits or crashes, the user lands in the login shell — an out-of-process
   emergency fallback for free.
 - MUTHUR always restores termios on exit, including via a panic hook.
-- Build: static `x86_64-unknown-linux-musl` binary built on the dev machine;
-  `make deploy` copies it to the server. TLS via rustls (no OpenSSL).
+- Build: static `x86_64-` or `aarch64-unknown-linux-musl` binary built on the dev machine;
+  `make deploy` copies it to the server and runs `install.sh` there. TLS via rustls (no OpenSSL).
 - Config: `~/.config/muthur/config.toml`. Contains the LLM API key; MUTHUR
   refuses to start if the file is group/world readable (must be `0600`).
   Annotated example with every key and its default: `docs/config.example.toml`.
@@ -181,7 +182,7 @@ Single Rust crate, tokio runtime.
 | `tabs::cargo` | Container manifest and actions: selection, start/restart/stop with Y/N, log view (see below). |
 | `tabs::muthur` | Chat UI (see below). |
 | `tabs::shell` | PTY + virtual terminal + translation (see below). |
-| `llm` | Streaming LLM client (reqwest + rustls/ring, no aws-lc): Anthropic Messages and OpenAI-compatible protocols, SSE parsing, typed `LlmError`s, idle timeout. Each request runs as a tokio task and sends `Event::Llm` to the loop. Deploy note: Alpine needs the `ca-certificates` package for TLS. |
+| `llm` | Streaming LLM client (reqwest + rustls/ring, no aws-lc): Anthropic Messages and OpenAI-compatible protocols, SSE parsing, typed `LlmError`s, idle timeout. Each request runs as a tokio task and sends `Event::Llm` to the loop. Deploy note: hosts without a CA bundle need the `ca-certificates` package for TLS. |
 | `chatlog` | Append-only chat history, in memory for the session (epochs, context window/trim, purge); can mirror to JSONL, unused at runtime. |
 | `ops` | Always built: `Runner` (fixed-argv execution, timeouts, stdin, kill), JSONL audit log, output `cap`. Shared with the Cargo tab. |
 | `tools` | Feature `agent`: per-agent tool registry, fixed tools (`exec`), `run` (`shell`), deny rules (`deny`), network target gate (`netgate`). |
@@ -197,7 +198,7 @@ Single Rust crate, tokio runtime.
 
 ### Shell tab
 
-- fish spawned on a PTY with `TERM=vt100`.
+- The login shell (`[shell] command`) spawned on a PTY with `TERM=vt100`.
 - PTY output feeds a `vt100::Parser` (virtual screen + scrollback). This is
   what makes tab switching possible: returning to Shell repaints from the
   virtual screen.
@@ -255,7 +256,7 @@ All keys live in the `[muthur]` table of the config file (which must be
 - **Token usage** for each turn (input, cache write/read, output) is logged to
   `muthur.log` (anthropic; the openai stream reports none). Request/response
   bodies and headers are never logged.
-- **Alpine:** install `ca-certificates`, or TLS to the endpoint fails
+- **Minimal hosts:** install `ca-certificates`, or TLS to the endpoint fails
   (`NO CARRIER`).
 
 ### Tools & safety
@@ -334,7 +335,7 @@ Cargo feature `agent`, on by default. `make AGENT=0 build` (or
 `cargo build --no-default-features`) builds MUTHUR as a plain chat: requests
 carry no tools, `/DIRECT` is an unknown command, and no code path can run a
 command for a model. CARGO's key-driven container actions are not agentic and
-stay. `make AGENT=0 install-system` skips the agent-account files. `make check`
+stay. `install.sh --no-agent` (or `make AGENT=0 deploy`) skips the agent-account files. `make check`
 runs clippy and tests in both modes.
 
 **Known gap.** Everything the technical agent reads goes to the LLM provider.
@@ -427,7 +428,7 @@ for multi-server monitoring — tools then get a "which host" parameter.
 | **M3** | Utility tab + `LocalSource`. |
 | **M4** | MU/TH/UR chat: streaming, persona, reveal, persistent log. |
 | **M5** | Tools: tier 1, then tier 2 with confirmation (replaced in M7). |
-| **M6** | Splash, deploy tooling (udev rule, getty override, fish snippet, make deploy). Spec: docs/superpowers/specs/2026-11-19-m6-splash-deploy-design.md |
+| **M6** | Splash, deploy tooling (udev rule, getty override, login hook, make deploy; generalised in M11). Spec: docs/superpowers/specs/2026-11-19-m6-splash-deploy-design.md |
 | **M7** | Technical agent: `/DIRECT`, `run` as `muthur-agent` or root, reviewer, network isolation, `agent` feature. Spec: docs/superpowers/specs/2026-11-19-m7-technical-agent-design.md |
 | **M8** | Persona `delegate(task)`: MU/TH/UR hands self-contained tasks to the technical agent; relayed or verbatim report. Spec: docs/superpowers/specs/2026-11-20-m8-delegate-design.md |
 | **M9** | Chat UI: operator lines underlined; chat history in memory only, clean per launch. |
