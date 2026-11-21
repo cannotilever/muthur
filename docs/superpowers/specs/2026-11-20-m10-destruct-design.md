@@ -106,7 +106,8 @@ nothing on other tabs. While a prompt is open, F1–F4 still switch tabs
 
 One `audit.jsonl` entry per run, tool `destruct_shutdown` or
 `destruct_reboot`, args `{ "seconds": N }`, written when the run ends with the
-outcome above (`executed` is written before the command runs). The password
+outcome above (`executed` is written before the command runs; if the command
+then fails, a second entry records `failed` with the reason). The password
 never appears in argv or the log.
 
 ## The screen
