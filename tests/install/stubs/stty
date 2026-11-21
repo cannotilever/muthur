@@ -1,0 +1,3 @@
+#!/bin/sh
+[ -z "${STUBLOG:-}" ] || echo "$(basename "$0") $*" >> "$STUBLOG"
+exit 0

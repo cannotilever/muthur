@@ -545,6 +545,106 @@ t_launcher_off_serial() {
 	chk not-run test ! -e "$T/ran"
 }
 
+cfg_env() {
+	bin_env; ln -s "$REPO/docs" "$SCRIPT_DIR/docs"
+	CFG=$HOME/.config/muthur/config.toml
+	MUTHUR_ASSUME_TTY=1; export MUTHUR_ASSUME_TTY
+}
+muthur_section() { sed -n '/^\[muthur\]$/,/^\[[^m]/p' "$CFG"; }
+t_config_existing_untouched() {
+	cfg_env
+	mkdir -p "$HOME/.config/muthur"; printf 'mine = 1\n' > "$CFG"; cp "$CFG" "$T/before"
+	step_config </dev/null >/dev/null 2>&1
+	chk same cmp "$CFG" "$T/before"
+}
+t_config_anthropic() {
+	cfg_env
+	printf '1\nsk-ant-abc\n' | step_config >"$T/out" 2>&1
+	eq 600 "$(stat -c %a "$CFG")" file-mode
+	eq 700 "$(stat -c %a "$HOME/.config/muthur")" dir-mode
+	muthur_section | grep -qx 'api_key = "sk-ant-abc"' || exit 1
+	muthur_section | grep -qx 'provider = "anthropic"' || exit 1
+	! grep -q 'sk-ant-abc' "$T/out" || { echo "  key echoed" >&2; exit 1; }
+	! grep -q 'sk-ant-abc' "$STUBLOG" || exit 1
+	grep -q '^stty -echo' "$STUBLOG" || exit 1
+	grep -q '^stty echo' "$STUBLOG" || exit 1
+}
+t_config_openai() {
+	cfg_env
+	printf '2\nhttp://10.0.0.5:8000/v1\nQwen/Qwen3-32B\n\n' | step_config >/dev/null 2>&1
+	muthur_section | grep -qx 'provider = "openai"' || exit 1
+	muthur_section | grep -qx 'base_url = "http://10.0.0.5:8000/v1"' || exit 1
+	muthur_section | grep -qx 'model = "Qwen/Qwen3-32B"' || exit 1
+	! muthur_section | grep -q '^api_key' || { echo "  api_key left" >&2; exit 1; }
+}
+t_config_special_chars() {
+	cfg_env
+	printf '2\nhttp://h/a&b|c\\d\nm\n\n' | step_config >/dev/null 2>&1
+	muthur_section | grep -qxF 'base_url = "http://h/a&b|c\\d"' || { muthur_section >&2; exit 1; }
+}
+t_config_rejects_quote() {
+	cfg_env
+	printf '2\nhttp://h\nbad"model\ngood\n\n' | step_config >/dev/null 2>&1
+	muthur_section | grep -qx 'model = "good"' || exit 1
+}
+t_config_yes() {
+	cfg_env
+	YES=1; step_config >"$T/out" 2>&1
+	chk copy cmp "$CFG" "$REPO/docs/config.example.toml"
+	grep -q api_key "$T/out" || exit 1
+	eq 600 "$(stat -c %a "$CFG")" mode
+}
+t_toml_keys_scoped() {
+	printf 'model = "x"\n[muthur]\nmodel = "a"\nmodel = "b"\n[other]\nmodel = "c"\n' > "$T/c.toml"
+	set_toml_key "$T/c.toml" model new
+	delete_toml_key "$T/c.toml" nothere
+	eq 'model = "x"
+[muthur]
+model = "new"
+model = "b"
+[other]
+model = "c"' "$(cat "$T/c.toml")" scoped
+	delete_toml_key "$T/c.toml" model
+	eq 'model = "x"
+[muthur]
+model = "b"
+[other]
+model = "c"' "$(cat "$T/c.toml")" deleted
+}
+t_uninstall() {
+	cfg_env; sys_env
+	mkdir -p "$ROOT/usr/sbin"; : > "$ROOT/usr/sbin/nologin"
+	fake_bin x "$T/b1"; OPT_BIN=$T/b1; OPT_SHELL=bash
+	step_binary >/dev/null 2>&1; step_system >/dev/null 2>&1; step_agent >/dev/null 2>&1
+	step_hook >/dev/null 2>&1
+	mkdir -p "$(dirname "$CFG")"; printf 'mine = 1\n' > "$CFG"
+	YES=1; uninstall >"$T/out" 2>&1 || { cat "$T/out" >&2; exit 1; }
+	eq "" "$(find "$ROOT/etc" -iname '*muthur*' 2>/dev/null)" etc-files
+	[ ! -e "$ROOT/etc/systemd/system/serial-getty@muthur-tty.service.d" ] || exit 1
+	! grep -rq '>>> muthur >>>' "$HOME" || exit 1
+	[ ! -e "$FISH_HOOK" ] || exit 1
+	[ ! -e "$HOME/.local/bin/muthur-login" ] || exit 1
+	[ ! -e "$HOME/.local/bin/muthur" ] || exit 1
+	[ -f "$CFG" ] || exit 1
+	grep -q 'userdel muthur-agent' "$T/out" || exit 1
+	grep -q 'nft delete table inet muthur_agent' "$STUBLOG" || exit 1
+	grep -q 'systemctl daemon-reload' "$STUBLOG" || exit 1
+}
+t_uninstall_clean_host() {
+	cfg_env; YES=1
+	uninstall >/dev/null 2>&1
+}
+t_verify_reports() {
+	cfg_env; fake_bin x "$T/b1"; OPT_BIN=$T/b1; step_binary >/dev/null 2>&1
+	step_verify >"$T/out" 2>&1; eq 0 $? rc
+	grep -q 'not plugged in' "$T/out" || exit 1
+	STUB_SYSTEMCTL_RC=3 step_verify >"$T/out" 2>&1; eq 0 $? rc
+	grep 'serial-getty@muthur-tty' "$T/out" | grep -q inactive || exit 1
+}
+t_help_exits_zero() {
+	( cd / && unset MUTHUR_INSTALL_LIB && sh "$REPO/install.sh" --help ) | grep -q '^Usage:' || exit 1
+}
+
 if [ "${1:-}" = "--one" ]; then
 	setup
 	"$2"

@@ -125,8 +125,10 @@ preflight() {
 	[ -d "$SYSTEMD_RUN" ] || die "systemd is required; see docs for the manual-install steps"
 	case $(uname -m) in x86_64 | aarch64) ;; *) die "unsupported architecture $(uname -m) (x86_64 and aarch64 only)" ;; esac
 	_need="sudo udevadm"
-	[ "$OPT_SYSTEM" = 0 ] || _need="$_need agetty"
-	[ "$OPT_AGENT" = 0 ] || _need="$_need nft bash visudo"
+	if [ "$OPT_UNINSTALL" != 1 ]; then
+		[ "$OPT_SYSTEM" = 0 ] || _need="$_need agetty"
+		[ "$OPT_AGENT" = 0 ] || _need="$_need nft bash visudo"
+	fi
 	for _t in $_need; do
 		find_tool "$_t" >/dev/null || die "missing required tool: $_t"
 	done
@@ -563,17 +565,186 @@ step_hook() {
 	install_hook "$_sh"
 }
 
+# set_toml_key FILE KEY VALUE: replace the first `KEY = ...` line of [muthur] with KEY = "VALUE" (TOML-escaped).
+# The value travels in the environment, never inside the awk program.
+set_toml_key() {
+	_tf=$(resolve_link "$1")
+	_tn=$(mktemp) || die "cannot create a temporary file"
+	TK=$2 TV=$3 awk '
+		/^\[/ { in_m = ($0 == "[muthur]") }
+		in_m && !done && $0 ~ "^" ENVIRON["TK"] "[ \t]*=" {
+			v = ENVIRON["TV"]; out = ""
+			while ((i = index(v, "\\")) > 0) { out = out substr(v, 1, i - 1) "\\\\"; v = substr(v, i + 1) }
+			print ENVIRON["TK"] " = \"" out v "\""; done = 1; next
+		}
+		{ print }
+		END { exit done ? 0 : 1 }
+	' "$_tf" > "$_tn" || { rm -f "$_tn"; die "no $2 line in the [muthur] section of $1"; }
+	atomic_write "$_tf" < "$_tn" || { rm -f "$_tn"; exit 1; }
+	rm -f "$_tn"
+}
+
+# delete_toml_key FILE KEY: drop the first `KEY = ...` line of [muthur] (none is fine).
+delete_toml_key() {
+	_tf=$(resolve_link "$1")
+	_tn=$(mktemp) || die "cannot create a temporary file"
+	TK=$2 awk '
+		/^\[/ { in_m = ($0 == "[muthur]") }
+		in_m && !done && $0 ~ "^" ENVIRON["TK"] "[ \t]*=" { done = 1; next }
+		{ print }
+	' "$_tf" > "$_tn" || { rm -f "$_tn"; die "cannot rewrite $1"; }
+	atomic_write "$_tf" < "$_tn" || { rm -f "$_tn"; exit 1; }
+	rm -f "$_tn"
+}
+
+restore_echo() { stty echo 2>/dev/null || true; }
+
+# read_secret PROMPT: echo one line read with terminal echo off.
+read_secret() {
+	[ "$YES" != 1 ] || die "$1: needs an answer (do not pass --yes)"
+	if [ "${MUTHUR_ASSUME_TTY:-0}" != 1 ] && [ ! -t 0 ]; then die "$1: no terminal to ask on"; fi
+	printf '%s: ' "$1" >&2
+	CLEANUP_HOOK=restore_echo
+	stty -echo 2>/dev/null || true
+	_sec=
+	read -r _sec || true
+	restore_echo
+	CLEANUP_HOOK=
+	printf '\n' >&2
+	printf '%s\n' "$_sec"
+}
+
+# ask_value PROMPT: a non-empty answer without a double quote; asks again otherwise.
+ask_value() {
+	_tries=0
+	while [ "$_tries" -lt 5 ]; do
+		_tries=$((_tries + 1))
+		_v=$(ask "$1" "" yes) || exit 1
+		case $_v in
+		"") warn "an answer is required" ;;
+		*'"'*) warn "double quotes are not allowed here" ;;
+		*) printf '%s\n' "$_v"; return 0 ;;
+		esac
+	done
+	die "no valid answer for: $1"
+}
+
+find_example_config() {
+	for _e in "$SCRIPT_DIR/docs/config.example.toml" "$SCRIPT_DIR/config.example.toml"; do
+		if [ -r "$_e" ]; then printf '%s\n' "$_e"; return 0; fi
+	done
+	die "config.example.toml not found beside the installer"
+}
+
+step_config() {
+	say "first-run config"
+	_cdir=$HOME/.config/muthur
+	_cfg=$_cdir/config.toml
+	if [ -e "$_cfg" ]; then
+		say "config exists, left untouched: $_cfg"
+		return 0
+	fi
+	_ex=$(find_example_config) || exit 1
+	mkdir -p "$_cdir" || die "cannot create $_cdir"
+	chmod 700 "$_cdir"
+	( umask 077; cp "$_ex" "$_cfg" ) || die "cannot write $_cfg"
+	chmod 600 "$_cfg"
+	if [ "$YES" = 1 ]; then
+		say "wrote the example config to $_cfg; edit it: set api_key (anthropic), or provider, base_url, model and api_key (openai)"
+		return 0
+	fi
+	_pc=$(ask "Provider: 1) Anthropic  2) OpenAI-compatible (e.g. vLLM)" 1 yes) || exit 1
+	case $_pc in
+	1)
+		_ckey=$(read_secret "Anthropic API key (input hidden)") || exit 1
+		case $_ckey in *'"'*) die "the key must not contain a double quote" ;; esac
+		if [ -n "$_ckey" ]; then set_toml_key "$_cfg" api_key "$_ckey"; else warn "no key entered; edit api_key in $_cfg"; fi
+		;;
+	2)
+		_curl=$(ask_value "base_url (e.g. http://10.0.0.5:8000/v1)") || exit 1
+		_cmodel=$(ask_value "model name served") || exit 1
+		_ckey=$(read_secret "API key (input hidden; empty for none)") || exit 1
+		case $_ckey in *'"'*) die "the key must not contain a double quote" ;; esac
+		set_toml_key "$_cfg" provider openai
+		set_toml_key "$_cfg" base_url "$_curl"
+		set_toml_key "$_cfg" model "$_cmodel"
+		if [ -n "$_ckey" ]; then set_toml_key "$_cfg" api_key "$_ckey"; else delete_toml_key "$_cfg" api_key; fi
+		;;
+	*) die "choose 1 or 2" ;;
+	esac
+	say "wrote $_cfg (mode 600)"
+}
+
+step_verify() {
+	say "verify"
+	if [ "$OPT_SYSTEM" = 1 ]; then
+		if [ -e "$ROOT/dev/muthur-tty" ]; then
+			echo "  /dev/muthur-tty: present"
+		else
+			echo "  /dev/muthur-tty: adapter not plugged in (or the rule has not matched yet)"
+		fi
+		if systemctl is-active --quiet serial-getty@muthur-tty 2>/dev/null; then
+			echo "  serial-getty@muthur-tty: active"
+		else
+			echo "  serial-getty@muthur-tty: inactive (starts when the adapter is plugged in)"
+		fi
+	fi
+	_hk=no
+	[ ! -e "$FISH_HOOK" ] || _hk=yes
+	for _f in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile" "$(zsh_login_file)" "$HOME/.zprofile"; do
+		if block_present "$_f"; then _hk=yes; fi
+	done
+	echo "  login hook: $_hk"
+	if _v=$("$HOME/.local/bin/muthur" --version 2>&1); then
+		echo "  muthur --version: $_v"
+	else
+		echo "  muthur --version: failed to run $HOME/.local/bin/muthur"
+	fi
+	echo "Next: plug in the adapter, check the config in ~/.config/muthur/config.toml, then log in on the terminal."
+	return 0
+}
+
+uninstall() {
+	say "uninstall"
+	remove_hooks
+	rm -f "$HOME/.local/bin/muthur-login"
+	if [ -e "$HOME/.local/bin/muthur" ] || [ -e "$HOME/.local/bin/muthur.old" ]; then
+		if confirm "Remove $HOME/.local/bin/muthur?"; then
+			rm -f "$HOME/.local/bin/muthur" "$HOME/.local/bin/muthur.old"
+		fi
+	fi
+	if [ "$OPT_SYSTEM" = 1 ]; then
+		sudo systemctl stop serial-getty@muthur-tty || true
+		sudo rm -f "$ROOT/etc/udev/rules.d/99-muthur-tty.rules"
+		sudo rm -rf "$ROOT/etc/systemd/system/serial-getty@muthur-tty.service.d"
+		sudo systemctl daemon-reload
+		sudo udevadm control --reload
+	fi
+	if [ "$OPT_AGENT" = 1 ]; then
+		sudo rm -f "$ROOT/etc/sysusers.d/muthur-agent.conf" "$ROOT/etc/tmpfiles.d/muthur-agent.conf" \
+			"$ROOT/etc/sudoers.d/muthur-agent" "$ROOT/etc/nftables.d/muthur-agent.nft"
+		sudo nft delete table inet muthur_agent || true
+	fi
+	echo "Left in place: ~/.config/muthur/config.toml, logs, and the include line in /etc/nftables.conf."
+	[ "$OPT_AGENT" = 0 ] || echo "To remove the agent account: sudo userdel muthur-agent"
+}
+
 main() {
 	parse_args "$@"
 	preflight
+	if [ "$OPT_UNINSTALL" = 1 ]; then
+		uninstall
+		return 0
+	fi
 	step_binary
 	if [ "$OPT_SYSTEM" = 1 ]; then
 		step_adapter
 		step_system
-		[ "$OPT_AGENT" = 0 ] || step_agent
 	fi
+	if [ "$OPT_AGENT" = 1 ]; then step_agent; fi
 	step_hook
-	# Task 8 adds the remaining steps here.
+	step_config
+	step_verify
 }
 
 [ -n "${MUTHUR_INSTALL_LIB:-}" ] || main "$@"
