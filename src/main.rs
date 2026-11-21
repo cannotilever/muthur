@@ -103,7 +103,7 @@ fn main() -> anyhow::Result<()> {
     install_panic_hook();
     let mut link = match cfg.link.device {
         Some(_) => Link::open_device(&cfg.link)?,
-        None => Link::stdio(cfg.link.flow)?,
+        None => Link::stdio(cfg.link.flow, (cfg.terminal.cols, cfg.terminal.rows))?,
     };
 
     match tc.mode {

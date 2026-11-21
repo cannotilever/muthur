@@ -618,7 +618,7 @@ struct Session {
 fn open_session(cfg: &Config, strict: bool) -> anyhow::Result<Session> {
     let link = match cfg.link.device {
         Some(_) => Link::open_device(&cfg.link)?,
-        None => Link::stdio(cfg.link.flow)?,
+        None => Link::stdio(cfg.link.flow, (cfg.terminal.cols, cfg.terminal.rows))?,
     };
     let keymap = Keymap::wy60_default().with_overrides(&cfg.keys)?;
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
