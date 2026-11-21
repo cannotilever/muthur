@@ -163,8 +163,10 @@ render() {
 
 # resolve_link FILE: follow symlinks to the real path (may not exist yet).
 resolve_link() {
-	_f=$1
+	_f=$1 _hops=0
 	while [ -L "$_f" ]; do
+		_hops=$((_hops + 1))
+		[ "$_hops" -le 40 ] || die "too many symlink levels (loop?) resolving $1"
 		_t=$(readlink "$_f")
 		case $_t in /*) _f=$_t ;; *) _f=$(dirname "$_f")/$_t ;; esac
 	done

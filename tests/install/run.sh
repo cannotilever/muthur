@@ -511,10 +511,32 @@ t_shell_empty_passwd_message() {
 	STUB_PASSWD=''; export STUB_PASSWD
 	dies 'pass --shell' login_shell
 }
-t_launcher_reentry_guard() {
-	fake_bin ran "$T/stubbin"; sed -i "s|^echo ran|touch $T/ran|" "$T/stubbin"
-	MUTHUR_LOGIN=1 MUTHUR_TTY=/dev/null MUTHUR_BIN=$T/stubbin sh "$REPO/deploy/login/muthur-login"
-	chk not-run test ! -e "$T/ran"
+hook_env() {
+	bin_env; fake_bin x "$T/b1"; OPT_BIN=$T/b1; step_binary >/dev/null 2>&1
+	printf '#!/bin/sh\necho run >> %s\n' "$T/ran" > "$T/stubbin"; chmod +x "$T/stubbin"
+	: > "$T/ttyf"; STUB_TTY=$T/ttyf MUTHUR_TTY=$T/ttyf MUTHUR_BIN=$T/stubbin; export STUB_TTY MUTHUR_TTY MUTHUR_BIN
+	unset MUTHUR_LOGIN
+}
+t_hook_launches_once() {
+	hook_env
+	sh -i -c ". '$REPO/deploy/login/hook.sh'" </dev/null >/dev/null 2>&1
+	eq 1 "$(wc -l < "$T/ran")" first-run
+	rm "$T/ran"
+	sh -i -c ". '$REPO/deploy/login/hook.sh'; . '$REPO/deploy/login/hook.sh'" </dev/null >/dev/null 2>&1
+	eq 1 "$(wc -l < "$T/ran")" twice-one-run
+}
+t_hook_noninteractive_silent() {
+	hook_env
+	sh -c ". '$REPO/deploy/login/hook.sh'" </dev/null >/dev/null 2>&1
+	chk none test ! -e "$T/ran"
+}
+t_fish_hook_syntax() {
+	command -v fish >/dev/null 2>&1 || return 0
+	fish -n "$REPO/deploy/login/muthur.fish"
+}
+t_resolve_link_cycle_dies() {
+	ln -s b "$T/a"; ln -s a "$T/b"
+	dies "$T/a" resolve_link "$T/a"
 }
 t_launcher_off_serial() {
 	fake_bin ran "$T/stubbin"; sed -i "s|^echo ran|touch $T/ran|" "$T/stubbin"
