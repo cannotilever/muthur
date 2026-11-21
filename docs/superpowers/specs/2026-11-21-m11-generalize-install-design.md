@@ -65,7 +65,8 @@ src/main.rs                                   CHANGED  clap `version` (for --ver
 Placeholders use the form `@NAME@` and are filled by `sed` in `install.sh`:
 
 - `99-muthur-tty.rules.in`: `@MATCH@` is either
-  `ATTRS{idVendor}=="V", ATTRS{idProduct}=="P", ATTRS{serial}=="S"` or
+  `ATTRS{idVendor}=="V", ATTRS{idProduct}=="P", ENV{ID_SERIAL_SHORT}=="S"` (udev
+  sanitises the serial, so the property, not the raw sysfs attribute, is matched) or
   `ATTRS{idVendor}=="V", ATTRS{idProduct}=="P"` plus `ENV{ID_PATH}=="<id_path>"` (a property of the tty
   device itself, so no parent walk is needed).
   The rest is the current rule with `SYMLINK+="muthur-tty"` and

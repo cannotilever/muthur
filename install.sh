@@ -21,6 +21,22 @@ OPT_SYSTEM=1
 OPT_BIN=
 OPT_UNINSTALL=0
 
+# One EXIT trap for the whole script: temp paths to remove, plus an optional
+# hook (a function name) that restores state such as the terminal's echo.
+CLEANUP_PATHS=
+CLEANUP_HOOK=
+cleanup() {
+	_rc=$?
+	while IFS= read -r _cp; do
+		[ -z "$_cp" ] || rm -rf "$_cp"
+	done <<EOF
+$CLEANUP_PATHS
+EOF
+	[ -z "$CLEANUP_HOOK" ] || "$CLEANUP_HOOK" || true
+	return "$_rc"
+}
+trap cleanup EXIT
+
 BLOCK_OPEN='# >>> muthur >>>'
 BLOCK_CLOSE='# <<< muthur <<<'
 
@@ -95,6 +111,15 @@ parse_args() {
 	case $OPT_SHELL in "" | bash | zsh | fish) ;; *) die "--shell must be bash, zsh or fish" ;; esac
 }
 
+# find_tool NAME: path of NAME on PATH or in the sbin dirs (Debian keeps several off a user's PATH).
+find_tool() {
+	command -v "$1" 2>/dev/null && return 0
+	for _d in ${MUTHUR_SBIN_DIRS:-/usr/sbin /sbin /usr/bin}; do
+		if [ -x "$_d/$1" ]; then printf '%s\n' "$_d/$1"; return 0; fi
+	done
+	return 1
+}
+
 preflight() {
 	[ "$(id -u)" != 0 ] || die "run as your normal user, not as root (sudo is used where needed)"
 	[ -d "$SYSTEMD_RUN" ] || die "systemd is required; see docs for the manual-install steps"
@@ -103,7 +128,7 @@ preflight() {
 	[ "$OPT_SYSTEM" = 0 ] || _need="$_need agetty"
 	[ "$OPT_AGENT" = 0 ] || _need="$_need nft bash visudo"
 	for _t in $_need; do
-		command -v "$_t" >/dev/null 2>&1 || die "missing required tool: $_t"
+		find_tool "$_t" >/dev/null || die "missing required tool: $_t"
 	done
 }
 
@@ -241,7 +266,7 @@ parse_udev_props() {
 list_adapters() {
 	for _dev in "$ROOT"/dev/ttyUSB* "$ROOT"/dev/ttyACM*; do
 		[ -e "$_dev" ] || continue
-		_props=$(udevadm info --query=property --name="$_dev") || continue
+		_props=$("$(find_tool udevadm)" info --query=property --name="$_dev") || continue
 		parse_udev_props <<EOF
 $_props
 EOF
@@ -252,12 +277,24 @@ EOF
 # match_line: the udev match for ADP_*; the serial number wins over the port.
 match_line() {
 	if [ -n "$ADP_SERIAL" ]; then
-		printf 'ATTRS{idVendor}=="%s", ATTRS{idProduct}=="%s", ATTRS{serial}=="%s"\n' "$ADP_VID" "$ADP_PID" "$ADP_SERIAL"
+		printf 'ATTRS{idVendor}=="%s", ATTRS{idProduct}=="%s", ENV{ID_SERIAL_SHORT}=="%s"\n' "$ADP_VID" "$ADP_PID" "$ADP_SERIAL"
 	elif [ -n "$ADP_PATH" ]; then
 		printf 'ATTRS{idVendor}=="%s", ATTRS{idProduct}=="%s", ENV{ID_PATH}=="%s"\n' "$ADP_VID" "$ADP_PID" "$ADP_PATH"
 	else
 		die "adapter has neither a serial number nor a port path; pass --serial or --port"
 	fi
+}
+
+check_hex() {
+	printf '%s' "$2" | grep -Eq '^[0-9a-fA-F]{4}$' || die "$1 must be four hex digits (got: $2)"
+}
+# check_plain FLAG VALUE: no characters that could break out of a udev rule value.
+check_plain() {
+	# shellcheck disable=SC1003 # the quoted backslash is intended
+	case $2 in
+	"" | *'"'* | *'\'* | *'*'* | *'?'* | *'['* | *'|'* | *'
+'*) die "$1 contains a character not allowed in a udev match (quotes, backslash, newline, * ? [ |)" ;;
+	esac
 }
 
 # step_adapter: sets ADAPTER_MATCH.
@@ -267,6 +304,11 @@ step_adapter() {
 	if [ -n "$OPT_VID$OPT_PID" ] || [ -n "$OPT_SERIAL$OPT_PORT" ]; then
 		[ -n "$OPT_VID" ] && [ -n "$OPT_PID" ] || die "--serial/--port need --vid and --pid"
 		[ -n "$OPT_SERIAL$OPT_PORT" ] || die "--vid/--pid need --serial or --port to name the device"
+		[ -z "$OPT_SERIAL" ] || [ -z "$OPT_PORT" ] || die "--serial and --port are mutually exclusive"
+		check_hex --vid "$OPT_VID"
+		check_hex --pid "$OPT_PID"
+		[ -z "$OPT_SERIAL" ] || check_plain --serial "$OPT_SERIAL"
+		[ -z "$OPT_PORT" ] || check_plain --port "$OPT_PORT"
 		ADP_VID=$OPT_VID ADP_PID=$OPT_PID ADP_SERIAL=$OPT_SERIAL ADP_PATH=$OPT_PORT
 		ADAPTER_MATCH=$(match_line) || exit 1
 		return 0
@@ -281,7 +323,7 @@ step_adapter() {
 		_sn=$(printf '%s' "$_row" | cut -f4)
 		printf '%s) %s  %s:%s  %s  (%s)\n' "$_i" "$(printf '%s' "$_row" | cut -f1)" \
 			"$(printf '%s' "$_row" | cut -f2)" "$(printf '%s' "$_row" | cut -f3)" \
-			"${_sn:+serial $_sn}${_sn:-no serial}" "${_by#/dev/serial/by-id/}" >&2
+			"${_sn:+serial }${_sn:-no serial}" "${_by#/dev/serial/by-id/}" >&2
 	done <<EOF
 $_list
 EOF
@@ -298,6 +340,8 @@ EOF
 	ADP_VID=$(printf '%s' "$_row" | cut -f2) ADP_PID=$(printf '%s' "$_row" | cut -f3)
 	ADP_SERIAL=$(printf '%s' "$_row" | cut -f4) ADP_PATH=$(printf '%s' "$_row" | cut -f5)
 	[ -n "$ADP_VID" ] && [ -n "$ADP_PID" ] || die "cannot read the adapter's USB ids; pass --vid, --pid and --serial (or --port)"
+	[ -z "$ADP_SERIAL" ] || check_plain "adapter serial" "$ADP_SERIAL"
+	[ -z "$ADP_PATH" ] || check_plain "adapter port" "$ADP_PATH"
 	ADAPTER_MATCH=$(match_line) || exit 1
 	[ -n "$ADP_SERIAL" ] || warn "adapter has no serial number; matching its USB port ($ADP_PATH): moving it to another port breaks the match"
 }
@@ -310,19 +354,16 @@ find_nologin() {
 }
 
 find_agetty() {
-	command -v agetty 2>/dev/null && return 0
-	for _p in /sbin/agetty /usr/bin/agetty; do
-		if [ -x "$ROOT$_p" ]; then printf '%s\n' "$_p"; return 0; fi
-	done
-	die "agetty not found"
+	find_tool agetty || die "agetty not found"
 }
 
 STAGE=
 stage_new() {
 	STAGE=$(mktemp -d) || die "cannot create a temporary directory"
-	trap 'rm -rf "$STAGE"' EXIT
+	CLEANUP_PATHS=$CLEANUP_PATHS$STAGE'
+'
 }
-stage_done() { rm -rf "$STAGE"; trap - EXIT; }
+stage_done() { rm -rf "$STAGE"; }
 
 # sys_install MODE SRC DEST: create DEST's directory, then install.
 sys_install() {
@@ -365,23 +406,32 @@ step_agent() {
 	render "$SCRIPT_DIR/deploy/sysusers.d/muthur-agent.conf.in" "$STAGE/sysusers" NOLOGIN="$_nologin"
 	sed "s/^OPERATOR /$_op /" "$SCRIPT_DIR/deploy/sudoers.d/muthur-agent" > "$STAGE/sudoers"
 	grep -q "^$_op ALL" "$STAGE/sudoers" || die "cannot render sudoers for user $_op"
-	visudo -cf "$STAGE/sudoers" >/dev/null || die "rendered sudoers file failed visudo -cf"
+	"$(find_tool visudo)" -cf "$STAGE/sudoers" >/dev/null || die "rendered sudoers file failed visudo -cf"
 	for _g in adm systemd-journal; do
 		[ -n "$(getent group "$_g" 2>/dev/null)" ] || warn "group $_g does not exist; the agent will not get its access"
 	done
 	sys_install 644 "$STAGE/sysusers" "$ROOT/etc/sysusers.d/muthur-agent.conf"
 	sys_install 644 "$SCRIPT_DIR/deploy/tmpfiles.d/muthur-agent.conf" "$ROOT/etc/tmpfiles.d/muthur-agent.conf"
-	sudo systemd-sysusers
-	sudo systemd-tmpfiles --create
+	sudo systemd-sysusers "$ROOT/etc/sysusers.d/muthur-agent.conf"
+	sudo systemd-tmpfiles --create "$ROOT/etc/tmpfiles.d/muthur-agent.conf"
+	sudo nft -c -f "$SCRIPT_DIR/deploy/nftables/muthur-agent.nft" || die "nft rejected the muthur-agent ruleset (nft -c)"
 	sys_install 440 "$STAGE/sudoers" "$ROOT/etc/sudoers.d/muthur-agent"
 	sys_install 644 "$SCRIPT_DIR/deploy/nftables/muthur-agent.nft" "$ROOT/etc/nftables.d/muthur-agent.nft"
 	stage_done
 	sudo nft -f "$ROOT/etc/nftables.d/muthur-agent.nft"
 	_conf=$ROOT/etc/nftables.conf
-	if [ -f "$_conf" ] && ! grep -q 'nftables.d' "$_conf"; then
-		if confirm "Add an include for /etc/nftables.d/ to /etc/nftables.conf?"; then
-			{ [ -z "$(tail -c 1 "$_conf")" ] || echo; echo 'include "/etc/nftables.d/*.nft"'; } | sudo tee -a "$_conf" >/dev/null
-		fi
+	if [ -f "$_conf" ]; then
+		_rc=0
+		sudo grep -q 'nftables.d' "$_conf" || _rc=$?
+		case $_rc in
+		0) ;;
+		1)
+			if confirm "Add an include for /etc/nftables.d/ to /etc/nftables.conf?"; then
+				{ [ -z "$(sudo tail -c 1 "$_conf")" ] || echo; echo 'include "/etc/nftables.d/*.nft"'; } | sudo tee -a "$_conf" >/dev/null
+			fi
+			;;
+		*) die "cannot read $_conf" ;;
+		esac
 	fi
 	if ! systemctl is-enabled --quiet nftables 2>/dev/null; then
 		if confirm "Enable nftables.service so the rules load at boot?"; then

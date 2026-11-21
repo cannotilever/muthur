@@ -1,3 +1,4 @@
 #!/bin/sh
 [ -z "${STUBLOG:-}" ] || echo "$(basename "$0") $*" >> "$STUBLOG"
+[ "${1:-}" != -c ] || exit "${STUB_NFT_CHECK_RC:-${STUB_NFT_RC:-0}}"
 exit "${STUB_NFT_RC:-0}"

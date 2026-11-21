@@ -1,5 +1,5 @@
 #!/bin/sh
-# shellcheck disable=SC2031,SC2013,SC2329,SC2016 # tests run in subshells on purpose; test names have no spaces
+# shellcheck disable=SC2031,SC2013,SC2329,SC2016,SC2032,SC2033 # tests run in subshells on purpose; test names have no spaces
 # Plain-sh test harness for install.sh. Run: sh tests/install/run.sh
 set -u
 HERE=$(cd -P "$(dirname "$0")" && pwd)
@@ -188,7 +188,7 @@ t_parse_ftdi() {
 	parse_udev_props < "$FX/udev-ftdi.txt"
 	eq 0403 "$ADP_VID" vid; eq 6001 "$ADP_PID" pid; eq A9E91BA3 "$ADP_SERIAL" serial
 	case $ADP_BYID in /dev/serial/by-id/*) ;; *) echo "  byid [$ADP_BYID]" >&2; exit 1 ;; esac
-	eq 'ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", ATTRS{serial}=="A9E91BA3"' "$(match_line)" match
+	eq 'ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", ENV{ID_SERIAL_SHORT}=="A9E91BA3"' "$(match_line)" match
 }
 t_parse_ch340_no_serial() {
 	parse_udev_props < "$FX/udev-ch340.txt"
@@ -202,7 +202,7 @@ t_adapter_flags_skip_detection() {
 	mkdev ttyUSB0
 	OPT_VID=0403 OPT_PID=6001 OPT_SERIAL=S; step_adapter >/dev/null
 	if grep -q 'udevadm info' "$STUBLOG"; then echo "  detection ran" >&2; exit 1; fi
-	eq 'ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", ATTRS{serial}=="S"' "$ADAPTER_MATCH" match
+	eq 'ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", ENV{ID_SERIAL_SHORT}=="S"' "$ADAPTER_MATCH" match
 }
 t_adapter_vid_without_serial_dies() {
 	OPT_VID=0403 OPT_PID=6001; dies --serial step_adapter
@@ -258,8 +258,7 @@ t_system_disables_ttyusb0() {
 	if grep -q 'systemctl disable' "$STUBLOG"; then echo "  disabled anyway" >&2; exit 1; fi
 }
 t_system_render_failure_writes_nothing() {
-	sys_env; OPT_BAUD=1
-	ADAPTER_MATCH=
+	sys_env; mkdir -p "$T/empty"; SCRIPT_DIR=$T/empty
 	( step_system ) >/dev/null 2>&1 && exit 1
 	chk none test ! -e "$ROOT/etc"
 }
@@ -304,6 +303,52 @@ t_rerun_is_noop() {
 	step_system >/dev/null 2>&1; step_agent >/dev/null 2>&1
 	_b=$(cd "$ROOT/etc" && find . -type f -exec cksum {} + | sort)
 	eq "$_a" "$_b" etc
+}
+
+t_adapter_bad_vid_dies() { OPT_VID='04"3' OPT_PID=6001 OPT_SERIAL=S; dies --vid step_adapter; }
+t_adapter_bad_serial_dies() {
+	OPT_VID=0403 OPT_PID=6001 OPT_SERIAL='a"b'; dies --serial step_adapter
+	OPT_SERIAL=; OPT_PORT='a*b'; dies --port step_adapter
+}
+t_adapter_serial_and_port_dies() {
+	OPT_VID=0403 OPT_PID=6001 OPT_SERIAL=S OPT_PORT=P; dies exclusive step_adapter
+}
+t_picker_serial_once() {
+	mkdev ttyUSB0; mkdev ttyUSB1
+	STUB_UDEV_ttyUSB0=$FX/udev-ftdi.txt STUB_UDEV_ttyUSB1=$FX/udev-ch340.txt
+	export STUB_UDEV_ttyUSB0 STUB_UDEV_ttyUSB1
+	YES=0 MUTHUR_ASSUME_TTY=1; echo 1 > "$T/in"
+	step_adapter < "$T/in" 2>&1 >/dev/null | grep -q '^1) /dev/ttyUSB0  0403:6001  serial A9E91BA3  (usb-FTDI' || { echo "  picker line wrong" >&2; exit 1; }
+}
+t_agent_nft_check_failure() {
+	sys_env; STUB_NFT_CHECK_RC=1; export STUB_NFT_CHECK_RC
+	( step_agent ) >/dev/null 2>&1 && exit 1
+	chk none test ! -e "$ROOT/etc/nftables.d" -a ! -e "$ROOT/etc/sudoers.d"
+}
+t_agent_unreadable_nftconf_once() {
+	sys_env; YES=1
+	mkdir -p "$ROOT/etc"; echo 'flush ruleset' > "$ROOT/etc/nftables.conf"
+	grep() { case ${*} in *nftables.conf) return 2 ;; esac; command grep "$@"; }
+	step_agent >/dev/null 2>&1; step_agent >/dev/null 2>&1
+	unset -f grep
+	eq 1 "$(grep -c 'include' "$ROOT/etc/nftables.conf")" "include once"
+}
+t_agent_paths_passed() {
+	sys_env; step_agent >/dev/null 2>&1
+	chk sysusers grep -q "systemd-sysusers $ROOT/etc/sysusers.d/muthur-agent.conf" "$STUBLOG"
+	chk tmpfiles grep -q "systemd-tmpfiles --create $ROOT/etc/tmpfiles.d/muthur-agent.conf" "$STUBLOG"
+	chk nftc grep -q '^nft -c -f' "$STUBLOG"
+}
+t_find_tool_sbin_dirs() {
+	mkdir -p "$T/sb"; printf '#!/bin/sh\n' > "$T/sb/zz-fake"; chmod +x "$T/sb/zz-fake"
+	MUTHUR_SBIN_DIRS="$T/nope $T/sb"
+	eq "$T/sb/zz-fake" "$(find_tool zz-fake)" found
+	if find_tool zz-absent >/dev/null; then exit 1; fi
+}
+t_cleanup_trap_runs_hook() {
+	HOOKF=$T/hook MUTHUR_INSTALL_LIB=1 sh -c '. "$0"; stage_new; CLEANUP_HOOK=myhook; myhook() { echo hook > "$HOOKF"; }; echo "$STAGE" > "$2"; exit 0' "$REPO/install.sh" x "$T/stage"
+	eq hook "$(cat "$T/hook")" hook
+	chk stage-gone test ! -e "$(cat "$T/stage")"
 }
 
 if [ "${1:-}" = "--one" ]; then
