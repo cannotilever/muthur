@@ -66,6 +66,15 @@ serial-getty@wy60 (38400, XON/XOFF, TERM=vt100)
    background so leaving passthrough repaints the Shell tab correctly. Input
    is still scanned for the prefix key so passthrough can be exited. Doubles
    as a debugging aid for the translator.
+4. **Standby** — after `[chrome] standby_minutes` (default 10, `0` = off)
+   without a key, a static screen (logo, `MU/TH/UR 6000 ── INTERFACE STANDBY`,
+   `STANDBY SINCE <date>`, `PRESS ANY KEY`) replaces the TUI and nothing more is
+   written, so the WY-60's own screen saver can blank the CRT (it must be on in
+   the terminal's setup). Background work carries on and activity markers
+   collect. A key wakes it and is swallowed; a MU/TH/UR tool prompt (Y/N,
+   password, OVERRIDE) wakes it with a bell, and keeps it from starting; Break
+   wakes it and re-initialises. Never entered during the splash or passthrough.
+   See [M9 spec](superpowers/specs/2026-11-20-m9-standby-design.md).
 
 ## Screen layout ("chrome")
 
@@ -149,6 +158,7 @@ Single Rust crate, tokio runtime.
 | `secret` | Feature `agent`: zeroize-on-drop password buffer. |
 | `agent` | Feature `agent`: pure tool-turn state machine: round cap, review / confirm / password / override stages, aborts; emits effects the MU/TH/UR tab carries out. |
 | `metrics` | `MetricsSource` trait; `LocalSource` for v1. |
+| `standby` | The static standby screen (shared logo drawing from `splash::logo`, caption with the date standby began); `App` enters and leaves it. |
 | `splash` | Boot splash state machine and renderer (logo, status lines, skip on key) that `App` plays before the TUI; also `muthur splash` preview. See [M6 spec](superpowers/specs/2026-11-19-m6-splash-deploy-design.md). |
 | `testcard` | `muthur testcard` subcommand: attribute / line-drawing probe and key-echo mode. |
 | `config` | TOML load, defaults, `0600` permission check. |

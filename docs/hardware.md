@@ -56,6 +56,10 @@ on the terminal matching terminfo.
   (Delete) and Shift-F15/F16 → `ESC[5~`/`ESC[6~` (they already are), so
   apps get standard codes.
 - **Login shell:** `stty rows 43 cols 80 erase ^H` on the serial tty.
+- **Screen saver:** the WY-60 blanks itself only when the line has been idle,
+  so MUTHUR's clock and refreshes kept it awake. MUTHUR's standby screen
+  (`[chrome] standby_minutes`) stops all output instead; the terminal's own
+  screen saver must be **on** in its setup menu, or the standby logo stays lit.
 
 ## Open questions
 

@@ -152,6 +152,8 @@ fn check_app(name: &str, app: &mut App) {
     let w = StrictWriter::new(Vec::new(), Vt100Dialect);
     let mut t = Terminal::new(Wy60Backend::new(w, Vt100Dialect, 80, 43)).unwrap();
     t.clear().unwrap();
+    let lines = app.line_attrs(ratatui::layout::Rect::new(0, 0, 80, 43));
+    t.backend_mut().set_line_attrs(&lines);
     t.draw(|f| app.render(f, now)).unwrap();
     let strict = t.backend().writer();
     assert!(strict.violations.is_empty(), "{name}: {:?}", strict.violations);
@@ -842,4 +844,56 @@ fn splash_logo_frame_fits_the_wire_budget() {
     let n = t.backend().writer().len() - before;
     println!("logo frame bytes: {n}");
     assert!(n <= 3072, "logo frame is {n} bytes");
+}
+
+/// An app whose standby screen is up (entered at 14:02).
+fn standby_app() -> App {
+    let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 17).unwrap().and_hms_opt(14, 2, 0).unwrap();
+    let mut app = App::new(ChromeView {
+        ship_name: "USCSS TEST".into(),
+        year_offset: 111,
+    })
+    .with_standby(std::time::Duration::from_secs(60));
+    let t0 = std::time::Instant::now();
+    app.poll_standby(t0, now);
+    app.poll_standby(t0 + std::time::Duration::from_secs(60), now);
+    assert!(app.standby_active());
+    app
+}
+
+#[test]
+fn standby_screen() {
+    // The emulator ignores DECDHL: the wordmark shows as two half-width rows.
+    check_app("standby", &mut standby_app());
+}
+
+#[test]
+fn standby_writes_nothing_after_first_frame() {
+    use muthur::metrics::Snapshot;
+    use muthur::shell::PtyEvent;
+    let wall = chrono::NaiveDate::from_ymd_opt(2026, 11, 17).unwrap().and_hms_opt(14, 2, 0).unwrap();
+    let mut app = standby_app();
+    let w = StrictWriter::new(Vec::new(), Vt100Dialect);
+    let mut t = Terminal::new(Wy60Backend::new(w, Vt100Dialect, 80, 43)).unwrap();
+    let area = ratatui::layout::Rect::new(0, 0, 80, 43);
+    let frame = |app: &mut App, t: &mut Terminal<Wy60Backend<StrictWriter<Vec<u8>, Vt100Dialect>, Vt100Dialect>>, wall| {
+        let lines = app.line_attrs(area);
+        t.backend_mut().set_line_attrs(&lines);
+        t.draw(|f| app.render(f, wall)).unwrap();
+    };
+    t.clear().unwrap();
+    frame(&mut app, &mut t, wall);
+    let sent = t.backend().writer().inner.len();
+    assert!(sent > 0);
+    let t0 = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    for i in 0..60u32 {
+        app.on_metrics(Snapshot::default());
+        app.on_pty(PtyEvent::Output(b"x".to_vec()));
+        let wall = wall + chrono::Duration::minutes(i64::from(i) + 1);
+        app.poll_standby(t0 + std::time::Duration::from_secs(u64::from(i)), wall);
+        frame(&mut app, &mut t, wall);
+    }
+    let strict = t.backend().writer();
+    assert!(strict.violations.is_empty(), "{:?}", strict.violations);
+    assert_eq!(strict.inner.len(), sent, "standby wrote to the wire");
 }

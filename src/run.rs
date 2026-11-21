@@ -251,6 +251,7 @@ pub async fn event_loop<W: Write>(
         // After Break, nothing is drawn until the line settles (see
         // `App::settling`); the re-init then clears below before drawing.
         app.poll_settle(Instant::now());
+        app.poll_standby(Instant::now(), clock());
         if !app.passthrough {
             was_passthrough = false;
         }
@@ -719,6 +720,9 @@ pub fn run(cfg: &Config, config_path: &std::path::Path, strict: bool) -> anyhow:
         app = app.with_splash_factory(Box::new(move |now| {
             Splash::new(SplashInfo::from_config(&cfg, &ship, chrono::Local::now().naive_local()), now)
         }));
+    }
+    if cfg.chrome.standby_minutes > 0 {
+        app = app.with_standby(Duration::from_secs(u64::from(cfg.chrome.standby_minutes) * 60));
     }
     tracing::info!(cols, rows, strict, "MU/TH/UR online");
 
