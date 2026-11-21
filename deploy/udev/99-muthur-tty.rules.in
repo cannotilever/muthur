@@ -1,0 +1,1 @@
+SUBSYSTEM=="tty", @MATCH@, SYMLINK+="muthur-tty", TAG+="systemd", ENV{SYSTEMD_WANTS}+="serial-getty@muthur-tty.service"

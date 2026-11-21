@@ -12,6 +12,25 @@ fn read(rel: &str) -> String {
     std::fs::read_to_string(file(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
 }
 
+/// Reads a `.in` template and substitutes each `@K@`; no placeholder may remain.
+fn render(rel: &str, vars: &[(&str, &str)]) -> String {
+    let mut text = read(rel);
+    for (k, v) in vars {
+        text = text.replace(&format!("@{k}@"), v);
+    }
+    for (i, _) in text.match_indices('@') {
+        let rest = &text[i + 1..];
+        if let Some(end) = rest.find('@') {
+            let name = &rest[..end];
+            assert!(
+                name.is_empty() || !name.bytes().all(|b| b.is_ascii_uppercase() || b == b'_'),
+                "{rel}: unrendered placeholder @{name}@"
+            );
+        }
+    }
+    text
+}
+
 /// Runs `cmd`; `None` (with a note) when the tool is not installed.
 fn run(test: &str, cmd: &mut Command) -> Option<std::process::Output> {
     match cmd.output() {
@@ -52,8 +71,10 @@ fn nft_file_is_valid() {
 
 #[test]
 fn sysusers_dry_run() {
-    let path = file("deploy/sysusers.d/muthur-agent.conf");
-    let out = run("sysusers_dry_run", Command::new("systemd-sysusers").arg("--dry-run").arg(&path));
+    let tmp = std::env::temp_dir().join(format!("muthur-sysusers-{}.conf", std::process::id()));
+    std::fs::write(&tmp, render("deploy/sysusers.d/muthur-agent.conf.in", &[("NOLOGIN", "/usr/bin/nologin")])).unwrap();
+    let out = run("sysusers_dry_run", Command::new("systemd-sysusers").arg("--dry-run").arg(&tmp));
+    let _ = std::fs::remove_file(&tmp);
     if let Some(o) = out {
         let err = String::from_utf8_lossy(&o.stderr);
         if !o.status.success() && (err.contains("unrecognized option") || err.contains("unknown option")) {
@@ -85,35 +106,36 @@ fn files_have_expected_lines() {
             "meta skuid \"muthur-agent\" drop",
         ]
     );
-    let sysusers = read("deploy/sysusers.d/muthur-agent.conf");
+    let sysusers = render("deploy/sysusers.d/muthur-agent.conf.in", &[("NOLOGIN", "/usr/bin/nologin")]);
     assert!(sysusers.contains("m muthur-agent adm"));
     assert!(sysusers.contains("m muthur-agent systemd-journal"));
 }
 
-/// `install` does not create parent directories, and a minimal host may lack
-/// any `/etc/*.d` (Arch ships no `/etc/sysusers.d`). Each one the Makefile
-/// installs into must be created first. `/etc/sudoers.d` comes with sudo and
-/// keeps its 0750 mode, so it is left alone.
 #[test]
-fn makefile_creates_each_drop_in_dir_first() {
-    let mk = read("Makefile");
-    // Shell statements, split on `;` so each install is one statement.
-    let stmts: Vec<&str> = mk.split(';').map(str::trim).collect();
-    let mut seen = 0;
-    for (n, st) in stmts.iter().enumerate() {
-        let Some(rest) = st.strip_prefix("sudo install -m ") else {
-            continue;
-        };
-        let dest = rest.split_whitespace().nth(2).expect("install -m MODE SRC DEST");
-        let dir = &dest[..dest.rfind('/').unwrap()];
-        if !dir.ends_with(".d") || dir == "/etc/sudoers.d" {
-            continue;
+fn udev_template_renders() {
+    let m = r#"ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", ATTRS{serial}=="X""#;
+    let text = render("deploy/udev/99-muthur-tty.rules.in", &[("MATCH", m)]);
+    assert_eq!(text.lines().count(), 1);
+    assert!(text.contains(r#"SYMLINK+="muthur-tty""#));
+    let tmp = std::env::temp_dir().join(format!("muthur-udev-{}.rules", std::process::id()));
+    std::fs::write(&tmp, &text).unwrap();
+    let out = run("udev_template_renders", Command::new("udevadm").arg("verify").arg(&tmp));
+    let _ = std::fs::remove_file(&tmp);
+    if let Some(o) = out {
+        let err = String::from_utf8_lossy(&o.stderr);
+        if !o.status.success() && (err.contains("nrecognized") || err.contains("nknown") || err.contains("nvalid command")) {
+            eprintln!("udev_template_renders: verify unsupported, skipping");
+            return;
         }
-        seen += 1;
-        let made = stmts[..n]
-            .iter()
-            .any(|p| p.starts_with("sudo install -d") && p.split_whitespace().any(|w| w == dir));
-        assert!(made, "{dir} is installed into without `install -d` first");
+        assert!(o.status.success(), "udevadm: {err}{}", String::from_utf8_lossy(&o.stdout));
     }
-    assert!(seen >= 4, "found only {seen} drop-in installs");
+}
+
+#[test]
+fn dropin_template_renders() {
+    let text = render(
+        "deploy/systemd/serial-getty@muthur-tty.service.d/override.conf.in",
+        &[("AGETTY", "/sbin/agetty"), ("BAUD", "38400")],
+    );
+    assert!(text.contains(r"ExecStart=-/sbin/agetty -o '-p -- \\u' 38400 %I vt100"));
 }

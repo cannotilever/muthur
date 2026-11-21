@@ -1,1 +1,0 @@
-SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", ATTRS{serial}=="A9E91BA3", SYMLINK+="wy60", TAG+="systemd", ENV{SYSTEMD_WANTS}+="serial-getty@wy60.service"

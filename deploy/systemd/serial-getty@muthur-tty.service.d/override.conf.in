@@ -1,0 +1,3 @@
+[Service]
+ExecStart=
+ExecStart=-@AGETTY@ -o '-p -- \\u' @BAUD@ %I vt100
