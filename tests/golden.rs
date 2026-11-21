@@ -897,3 +897,111 @@ fn standby_writes_nothing_after_first_frame() {
     assert!(strict.violations.is_empty(), "{:?}", strict.violations);
     assert_eq!(strict.inner.len(), sent, "standby wrote to the wire");
 }
+
+/// A 70 s shutdown countdown started at the returned instant.
+fn destruct_for_golden() -> (muthur::destruct::Destruct, std::time::Instant) {
+    use muthur::destruct::{Destruct, DestructRequest, Kind};
+    let mut pw = muthur::secret::Secret::new();
+    pw.push('p');
+    let t0 = std::time::Instant::now();
+    let req = DestructRequest {
+        kind: Kind::Shutdown,
+        total: std::time::Duration::from_secs(70),
+        password: pw,
+    };
+    (Destruct::new(req, t0, 7), t0)
+}
+
+fn destruct_terminal() -> Terminal<Wy60Backend<StrictWriter<Vec<u8>, Vt100Dialect>, Vt100Dialect>> {
+    let w = StrictWriter::new(Vec::new(), Vt100Dialect);
+    let mut t = Terminal::new(Wy60Backend::new(w, Vt100Dialect, 80, 43)).unwrap();
+    t.clear().unwrap();
+    t
+}
+
+/// Draw one frame of `d` at `now`; returns the bytes it sent.
+fn destruct_frame(
+    t: &mut Terminal<Wy60Backend<StrictWriter<Vec<u8>, Vt100Dialect>, Vt100Dialect>>,
+    d: &muthur::destruct::Destruct,
+    now: std::time::Instant,
+) -> usize {
+    let before = t.backend().writer().inner.len();
+    let lines = d.line_attrs(ratatui::layout::Rect::new(0, 0, 80, 43));
+    t.backend_mut().set_line_attrs(&lines);
+    t.draw(|f| d.render(now, f.area(), f.buffer_mut())).unwrap();
+    t.backend().writer().inner.len() - before
+}
+
+/// One frame through the strict writer and the emulator, checked against a golden.
+fn destruct_golden(name: &str, d: &muthur::destruct::Destruct, now: std::time::Instant) {
+    let mut t = destruct_terminal();
+    destruct_frame(&mut t, d, now);
+    let strict = t.backend().writer();
+    assert!(strict.violations.is_empty(), "{:?}", strict.violations);
+    // The emulator ignores DECDHL: the counter rows show as half-width rows.
+    let mut p = vt100::Parser::new(NonZeroU16::new(43).unwrap(), NonZeroU16::new(80).unwrap(), 0);
+    p.process(&strict.inner);
+    let text = p.screen().contents();
+    let path = format!("{}/tests/golden/{name}.txt", env!("CARGO_MANIFEST_DIR"));
+    if std::env::var("UPDATE_GOLDEN").is_ok() {
+        std::fs::write(&path, &text).unwrap();
+    }
+    let want = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("missing {path}; run with UPDATE_GOLDEN=1"));
+    assert_eq!(text, want, "{name} differs from golden");
+}
+
+fn secs(x: f64) -> std::time::Duration {
+    std::time::Duration::from_secs_f64(x)
+}
+
+#[test]
+fn destruct_wide() {
+    let (d, t0) = destruct_for_golden();
+    destruct_golden("destruct_wide", &d, t0 + secs(0.1));
+}
+
+#[test]
+fn destruct_glow() {
+    let (d, t0) = destruct_for_golden();
+    destruct_golden("destruct_glow", &d, t0 + secs(1.6));
+}
+
+#[test]
+fn destruct_frozen() {
+    let (mut d, t0) = destruct_for_golden();
+    d.key(&Key::Char('x'), t0 + secs(1.0));
+    d.key(&Key::Enter, t0 + secs(1.0));
+    let since = t0 + secs(69.95);
+    assert!(d.tick(since).is_none());
+    assert_eq!(d.outcome_so_far(), muthur::destruct::Outcome::Frozen);
+    destruct_golden("destruct_frozen", &d, since + secs(2.0));
+}
+
+#[test]
+fn destruct_failed() {
+    let (mut d, t0) = destruct_for_golden();
+    let zero = t0 + secs(70.0);
+    assert!(matches!(d.tick(zero), Some(muthur::destruct::Effect::Execute(_))));
+    d.on_executed(&muthur::ops::runner::RunOutput::Exited {
+        code: 1,
+        stdout: String::new(),
+        stderr: "sudo: a password is required\n".into(),
+    });
+    assert_eq!(d.outcome_so_far(), muthur::destruct::Outcome::Failed);
+    destruct_golden("destruct_failed", &d, zero + secs(0.5));
+}
+
+#[test]
+fn destruct_steps_fit_the_wire_budget() {
+    let (d, t0) = destruct_for_golden();
+    let mut t = destruct_terminal();
+    let mut sizes = Vec::new();
+    for at in [0.0, 0.6, 1.2, 1.6, 2.1, 2.6, 3.1] {
+        sizes.push((at, destruct_frame(&mut t, &d, t0 + secs(at))));
+    }
+    println!("destruct frame bytes: {sizes:?}");
+    assert!(t.backend().writer().violations.is_empty(), "{:?}", t.backend().writer().violations);
+    for &(at, n) in &sizes[1..] {
+        assert!(n <= 2048, "step at {at} s is {n} bytes");
+    }
+}

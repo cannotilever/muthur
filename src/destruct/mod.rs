@@ -2,6 +2,7 @@
 //! ticks and keys and carries out the returned `Effect`s.
 
 pub mod quiz;
+pub mod screen;
 
 use std::time::{Duration, Instant};
 
