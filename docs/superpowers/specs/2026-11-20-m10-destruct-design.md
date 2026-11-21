@@ -34,7 +34,7 @@ Taken from the video's frames:
 | Duration | `[utility] destruct_seconds = 60` default, valid 10–5999. Adjusted at arming with ←/→ through 10 s, 30 s, 1 m, 2 m, 5 m, 10 m (the configured value is the start point and is included in the steps if it is not one of them). |
 | Counter | Real time remaining as `MMSSt`, shown as `ceil(remaining / 100 ms)`. |
 | Esc | Silent, immediate abort at any time once armed. No message. |
-| Abort questionnaire | Any submitted answer, right or wrong, counts. If at least one answer was submitted, the countdown freezes at `00001` instead of executing. |
+| Abort questionnaire | Any submitted answer, right or wrong, counts. The first submitted answer really aborts the operation: the password is zeroized on the spot and nothing can execute any more. The countdown carries on for the bit and freezes at `00001`. |
 | Exclusivity | Once armed: no F1–F4, no prefix key, no standby, no bell. |
 | Break | Silent abort, then the usual Break re-init. |
 | Structure | A `destruct` module shaped like `standby` and `splash`: `App` holds `Option<Destruct>` and renders it in place of the chrome and tabs. |
@@ -87,7 +87,8 @@ nothing on other tabs. While a prompt is open, F1–F4 still switch tabs
   replay if enabled).
 - **Freeze:** if at least one answer has been submitted, the first tick with
   ≤ 100 ms remaining freezes the countdown: the counter holds at `00001`, the X
-  stays in its current phase. The password is zeroized at once. After 1.5 s
+  stays in its current phase. (The password was already zeroized when the first
+  answer was submitted.) After 1.5 s
   the prompt row shows `SELF-DESTRUCT ABORTED`; 4 s after that the Utility tab
   returns. Any key during the freeze is ignored except Esc, which returns at
   once. Audit outcome `frozen`.
@@ -161,7 +162,9 @@ so a slowed line (XON/XOFF) skips frames without the clock drifting.
 An ordered list of steps; each has a question, a check (right or wrong) and a
 wrong-answer retort. A right answer moves to the next step. A wrong answer
 shows its retort for 1.5 s, then the same question again; typing carries on
-meanwhile. Only a non-empty Enter submits; every submission sets `answered`.
+meanwhile. Only a non-empty Enter submits; every submission sets `answered`. The first
+submission zeroizes the password (`password` becomes `None`), so from then on
+the run cannot reach `Execute`.
 Answers are capped at 30 characters, shown as typed (not uppercased);
 Backspace edits, Ctrl-C clears the answer.
 
@@ -207,7 +210,8 @@ Backspace edits, Ctrl-C clears the answer.
 
 - **Unit:** counter formatting and the ceiling; freeze vs. execute at the
   100 ms boundary (including an answer submitted inside the last 100 ms); Esc
-  and Break in every phase; the password zeroized on every ending; each quiz
+  and Break in every phase; the password zeroized on every ending and on the
+  first submitted answer (no `Execute` possible afterwards); each quiz
   check and retort; retort timing; the arithmetic seed.
 - **Golden (strict allowlist):** one frame per animation phase, the frozen
   screen, the failure screen, the counter's double-height rows; the largest
