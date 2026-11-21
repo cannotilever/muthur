@@ -36,14 +36,14 @@ splash = true
 # terminal's setup menu). 0 = never.
 standby_minutes = 10
 
-# ── SHELL folder (F3) ────────────────────────────────────────────────────────
+# ── SHELL folder (F4) ────────────────────────────────────────────────────────
 [shell]
 command = "fish"
 args = []
 # Lines of history kept for ^] [
 scrollback = 1000
 
-# ── UTILITY folder (F1) ──────────────────────────────────────────────────────
+# ── UTILITY folder (F2) ──────────────────────────────────────────────────────
 [utility]
 # Refresh interval (minimum 1).
 interval_secs = 2
@@ -60,7 +60,7 @@ exclude_fs = [
     "nfs4", "cifs", "smb3",
 ]
 
-# ── MU/TH/UR folder (F2) ─────────────────────────────────────────────────────
+# ── MU/TH/UR folder (F1) ─────────────────────────────────────────────────────
 [muthur]
 # "anthropic" (native Messages API) | "openai" (OpenAI-compatible, e.g. vLLM)
 provider = "anthropic"
