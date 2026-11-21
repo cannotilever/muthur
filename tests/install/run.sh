@@ -351,6 +351,22 @@ t_cleanup_trap_runs_hook() {
 	chk stage-gone test ! -e "$(cat "$T/stage")"
 }
 
+t_adapter_newline_in_flags_dies() {
+	NL='
+'
+	OPT_VID="0403${NL}\"; RUN+=\"x" OPT_PID=6001 OPT_SERIAL=S; dies --vid step_adapter
+	OPT_VID=0403 OPT_SERIAL="S${NL}x"; dies --serial step_adapter
+}
+t_system_no_agetty_dies() {
+	sys_env; MUTHUR_SBIN_DIRS=$T/none;
+	( find_tool() { return 1; }; step_system ) >/dev/null 2>&1 && exit 1
+	chk none test ! -e "$ROOT/etc"
+}
+t_agent_no_nologin_dies() {
+	( step_agent ) >/dev/null 2>&1 && exit 1
+	chk none test ! -e "$ROOT/etc"
+}
+
 if [ "${1:-}" = "--one" ]; then
 	setup
 	"$2"

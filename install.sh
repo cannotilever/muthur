@@ -264,9 +264,10 @@ parse_udev_props() {
 
 # list_adapters: one tab-separated line per serial device (dev vid pid serial idpath byid).
 list_adapters() {
+	_udevadm=$(find_tool udevadm) || die "udevadm not found"
 	for _dev in "$ROOT"/dev/ttyUSB* "$ROOT"/dev/ttyACM*; do
 		[ -e "$_dev" ] || continue
-		_props=$("$(find_tool udevadm)" info --query=property --name="$_dev") || continue
+		_props=$("$_udevadm" info --query=property --name="$_dev") || continue
 		parse_udev_props <<EOF
 $_props
 EOF
@@ -286,7 +287,10 @@ match_line() {
 }
 
 check_hex() {
-	printf '%s' "$2" | grep -Eq '^[0-9a-fA-F]{4}$' || die "$1 must be four hex digits (got: $2)"
+	case $2 in
+	[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) ;;
+	*) die "$1 must be four hex digits" ;;
+	esac
 }
 # check_plain FLAG VALUE: no characters that could break out of a udev rule value.
 check_plain() {
@@ -313,7 +317,7 @@ step_adapter() {
 		ADAPTER_MATCH=$(match_line) || exit 1
 		return 0
 	fi
-	_list=$(list_adapters)
+	_list=$(list_adapters) || exit 1
 	[ -n "$_list" ] || die "no USB serial adapter found (/dev/ttyUSB*, /dev/ttyACM*); plug it in, or pass --vid, --pid and --serial (or --port)"
 	_n=$(printf '%s\n' "$_list" | wc -l)
 	_i=0
@@ -332,7 +336,7 @@ EOF
 		_pick=1
 	else
 		[ "$YES" != 1 ] || die "several adapters found and --yes gives no default; pass --vid, --pid and --serial (or --port)"
-		_pick=$(ask "Which adapter (1-$_n)?" "" vid)
+		_pick=$(ask "Which adapter (1-$_n)?" "" vid) || exit 1
 		case $_pick in "" | *[!0-9]*) die "not a number: $_pick" ;; esac
 		{ [ "$_pick" -ge 1 ] && [ "$_pick" -le "$_n" ]; } || die "choice out of range: $_pick"
 	fi
@@ -340,6 +344,8 @@ EOF
 	ADP_VID=$(printf '%s' "$_row" | cut -f2) ADP_PID=$(printf '%s' "$_row" | cut -f3)
 	ADP_SERIAL=$(printf '%s' "$_row" | cut -f4) ADP_PATH=$(printf '%s' "$_row" | cut -f5)
 	[ -n "$ADP_VID" ] && [ -n "$ADP_PID" ] || die "cannot read the adapter's USB ids; pass --vid, --pid and --serial (or --port)"
+	check_hex "adapter vid" "$ADP_VID"
+	check_hex "adapter pid" "$ADP_PID"
 	[ -z "$ADP_SERIAL" ] || check_plain "adapter serial" "$ADP_SERIAL"
 	[ -z "$ADP_PATH" ] || check_plain "adapter port" "$ADP_PATH"
 	ADAPTER_MATCH=$(match_line) || exit 1
@@ -374,7 +380,7 @@ sys_install() {
 step_system() {
 	say "system files (udev rule, serial getty)"
 	[ -n "${ADAPTER_MATCH:-}" ] || die "no adapter match; run step_adapter first"
-	_agetty=$(find_agetty)
+	_agetty=$(find_agetty) || exit 1
 	stage_new
 	render "$SCRIPT_DIR/deploy/udev/99-muthur-tty.rules.in" "$STAGE/rule" MATCH="$ADAPTER_MATCH"
 	render "$SCRIPT_DIR/deploy/systemd/serial-getty@muthur-tty.service.d/override.conf.in" "$STAGE/drop" \
@@ -400,13 +406,14 @@ step_system() {
 
 step_agent() {
 	say "agent account (muthur-agent, sudoers, nftables)"
-	_nologin=$(find_nologin)
+	_nologin=$(find_nologin) || exit 1
 	_op=$(id -un)
 	stage_new
 	render "$SCRIPT_DIR/deploy/sysusers.d/muthur-agent.conf.in" "$STAGE/sysusers" NOLOGIN="$_nologin"
 	sed "s/^OPERATOR /$_op /" "$SCRIPT_DIR/deploy/sudoers.d/muthur-agent" > "$STAGE/sudoers"
 	grep -q "^$_op ALL" "$STAGE/sudoers" || die "cannot render sudoers for user $_op"
-	"$(find_tool visudo)" -cf "$STAGE/sudoers" >/dev/null || die "rendered sudoers file failed visudo -cf"
+	_visudo=$(find_tool visudo) || die "visudo not found"
+	"$_visudo" -cf "$STAGE/sudoers" >/dev/null || die "rendered sudoers file failed visudo -cf"
 	for _g in adm systemd-journal; do
 		[ -n "$(getent group "$_g" 2>/dev/null)" ] || warn "group $_g does not exist; the agent will not get its access"
 	done
