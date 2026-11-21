@@ -32,13 +32,16 @@ struct CellState {
     attrs: Attrs,
 }
 
-const BLANK: CellState = CellState { glyph: Glyph::Ascii(b' '), attrs: Attrs {
-    bold: false,
-    dim: false,
-    underline: false,
-    blink: false,
-    reverse: false,
-} };
+const BLANK: CellState = CellState {
+    glyph: Glyph::Ascii(b' '),
+    attrs: Attrs {
+        bold: false,
+        dim: false,
+        underline: false,
+        blink: false,
+        reverse: false,
+    },
+};
 
 pub struct Wy60Backend<W: Write, D: Dialect> {
     writer: W,
@@ -142,7 +145,10 @@ impl<W: Write, D: Dialect> Wy60Backend<W, D> {
     /// Record a ratatui cell in `want`. Wide graphemes blank the cells they cover.
     fn apply(&mut self, col: u16, row: u16, cell: &Cell) {
         let i = self.idx(row, col);
-        self.want[i] = CellState { glyph: map_glyph(cell.symbol()), attrs: Attrs::from(cell.modifier) };
+        self.want[i] = CellState {
+            glyph: map_glyph(cell.symbol()),
+            attrs: Attrs::from(cell.modifier),
+        };
         let width = (cell.symbol().width() as u16).max(1);
         for extra in 1..width {
             if col + extra < self.cols {
@@ -203,7 +209,11 @@ impl<W: Write, D: Dialect> Wy60Backend<W, D> {
         for r in 0..rows {
             let src = r + k as isize;
             for c in 0..cols {
-                let v = if (0..rows).contains(&src) { band[src as usize * cols + c] } else { Some(BLANK) };
+                let v = if (0..rows).contains(&src) {
+                    band[src as usize * cols + c]
+                } else {
+                    Some(BLANK)
+                };
                 self.shown[(h.top as usize + r as usize) * cols + c] = v;
             }
         }
@@ -211,8 +221,11 @@ impl<W: Write, D: Dialect> Wy60Backend<W, D> {
         let lines: Vec<Option<LineAttr>> = self.shown_lines[h.top as usize..bottom as usize].to_vec();
         for r in 0..rows {
             let src = r + k as isize;
-            self.shown_lines[h.top as usize + r as usize] =
-                if (0..rows).contains(&src) { lines[src as usize] } else { Some(LineAttr::Single) };
+            self.shown_lines[h.top as usize + r as usize] = if (0..rows).contains(&src) {
+                lines[src as usize]
+            } else {
+                Some(LineAttr::Single)
+            };
         }
     }
 }
@@ -322,7 +335,10 @@ impl<W: Write, D: Dialect> Backend for Wy60Backend<W, D> {
     }
 
     fn window_size(&mut self) -> io::Result<WindowSize> {
-        Ok(WindowSize { columns_rows: Size::new(self.cols, self.rows), pixels: Size::new(0, 0) })
+        Ok(WindowSize {
+            columns_rows: Size::new(self.cols, self.rows),
+            pixels: Size::new(0, 0),
+        })
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -338,8 +354,8 @@ impl<W: Write, D: Dialect> Backend for Wy60Backend<W, D> {
 mod tests {
     use super::*;
     use crate::dialect::Vt100Dialect;
-    use crate::strict::StrictWriter;
     use crate::scroll::{HintSlot, ScrollHint};
+    use crate::strict::StrictWriter;
     use ratatui::Terminal;
     use ratatui::layout::Rect;
     use ratatui::style::{Modifier, Style};
@@ -510,7 +526,10 @@ mod tests {
 
     fn hinted_term() -> (T, HintSlot) {
         let slot = HintSlot::default();
-        (Terminal::new(Wy60Backend::new(Vec::new(), Vt100Dialect, 80, 43).with_hints(slot.clone())).unwrap(), slot)
+        (
+            Terminal::new(Wy60Backend::new(Vec::new(), Vt100Dialect, 80, 43).with_hints(slot.clone())).unwrap(),
+            slot,
+        )
     }
 
     fn line(n: usize) -> String {
@@ -537,7 +556,15 @@ mod tests {
     fn scroll_hint_repairs_static_columns() {
         let (mut t, slot) = hinted_term();
         let frame = |start: usize| -> Vec<String> {
-            (0..20).map(|i| if i < 2 || i % 5 == 0 { format!("SIDE{i:02}| {}", line(start + i)) } else { format!("      | {}", line(start + i)) }).collect()
+            (0..20)
+                .map(|i| {
+                    if i < 2 || i % 5 == 0 {
+                        format!("SIDE{i:02}| {}", line(start + i))
+                    } else {
+                        format!("      | {}", line(start + i))
+                    }
+                })
+                .collect()
         };
         let a = frame(0);
         let b: Vec<String> = frame(0)
@@ -675,5 +702,4 @@ mod tests {
         assert!(out.contains("\x1b[4;1H\x1b#5") && out.contains("\x1b[5;1H\x1b#5"), "{out:?}");
         assert_eq!(out.matches("\x1b#5").count(), 2, "{out:?}");
     }
-
 }

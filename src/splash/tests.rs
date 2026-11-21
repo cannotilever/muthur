@@ -18,7 +18,10 @@ fn info() -> SplashInfo {
 fn snap() -> Snapshot {
     Snapshot {
         cpu_cores: vec![0.0; 16],
-        mem: Usage { used: 0, total: (31.2 * (1u64 << 30) as f64) as u64 },
+        mem: Usage {
+            used: 0,
+            total: (31.2 * (1u64 << 30) as f64) as u64,
+        },
         uptime_secs: 3 * 86400 + 4 * 3600 + 12 * 60,
         failed_units: Some(vec![]),
         ..Default::default()
@@ -196,7 +199,13 @@ fn one_late_advance_reaches_done() {
 fn long_values_are_truncated() {
     let t0 = Instant::now();
     let name: String = ('A'..='Z').cycle().take(60).collect();
-    let mut s = Splash::new(SplashInfo { ship_name: name.clone(), ..info() }, t0);
+    let mut s = Splash::new(
+        SplashInfo {
+            ship_name: name.clone(),
+            ..info()
+        },
+        t0,
+    );
     s.on_metrics(&snap());
     s.advance(ms(t0, 60_000));
     let out = text(&s);
@@ -208,7 +217,13 @@ fn long_values_are_truncated() {
 #[test]
 fn offline_reason_is_uppercased() {
     let t0 = Instant::now();
-    let mut s = Splash::new(SplashInfo { interface: Interface::Offline("no key".into()), ..info() }, t0);
+    let mut s = Splash::new(
+        SplashInfo {
+            interface: Interface::Offline("no key".into()),
+            ..info()
+        },
+        t0,
+    );
     s.on_metrics(&snap());
     s.advance(ms(t0, 60_000));
     assert!(text(&s).contains("[OFFLINE: NO KEY]"));
@@ -231,7 +246,10 @@ fn snapshot_after_timeout_fills_later_lines() {
 fn failed_units_variants() {
     let t0 = Instant::now();
     let mut a = Splash::new(info(), t0);
-    a.on_metrics(&Snapshot { failed_units: Some(vec!["a".into(), "b".into()]), ..snap() });
+    a.on_metrics(&Snapshot {
+        failed_units: Some(vec!["a".into(), "b".into()]),
+        ..snap()
+    });
     a.advance(ms(t0, 60_000));
     assert!(text(&a).contains("2 FAILED"));
     let mut b = Splash::new(info(), t0);
@@ -244,7 +262,10 @@ fn failed_units_variants() {
 fn offline_interface() {
     let t0 = Instant::now();
     let mut s = Splash::new(
-        SplashInfo { interface: Interface::Offline("NO ACCESS CODE".into()), ..info() },
+        SplashInfo {
+            interface: Interface::Offline("NO ACCESS CODE".into()),
+            ..info()
+        },
         t0,
     );
     s.on_metrics(&snap());
@@ -256,7 +277,10 @@ fn offline_interface() {
 fn uptime_under_a_day() {
     let t0 = Instant::now();
     let mut s = Splash::new(info(), t0);
-    s.on_metrics(&Snapshot { uptime_secs: 4 * 3600 + 12 * 60, ..snap() });
+    s.on_metrics(&Snapshot {
+        uptime_secs: 4 * 3600 + 12 * 60,
+        ..snap()
+    });
     s.advance(ms(t0, 60_000));
     let out = text(&s);
     let line = out.lines().find(|l| l.contains("UPTIME")).unwrap();

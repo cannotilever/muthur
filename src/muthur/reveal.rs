@@ -18,7 +18,16 @@ pub struct Reveal {
 
 impl Reveal {
     pub fn new(cps: u32) -> Self {
-        Self { text: String::new(), shown: 0, total: 0, byte: 0, cps, last: None, credit: 0.0, skipping: false }
+        Self {
+            text: String::new(),
+            shown: 0,
+            total: 0,
+            byte: 0,
+            cps,
+            last: None,
+            credit: 0.0,
+            skipping: false,
+        }
     }
 
     pub fn push(&mut self, s: &str, now: Instant) {
@@ -93,7 +102,37 @@ impl Reveal {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
-    #[test] fn reveal_paces_at_cps() { let t0 = Instant::now(); let mut r = Reveal::new(50); r.push("0123456789", t0); r.advance(t0 + Duration::from_millis(100)); assert_eq!(r.visible(), "01234"); r.advance(t0 + Duration::from_millis(130)); assert_eq!(r.visible(), "012345"); }
-    #[test] fn reveal_does_not_burst_after_stall() { let t0 = Instant::now(); let mut r = Reveal::new(50); r.push("AB", t0); r.advance(t0 + Duration::from_secs(1)); r.push("CDEFG", t0 + Duration::from_secs(5)); r.advance(t0 + Duration::from_millis(5020)); assert_eq!(r.visible(), "ABC"); }
-    #[test] fn skip_shows_all_and_later_pushes() { let t0 = Instant::now(); let mut r = Reveal::new(50); r.push("ABC", t0); r.skip(); assert_eq!(r.visible(), "ABC"); r.push("D", t0); assert_eq!(r.visible(), "ABCD"); r.reset(); r.push("E", t0); assert_eq!(r.visible(), ""); }
+    #[test]
+    fn reveal_paces_at_cps() {
+        let t0 = Instant::now();
+        let mut r = Reveal::new(50);
+        r.push("0123456789", t0);
+        r.advance(t0 + Duration::from_millis(100));
+        assert_eq!(r.visible(), "01234");
+        r.advance(t0 + Duration::from_millis(130));
+        assert_eq!(r.visible(), "012345");
+    }
+    #[test]
+    fn reveal_does_not_burst_after_stall() {
+        let t0 = Instant::now();
+        let mut r = Reveal::new(50);
+        r.push("AB", t0);
+        r.advance(t0 + Duration::from_secs(1));
+        r.push("CDEFG", t0 + Duration::from_secs(5));
+        r.advance(t0 + Duration::from_millis(5020));
+        assert_eq!(r.visible(), "ABC");
+    }
+    #[test]
+    fn skip_shows_all_and_later_pushes() {
+        let t0 = Instant::now();
+        let mut r = Reveal::new(50);
+        r.push("ABC", t0);
+        r.skip();
+        assert_eq!(r.visible(), "ABC");
+        r.push("D", t0);
+        assert_eq!(r.visible(), "ABCD");
+        r.reset();
+        r.push("E", t0);
+        assert_eq!(r.visible(), "");
+    }
 }

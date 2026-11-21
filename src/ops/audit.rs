@@ -107,11 +107,19 @@ impl AuditLog {
             Ok(bytes) => bytes.last().is_some_and(|b| *b != b'\n'),
             Err(_) => false,
         };
-        Ok(Self { path: Some(path), needs_newline, online: true })
+        Ok(Self {
+            path: Some(path),
+            needs_newline,
+            online: true,
+        })
     }
 
     pub fn offline() -> Self {
-        Self { path: None, needs_newline: false, online: false }
+        Self {
+            path: None,
+            needs_newline: false,
+            online: false,
+        }
     }
 
     pub fn is_online(&self) -> bool {
@@ -191,7 +199,21 @@ mod tests {
         let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
         let mut sorted = keys.clone();
         sorted.sort();
-        let mut want = vec!["ts", "tool", "args", "agent", "as_root", "reason", "deny_rule", "review", "decision", "argv", "exit", "ms", "output"];
+        let mut want = vec![
+            "ts",
+            "tool",
+            "args",
+            "agent",
+            "as_root",
+            "reason",
+            "deny_rule",
+            "review",
+            "decision",
+            "argv",
+            "exit",
+            "ms",
+            "output",
+        ];
         want.sort();
         assert_eq!(sorted, want);
         assert_eq!(v["decision"], "auto");
@@ -267,7 +289,14 @@ mod tests {
             as_root: true,
             reason: Some("r".into()),
             deny_rule: Some("LOCKOUT".into()),
-            review: Some(ReviewRecord { verdict: "deny".into(), risk: "high".into(), note: "n".into(), model: "m".into(), ms: 1, error: None }),
+            review: Some(ReviewRecord {
+                verdict: "deny".into(),
+                risk: "high".into(),
+                note: "n".into(),
+                model: "m".into(),
+                ms: 1,
+                error: None,
+            }),
             agent: Some(AgentId::Tech),
             ..AuditEntry::new("run", serde_json::json!({}), Decision::Overridden)
         };
@@ -288,7 +317,10 @@ mod tests {
         let p = d.path().join("audit.jsonl");
         let mut l = AuditLog::open(p.clone()).unwrap();
         l.append(&entry("a"), "t1").unwrap();
-        let e = AuditEntry { delegated_by: Some("c1".into()), ..entry("b") };
+        let e = AuditEntry {
+            delegated_by: Some("c1".into()),
+            ..entry("b")
+        };
         l.append(&e, "t2").unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
         let lines: Vec<&str> = text.lines().collect();

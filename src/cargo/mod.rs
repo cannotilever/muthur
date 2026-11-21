@@ -209,7 +209,9 @@ impl CargoTab {
 
     /// U/R/D/L on the selected container.
     fn request(&mut self, verb: Verb) {
-        let (Some(_), Some(k)) = (&self.runtime, self.sel.selected(self.list())) else { return };
+        let (Some(_), Some(k)) = (&self.runtime, self.sel.selected(self.list())) else {
+            return;
+        };
         if self.action.is_some() {
             self.message = Some(("BUSY".into(), false));
             return;
@@ -227,7 +229,9 @@ impl CargoTab {
     }
 
     fn start(&mut self, verb: Verb, id: String, name: String) {
-        let Some(rt) = self.runtime.clone() else { return };
+        let Some(rt) = self.runtime.clone() else {
+            return;
+        };
         let argv = verb.argv(&rt, &id);
         let seq = self.next_seq();
         (self.deps.run)(seq, argv.clone(), verb.timeout(), verb.merged());
@@ -379,7 +383,9 @@ impl Tab for CargoTab {
             return self.logs_key(key);
         }
         self.message = None;
-        let State::Manifest(Some(c)) = &self.state else { return };
+        let State::Manifest(Some(c)) = &self.state else {
+            return;
+        };
         match key {
             // Changed your mind while the logs are coming: drop them.
             Key::Esc => self.discard_log_fetch(),

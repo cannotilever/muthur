@@ -21,7 +21,10 @@ fn tech_deps(cfg: &MuthurSection, probe: Probe, reviewer_ready: bool) -> AgentDe
         cfg: cfg.technical_cfg(),
         prompt: tech_prompt(&agent),
         facts: Box::new(|| "HOST: testhost".into()),
-        policy: Policy { deny: Some(crate::tools::deny::test_rules()), net_allow: Vec::new() },
+        policy: Policy {
+            deny: Some(crate::tools::deny::test_rules()),
+            net_allow: Vec::new(),
+        },
         label: agent.label.clone(),
         max_rounds: agent.max_rounds,
         delegate_report: crate::config::DelegateReport::Relayed,
@@ -34,14 +37,7 @@ pub(super) fn harness_full(cfg: MuthurSection, tools: ToolsSection, audit_online
     harness_tech(cfg, tools, audit_online, Probe::Ready, true, prefill)
 }
 
-fn harness_tech(
-    cfg: MuthurSection,
-    tools: ToolsSection,
-    audit_online: bool,
-    probe: Probe,
-    reviewer_ready: bool,
-    prefill: impl FnOnce(&mut ChatLog),
-) -> H {
+fn harness_tech(cfg: MuthurSection, tools: ToolsSection, audit_online: bool, probe: Probe, reviewer_ready: bool, prefill: impl FnOnce(&mut ChatLog)) -> H {
     let tech = tech_deps(&cfg, probe, reviewer_ready);
     harness_base(cfg, audit_online, prefill, |cfg, log, audit, deps| {
         MuthurTab::new(cfg, ToolDefs::persona(&tools), "USCSS NOSTROMO", log, audit, deps, tech)
@@ -51,11 +47,22 @@ fn harness_tech(
 // ---- Persona tool turns ----
 
 fn ok(content: &str) -> ToolOutcome {
-    ToolOutcome { content: content.into(), is_error: false, argv: Some(vec!["docker".into()]), exit: Some(json!(0)), ms: 5, audit_output: None }
+    ToolOutcome {
+        content: content.into(),
+        is_error: false,
+        argv: Some(vec!["docker".into()]),
+        exit: Some(json!(0)),
+        ms: 5,
+        audit_output: None,
+    }
 }
 
 fn tool_call(id: &str, name: &str, input: serde_json::Value) -> StreamEvent {
-    StreamEvent::ToolCall { id: id.into(), name: name.into(), input }
+    StreamEvent::ToolCall {
+        id: id.into(),
+        name: name.into(),
+        input,
+    }
 }
 
 /// Ends request `req` with a ToolUse stop carrying `calls` (id, name, input).
@@ -65,7 +72,14 @@ fn tool_use(h: &mut H, req: u64, calls: &[(&str, &str, serde_json::Value)]) {
         h.t.on_llm(req, tool_call(id, name, input.clone()));
         raw.push(json!({"type":"tool_use","id":id,"name":name,"input":input}));
     }
-    h.t.on_llm(req, StreamEvent::Done { stop: Stop::ToolUse, model: Some("claude-test".into()), raw: Some(raw) });
+    h.t.on_llm(
+        req,
+        StreamEvent::Done {
+            stop: Stop::ToolUse,
+            model: Some("claude-test".into()),
+            raw: Some(raw),
+        },
+    );
 }
 
 fn last_results(h: &H) -> Vec<ToolResult> {
@@ -77,7 +91,11 @@ fn last_results(h: &H) -> Vec<ToolResult> {
 }
 
 fn records(h: &H) -> Vec<serde_json::Value> {
-    std::fs::read_to_string(&h.path).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+    std::fs::read_to_string(&h.path)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
 }
 
 fn status_row(h: &mut H) -> String {
@@ -85,7 +103,11 @@ fn status_row(h: &mut H) -> String {
 }
 
 fn audit_records(h: &H) -> Vec<serde_json::Value> {
-    std::fs::read_to_string(&h.audit_path).unwrap_or_default().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+    std::fs::read_to_string(&h.audit_path)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
 }
 
 #[test]
@@ -206,7 +228,14 @@ fn history_shows_tool_notes() {
     let mut h = harness_with(cfg(), |l| {
         l.append_user("[SHIP TIME X] STATUS", "ts", AgentId::Muthur).unwrap();
         let raw = vec![json!({"type":"tool_use","id":"c1","name":"ship_status","input":{}})];
-        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "".into(), stop: "tool_use".into(), raw: Some(raw), lane: Lane::Muthur };
+        let a = Assistant {
+            provider: Provider::Anthropic,
+            model: "m".into(),
+            text: "".into(),
+            stop: "tool_use".into(),
+            raw: Some(raw),
+            lane: Lane::Muthur,
+        };
         l.append_assistant(a, "ts").unwrap();
         let r = |id: &str, content: &str, label: &str| ToolResult {
             id: id.into(),
@@ -215,13 +244,33 @@ fn history_shows_tool_notes() {
             is_error: false,
             label: label.into(),
         };
-        l.append_tool(&[r("c1", "ok", "SHIP STATUS"), r("c2", "NOT AUTHORIZED: UNKNOWN CONTAINER", "CONTAINER LOGS web 50")], "ts", &Lane::Muthur).unwrap();
-        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "NOMINAL.".into(), stop: "end_turn".into(), raw: None, lane: Lane::Muthur };
+        l.append_tool(
+            &[
+                r("c1", "ok", "SHIP STATUS"),
+                r("c2", "NOT AUTHORIZED: UNKNOWN CONTAINER", "CONTAINER LOGS web 50"),
+            ],
+            "ts",
+            &Lane::Muthur,
+        )
+        .unwrap();
+        let a = Assistant {
+            provider: Provider::Anthropic,
+            model: "m".into(),
+            text: "NOMINAL.".into(),
+            stop: "end_turn".into(),
+            raw: None,
+            lane: Lane::Muthur,
+        };
         l.append_assistant(a, "ts").unwrap();
     });
     let rows = screen(&mut h.t, 61, 40);
     let at = |needle: &str| rows.iter().position(|r| r.contains(needle)).unwrap_or_else(|| panic!("{needle}: {rows:#?}"));
-    let (u, n, d, r) = (at("> STATUS"), at("ACCESSING: SHIP STATUS"), at("ACCESS DENIED: CONTAINER LOGS web 50"), at("NOMINAL."));
+    let (u, n, d, r) = (
+        at("> STATUS"),
+        at("ACCESSING: SHIP STATUS"),
+        at("ACCESS DENIED: CONTAINER LOGS web 50"),
+        at("NOMINAL."),
+    );
     assert!(u < n && n < d && d < r, "{rows:#?}");
 }
 
@@ -231,7 +280,10 @@ fn persona_mentions_tools() {
     let tail = "You can query the ship's systems with your tools. Use them instead of guessing.\nFor diagnostics or changes, delegate to the SCIENCE OFFICER with a complete,\nself-contained task. It sees nothing of this conversation. Report its findings\nfaithfully: never claim something was done that was not.";
     assert!(s.ends_with(tail), "{s}");
     assert!(!s.contains("/DIRECT") && !s.contains("{OFFICER}"), "{s}");
-    let own = MuthurSection { system_prompt: Some("Mine for {SHIP}.".into()), ..cfg() };
+    let own = MuthurSection {
+        system_prompt: Some("Mine for {SHIP}.".into()),
+        ..cfg()
+    };
     assert_eq!(system_prompt(&own, "X", "SCIENCE OFFICER"), "Mine for X.");
 }
 
@@ -284,18 +336,38 @@ fn ctrl_c_while_tool_runs_orphan_audited_as_auto() {
 
 #[test]
 fn tool_note_labels() {
-    let r = |content: &str, label: &str| ToolResult { id: "c1".into(), name: "x".into(), content: content.into(), is_error: true, label: label.into() };
+    let r = |content: &str, label: &str| ToolResult {
+        id: "c1".into(),
+        name: "x".into(),
+        content: content.into(),
+        is_error: true,
+        label: label.into(),
+    };
     assert_eq!(turn::tool_note(&r("UP", "SHIP STATUS")), "ACCESSING: SHIP STATUS");
-    assert_eq!(turn::tool_note(&r("NOT AUTHORIZED: UNKNOWN CONTAINER", "CONTAINER INSPECT db")), "ACCESS DENIED: CONTAINER INSPECT db");
+    assert_eq!(
+        turn::tool_note(&r("NOT AUTHORIZED: UNKNOWN CONTAINER", "CONTAINER INSPECT db")),
+        "ACCESS DENIED: CONTAINER INSPECT db"
+    );
     assert_eq!(turn::tool_note(&r("ABORTED BY OPERATOR", "CONTAINERS")), "ACCESS DENIED: CONTAINERS");
-    assert_eq!(turn::tool_note(&r(crate::agent::ABORTED_ISSUED, "CONTAINERS")), "ACCESS INTERRUPTED: CONTAINERS");
+    assert_eq!(
+        turn::tool_note(&r(crate::agent::ABORTED_ISSUED, "CONTAINERS")),
+        "ACCESS INTERRUPTED: CONTAINERS"
+    );
 }
 
 #[test]
 fn unknown_tool_is_refused_without_running() {
     let mut h = harness();
     submit(&mut h, "restart nginx");
-    tool_use(&mut h, 1, &[("c1", "run", json!({"command": "systemctl restart nginx", "reason": "r", "as_root": true, "timeout_secs": 0}))]);
+    tool_use(
+        &mut h,
+        1,
+        &[(
+            "c1",
+            "run",
+            json!({"command": "systemctl restart nginx", "reason": "r", "as_root": true, "timeout_secs": 0}),
+        )],
+    );
     assert!(h.ran.borrow().is_empty());
     assert!(text(&mut h.t).contains("ACCESS DENIED: RUN"));
     assert_eq!(last_results(&h)[0].content, "NOT AUTHORIZED: unknown tool run");
@@ -309,7 +381,14 @@ fn direct(h: &mut H) {
 }
 
 fn review(verdict: Verdict, note: &str) -> Review {
-    Review { verdict, risk: Risk::Low, note: note.into(), model: "reviewer".into(), ms: 3, error: None }
+    Review {
+        verdict,
+        risk: Risk::Low,
+        note: note.into(),
+        model: "reviewer".into(),
+        ms: 3,
+        error: None,
+    }
 }
 
 fn run_call(command: &str, as_root: bool) -> serde_json::Value {
@@ -397,7 +476,9 @@ fn probe_failure_in_banner() {
     direct(&mut h);
     assert_eq!(
         h.t.transcript.last(),
-        Some(&Entry::Note("DIRECT LINK: SCIENCE OFFICER\nAGENT NETWORK NOT ISOLATED — SEE DEPLOY\nREVIEWER OFFLINE".into()))
+        Some(&Entry::Note(
+            "DIRECT LINK: SCIENCE OFFICER\nAGENT NETWORK NOT ISOLATED — SEE DEPLOY\nREVIEWER OFFLINE".into()
+        ))
     );
     let rows = screen(&mut h.t, 61, 40);
     let banner = rows.iter().position(|r| r.contains("DIRECT LINK: SCIENCE OFFICER")).unwrap();
@@ -413,7 +494,9 @@ fn direct_mode_keeps_case() {
     assert_eq!(h.t.input, "ls -la /Var");
     h.t.handle_key(&Key::Enter);
     let s = h.sent.borrow();
-    let MessageContent::Text(u) = &s[0].1.messages.last().unwrap().content else { panic!() };
+    let MessageContent::Text(u) = &s[0].1.messages.last().unwrap().content else {
+        panic!()
+    };
     assert_eq!(u, "[SHIP TIME 18 NOV 2137 14:02] ls -la /Var");
     assert_eq!(h.t.transcript.last(), Some(&Entry::Command("ls -la /Var".into())));
     drop(s);
@@ -538,7 +621,9 @@ fn ctrl_c_at_password_wipes_and_aborts() {
     seen(&mut h);
     h.tick(1100);
     type_str(&mut h.t, "abc");
-    let State::Password { secret, .. } = &h.t.state else { panic!("{:?}", h.t.state) };
+    let State::Password { secret, .. } = &h.t.state else {
+        panic!("{:?}", h.t.state)
+    };
     assert_eq!(secret.chars(), 3);
     h.t.handle_key(&Key::Ctrl('c'));
     assert!(h.ran.borrow().is_empty());
@@ -560,15 +645,23 @@ fn override_requires_exact_word() {
     raise_run(&mut h, "rm -rf /tmp/cache", false);
     h.t.on_review(1, "c1".into(), review(Verdict::Deny, "deletes files"));
     let row = status_row(&mut h);
-    assert!(row_text(&row).ends_with("DENIED BY REVIEWER -- deletes files -- TYPE OVERRIDE TO FORCE, ESC TO REFUSE"), "{row}");
-    assert!(text(&mut h.t).contains("     DENIED BY REVIEWER: deletes files"), "the whole note is shown above");
+    assert!(
+        row_text(&row).ends_with("DENIED BY REVIEWER -- deletes files -- TYPE OVERRIDE TO FORCE, ESC TO REFUSE"),
+        "{row}"
+    );
+    assert!(
+        text(&mut h.t).contains("     DENIED BY REVIEWER: deletes files"),
+        "the whole note is shown above"
+    );
     seen(&mut h);
     h.tick(1100);
     type_str(&mut h.t, "OVERRID");
     assert!(row_text(&status_row(&mut h)).ends_with("REFUSE OVERRID"));
     h.t.handle_key(&Key::Enter);
     assert!(h.ran.borrow().is_empty());
-    let State::OverridePrompt { typed, .. } = &h.t.state else { panic!("{:?}", h.t.state) };
+    let State::OverridePrompt { typed, .. } = &h.t.state else {
+        panic!("{:?}", h.t.state)
+    };
     assert_eq!(typed, "");
     type_str(&mut h.t, "overridx");
     h.t.handle_key(&Key::Backspace);
@@ -604,7 +697,10 @@ fn ask_prompt_confirms_after_arming() {
     assert!(row.contains("CONFIRM -- touch /tmp/x -- Y/N"), "{row}");
     // The reviewer's note is shown while the operator decides.
     let shown = text(&mut h.t);
-    assert!(shown.contains("touch /tmp/x\n") || shown.contains("│ touch /tmp/x "), "the pending command is shown: {shown}");
+    assert!(
+        shown.contains("touch /tmp/x\n") || shown.contains("│ touch /tmp/x "),
+        "the pending command is shown: {shown}"
+    );
     assert!(shown.contains("     REVIEW: LOW -- creates a file"), "{shown}");
     assert_eq!(h.t.tick_interval(), Some(Duration::from_millis(100)));
     seen(&mut h);
@@ -613,16 +709,30 @@ fn ask_prompt_confirms_after_arming() {
     assert!(matches!(h.t.state, State::Ask { .. }));
     assert_eq!(h.t.input, "");
     h.t.handle_key(&Key::Char('y'));
-    assert_eq!(*h.ran.borrow(), vec![(1, "c1".to_string(), Invocation::Run {
-        command: "touch /tmp/x".into(),
-        reason: "operator asked".into(),
-        as_root: false,
-        timeout_secs: 30,
-    })]);
+    assert_eq!(
+        *h.ran.borrow(),
+        vec![(
+            1,
+            "c1".to_string(),
+            Invocation::Run {
+                command: "touch /tmp/x".into(),
+                reason: "operator asked".into(),
+                as_root: false,
+                timeout_secs: 30,
+            }
+        )]
+    );
     let rows = screen(&mut h.t, 61, 40);
-    let run = rows.iter().position(|r| r.contains("RUN  touch /tmp/x  [ASK: LOW]")).unwrap_or_else(|| panic!("{rows:#?}"));
+    let run = rows
+        .iter()
+        .position(|r| r.contains("RUN  touch /tmp/x  [ASK: LOW]"))
+        .unwrap_or_else(|| panic!("{rows:#?}"));
     assert!(rows[run + 1].starts_with("│      REVIEW: LOW -- creates a file"), "{rows:#?}");
-    assert_eq!(rows.iter().filter(|r| r.contains("REVIEW: LOW -- creates a file")).count(), 1, "the pending block is gone: {rows:#?}");
+    assert_eq!(
+        rows.iter().filter(|r| r.contains("REVIEW: LOW -- creates a file")).count(),
+        1,
+        "the pending block is gone: {rows:#?}"
+    );
     assert!(!rows.iter().any(|r| r.starts_with("│ touch /tmp/x")), "{rows:#?}");
 }
 
@@ -654,7 +764,10 @@ fn narrow_prompt_rows_drop_the_part_then_the_head() {
     // The windowed tab (61 wide): only the instructions fit.
     assert_eq!(row(&mut h, 61), "│ TYPE OVERRIDE TO FORCE, ESC TO REFUSE");
     assert_eq!(row(&mut h, 67), "│ DENIED BY REVIEWER -- TYPE OVERRIDE TO FORCE, ESC TO REFUSE");
-    assert_eq!(row(&mut h, 80), "│ DENIED BY REVIEWER -- deletes th... -- TYPE OVERRIDE TO FORCE, ESC TO REFUSE");
+    assert_eq!(
+        row(&mut h, 80),
+        "│ DENIED BY REVIEWER -- deletes th... -- TYPE OVERRIDE TO FORCE, ESC TO REFUSE"
+    );
     for w in [61, 67, 80, 120] {
         assert!(screen(&mut h.t, w, 40)[37].ends_with('│'), "row overflows at {w}");
     }
@@ -706,11 +819,31 @@ fn redisplay_interleaves_with_banners() {
         exchange(l, "[SHIP TIME X] HI", "HELLO", "end_turn");
         l.append_user("[SHIP TIME X] list files", "ts", AgentId::Tech).unwrap();
         let raw = vec![json!({"type":"tool_use","id":"c1","name":"run","input":run_call("ls", false)})];
-        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "".into(), stop: "tool_use".into(), raw: Some(raw), lane: Lane::Tech };
+        let a = Assistant {
+            provider: Provider::Anthropic,
+            model: "m".into(),
+            text: "".into(),
+            stop: "tool_use".into(),
+            raw: Some(raw),
+            lane: Lane::Tech,
+        };
         l.append_assistant(a, "ts").unwrap();
-        let r = ToolResult { id: "c1".into(), name: "run".into(), content: "EXIT 0\na".into(), is_error: false, label: "RUN  ls  [ALLOW]".into() };
+        let r = ToolResult {
+            id: "c1".into(),
+            name: "run".into(),
+            content: "EXIT 0\na".into(),
+            is_error: false,
+            label: "RUN  ls  [ALLOW]".into(),
+        };
         l.append_tool(&[r], "ts", &Lane::Tech).unwrap();
-        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "Found: one file.".into(), stop: "end_turn".into(), raw: None, lane: Lane::Tech };
+        let a = Assistant {
+            provider: Provider::Anthropic,
+            model: "m".into(),
+            text: "Found: one file.".into(),
+            stop: "end_turn".into(),
+            raw: None,
+            lane: Lane::Tech,
+        };
         l.append_assistant(a, "ts").unwrap();
         exchange(l, "[SHIP TIME X] BYE", "GOODBYE", "end_turn");
     });
@@ -733,7 +866,14 @@ fn redisplay_interleaves_with_banners() {
 fn redisplay_closes_a_trailing_direct_link() {
     let h = harness_with(cfg(), |l| {
         l.append_user("[SHIP TIME X] uptime", "ts", AgentId::Tech).unwrap();
-        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "Up.".into(), stop: "end_turn".into(), raw: None, lane: Lane::Tech };
+        let a = Assistant {
+            provider: Provider::Anthropic,
+            model: "m".into(),
+            text: "Up.".into(),
+            stop: "end_turn".into(),
+            raw: None,
+            lane: Lane::Tech,
+        };
         l.append_assistant(a, "ts").unwrap();
     });
     // MUTHUR starts in persona mode, so the screen says the link is closed.
@@ -742,7 +882,11 @@ fn redisplay_closes_a_trailing_direct_link() {
 
 #[test]
 fn harness_lines_sit_together() {
-    let e = [Entry::Command("x".into()), Entry::Harness("RUN  ls  [ALLOW]".into()), Entry::Harness("EXIT 0  1 LINES  0.0 S".into())];
+    let e = [
+        Entry::Command("x".into()),
+        Entry::Harness("RUN  ls  [ALLOW]".into()),
+        Entry::Harness("EXIT 0  1 LINES  0.0 S".into()),
+    ];
     let lines: Vec<String> = view::transcript_lines(&e, None, 40).into_iter().map(|l| l.text).collect();
     assert_eq!(lines, vec![view::BANNER, "", "$ x", "", "RUN  ls  [ALLOW]", "EXIT 0  1 LINES  0.0 S"]);
 }
@@ -828,7 +972,9 @@ fn prompt_ignores_keys_during_arming() {
         assert!(prompting(&h), "{p:?}");
         assert_eq!(h.t.input, "", "{p:?}");
         match &h.t.state {
-            State::Password { secret, .. } => assert!(secret.is_empty(), "keys before arming are not typed"),
+            State::Password { secret, .. } => {
+                assert!(secret.is_empty(), "keys before arming are not typed")
+            }
             State::OverridePrompt { typed, .. } => assert_eq!(typed, ""),
             _ => {}
         }
@@ -918,12 +1064,19 @@ fn audit_offline_between_prompt_and_answer_refuses_root() {
 
 #[test]
 fn full_command_visible_at_prompts() {
-    let long = format!("find /var/lib -xdev -type f -name '*.log' -mtime +30 -size +10M -printf '%p %s\\n' {}", "| sort -k2 -n ".repeat(6));
+    let long = format!(
+        "find /var/lib -xdev -type f -name '*.log' -mtime +30 -size +10M -printf '%p %s\\n' {}",
+        "| sort -k2 -n ".repeat(6)
+    );
     assert!(long.len() > 140, "{}", long.len());
     // Joins the transcript rows (without borders and indent) to look for the whole command.
     let joined = |h: &mut H| {
         let rows = screen(&mut h.t, 61, 40);
-        rows[1..36].iter().map(|r| r.trim_start_matches('│').trim_end_matches('│').trim()).collect::<Vec<_>>().join(" ")
+        rows[1..36]
+            .iter()
+            .map(|r| r.trim_start_matches('│').trim_end_matches('│').trim())
+            .collect::<Vec<_>>()
+            .join(" ")
     };
     for (root, verdict, note_line) in [
         (true, Verdict::Allow, None),
@@ -992,7 +1145,10 @@ fn last_messages(h: &H) -> Vec<crate::llm::Message> {
 }
 
 fn user_text(text: &str) -> crate::llm::Message {
-    crate::llm::Message { role: crate::llm::Role::User, content: MessageContent::Text(text.into()) }
+    crate::llm::Message {
+        role: crate::llm::Role::User,
+        content: MessageContent::Text(text.into()),
+    }
 }
 
 /// Persona request 1 delegates `d1` "check nginx"; the child (request 2) runs
@@ -1013,7 +1169,14 @@ const UPTIME_RESULT: &str = "COMMANDS:\nSCIENCE OFFICER: uptime  [ALLOW]\nREPORT
 fn delegate_spawns_child_with_task_only_window() {
     let mut h = harness_with(cfg(), |l| {
         l.append_user("[SHIP TIME X] ls", "ts", AgentId::Tech).unwrap();
-        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "Found.".into(), stop: "end_turn".into(), raw: None, lane: Lane::Tech };
+        let a = Assistant {
+            provider: Provider::Anthropic,
+            model: "m".into(),
+            text: "Found.".into(),
+            stop: "end_turn".into(),
+            raw: None,
+            lane: Lane::Tech,
+        };
         l.append_assistant(a, "ts").unwrap();
     });
     submit(&mut h, "why is nginx down");
@@ -1042,7 +1205,10 @@ fn delegate_child_run_condensed_and_relayed() {
     }
     assert_eq!(h.agents.borrow().last(), Some(&AgentId::Muthur));
     let r = last_results(&h);
-    assert_eq!((r.len(), r[0].id.as_str(), r[0].content.as_str(), r[0].is_error), (1, "d1", UPTIME_RESULT, false));
+    assert_eq!(
+        (r.len(), r[0].id.as_str(), r[0].content.as_str(), r[0].is_error),
+        (1, "d1", UPTIME_RESULT, false)
+    );
     let recs = records(&h);
     let delegated: Vec<&serde_json::Value> = recs.iter().filter(|r| in_delegation(r, "d1")).collect();
     let kinds: Vec<&str> = delegated.iter().filter_map(|r| r["kind"].as_str()).filter(|k| *k != "epoch").collect();
@@ -1077,7 +1243,10 @@ fn redisplayed(h: &H) -> Vec<Entry> {
 }
 
 fn harness_texts(entries: &[Entry]) -> Vec<String> {
-    entries.iter().filter_map(|e| if let Entry::Harness(s) = e { Some(s.clone()) } else { None }).collect()
+    entries
+        .iter()
+        .filter_map(|e| if let Entry::Harness(s) = e { Some(s.clone()) } else { None })
+        .collect()
 }
 
 #[test]
@@ -1088,10 +1257,18 @@ fn redisplay_folds_delegation() {
     h.t.on_llm(4, StreamEvent::Text("NGINX UP.".into()));
     h.t.on_llm(4, done(Stop::End));
     let e = redisplayed(&h);
-    assert_eq!(harness_texts(&e), ["DELEGATING TO SCIENCE OFFICER", "SCIENCE OFFICER: uptime  [ALLOW]"], "{e:#?}");
+    assert_eq!(
+        harness_texts(&e),
+        ["DELEGATING TO SCIENCE OFFICER", "SCIENCE OFFICER: uptime  [ALLOW]"],
+        "{e:#?}"
+    );
     let at = |want: &Entry| e.iter().position(|x| x == want).unwrap_or_else(|| panic!("{want:?}: {e:#?}"));
     assert!(at(&Entry::User("WHY IS NGINX DOWN".into())) < at(&Entry::Harness("DELEGATING TO SCIENCE OFFICER".into())));
-    assert!(e.iter().all(|x| !matches!(x, Entry::Note(n) if n.contains("DIRECT LINK") || n.contains("ACCESSING"))), "{e:#?}");
+    assert!(
+        e.iter()
+            .all(|x| !matches!(x, Entry::Note(n) if n.contains("DIRECT LINK") || n.contains("ACCESSING"))),
+        "{e:#?}"
+    );
 }
 
 #[test]
@@ -1099,7 +1276,12 @@ fn redisplay_verbatim_delegation() {
     let mut h = harness_report(crate::config::DelegateReport::Verbatim);
     delegated_uptime(&mut h);
     let e = redisplayed(&h);
-    let want = ["DELEGATING TO SCIENCE OFFICER", "SCIENCE OFFICER: uptime  [ALLOW]", "SCIENCE OFFICER REPORTS:", "Up 3 days."];
+    let want = [
+        "DELEGATING TO SCIENCE OFFICER",
+        "SCIENCE OFFICER: uptime  [ALLOW]",
+        "SCIENCE OFFICER REPORTS:",
+        "Up 3 days.",
+    ];
     assert_eq!(harness_texts(&e), want, "{e:#?}");
 }
 
@@ -1108,7 +1290,14 @@ fn redisplay_orphan_delegation_hidden() {
     let h = harness_with(cfg(), |l| {
         exchange(l, "[SHIP TIME X] HI", "HELLO", "end_turn");
         l.append_delegation("d9", "check nginx", true, "ts").unwrap();
-        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: "Up.".into(), stop: "end_turn".into(), raw: None, lane: Lane::Delegated("d9".into()) };
+        let a = Assistant {
+            provider: Provider::Anthropic,
+            model: "m".into(),
+            text: "Up.".into(),
+            stop: "end_turn".into(),
+            raw: None,
+            lane: Lane::Delegated("d9".into()),
+        };
         l.append_assistant(a, "ts").unwrap();
     });
     let e = redisplayed(&h);
@@ -1189,7 +1378,11 @@ fn redisplay_child_error_shows_no_response() {
     h.t.on_llm(2, StreamEvent::Error(LlmError::SignalLost));
     h.t.on_llm(3, StreamEvent::Text("NO ANSWER.".into()));
     h.t.on_llm(3, done(Stop::End));
-    let live: Vec<String> = h.t.transcript.iter().filter_map(|e| if let Entry::Harness(s) = e { Some(s.clone()) } else { None }).collect();
+    let live: Vec<String> =
+        h.t.transcript
+            .iter()
+            .filter_map(|e| if let Entry::Harness(s) = e { Some(s.clone()) } else { None })
+            .collect();
     let want = ["DELEGATING TO SCIENCE OFFICER", "NO RESPONSE FROM SCIENCE OFFICER"];
     assert_eq!(live, want);
     let e = redisplayed(&h);
@@ -1259,7 +1452,12 @@ fn redisplay_repeated_call_id_delegations_in_order() {
     let mut h = harness();
     delegate_twice_with_commands(&mut h);
     let e = redisplayed(&h);
-    let want = ["DELEGATING TO SCIENCE OFFICER", "SCIENCE OFFICER: uptime  [ALLOW]", "DELEGATING TO SCIENCE OFFICER", "SCIENCE OFFICER: df -h  [ALLOW]"];
+    let want = [
+        "DELEGATING TO SCIENCE OFFICER",
+        "SCIENCE OFFICER: uptime  [ALLOW]",
+        "DELEGATING TO SCIENCE OFFICER",
+        "SCIENCE OFFICER: df -h  [ALLOW]",
+    ];
     assert_eq!(harness_texts(&e), want, "{e:#?}");
 }
 
@@ -1279,7 +1477,11 @@ fn redisplay_invalid_task_shows_refusal() {
     let mut h = harness();
     submit(&mut h, "check it");
     delegate(&mut h, 1, "d1", "   ");
-    let live: Vec<String> = h.t.transcript.iter().filter_map(|e| if let Entry::Note(s) = e { Some(s.clone()) } else { None }).collect();
+    let live: Vec<String> =
+        h.t.transcript
+            .iter()
+            .filter_map(|e| if let Entry::Note(s) = e { Some(s.clone()) } else { None })
+            .collect();
     assert!(live.iter().any(|n| n.starts_with("ACCESS DENIED:")), "{live:?}");
     h.t.on_llm(2, StreamEvent::Text("CANNOT.".into()));
     h.t.on_llm(2, done(Stop::End));
@@ -1302,8 +1504,15 @@ fn redisplay_refusal_does_not_take_a_later_same_id_delegation() {
     h.t.on_llm(5, StreamEvent::Text("FINE.".into()));
     h.t.on_llm(5, done(Stop::End));
     let e = redisplayed(&h);
-    assert_eq!(harness_texts(&e), ["DELEGATING TO SCIENCE OFFICER", "SCIENCE OFFICER: uptime  [ALLOW]"], "{e:#?}");
-    let denied = e.iter().position(|x| matches!(x, Entry::Note(n) if n.starts_with("ACCESS DENIED:"))).unwrap_or_else(|| panic!("{e:#?}"));
+    assert_eq!(
+        harness_texts(&e),
+        ["DELEGATING TO SCIENCE OFFICER", "SCIENCE OFFICER: uptime  [ALLOW]"],
+        "{e:#?}"
+    );
+    let denied = e
+        .iter()
+        .position(|x| matches!(x, Entry::Note(n) if n.starts_with("ACCESS DENIED:")))
+        .unwrap_or_else(|| panic!("{e:#?}"));
     assert!(denied < e.iter().position(|x| *x == Entry::Harness("DELEGATING TO SCIENCE OFFICER".into())).unwrap());
 }
 
@@ -1323,7 +1532,14 @@ fn empty_verbatim_report_prints_no_header() {
 fn two_delegations_in_one_round_run_sequentially() {
     let mut h = harness();
     submit(&mut h, "check everything");
-    tool_use(&mut h, 1, &[("d1", "delegate", json!({"task": "check nginx"})), ("d2", "delegate", json!({"task": "check disk"}))]);
+    tool_use(
+        &mut h,
+        1,
+        &[
+            ("d1", "delegate", json!({"task": "check nginx"})),
+            ("d2", "delegate", json!({"task": "check disk"})),
+        ],
+    );
     assert_eq!(*h.agents.borrow(), vec![AgentId::Muthur, AgentId::Tech]);
     assert_eq!(last_messages(&h), vec![user_text("check nginx")]);
     h.t.on_llm(2, StreamEvent::Text("Nginx fine.".into()));
@@ -1335,7 +1551,10 @@ fn two_delegations_in_one_round_run_sequentially() {
     assert_eq!(h.agents.borrow().last(), Some(&AgentId::Muthur));
     let r = last_results(&h);
     assert_eq!(r.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["d1", "d2"]);
-    assert!(r[0].content.ends_with("REPORT:\nNginx fine.") && r[1].content.ends_with("REPORT:\nDisk fine."), "{r:?}");
+    assert!(
+        r[0].content.ends_with("REPORT:\nNginx fine.") && r[1].content.ends_with("REPORT:\nDisk fine."),
+        "{r:?}"
+    );
 }
 
 #[test]
@@ -1460,7 +1679,9 @@ fn ctrl_c_at_child_password_aborts_everything() {
     seen(&mut h);
     h.tick(1100);
     type_str(&mut h.t, "abc");
-    let State::Password { secret, .. } = &h.t.state else { panic!("{:?}", h.t.state) };
+    let State::Password { secret, .. } = &h.t.state else {
+        panic!("{:?}", h.t.state)
+    };
     assert_eq!(secret.chars(), 3);
     h.t.handle_key(&Key::Ctrl('c'));
     assert!(h.t.secret.is_none());

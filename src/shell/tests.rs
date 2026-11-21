@@ -5,13 +5,27 @@ use ratatui::style::Modifier;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-const WINDOWED: Rect = Rect { x: 19, y: 2, width: 61, height: 40 };
-const FULL: Rect = Rect { x: 0, y: 0, width: 80, height: 43 };
+const WINDOWED: Rect = Rect {
+    x: 19,
+    y: 2,
+    width: 61,
+    height: 40,
+};
+const FULL: Rect = Rect {
+    x: 0,
+    y: 0,
+    width: 80,
+    height: 43,
+};
 
 fn tab(script: &str) -> (ShellTab, HintSlot, mpsc::Receiver<PtyEvent>) {
     let (tx, rx) = mpsc::channel();
     let hints = HintSlot::default();
-    let cfg = ShellConfig { command: "sh".into(), args: vec!["-c".into(), script.into()], scrollback: 1000 };
+    let cfg = ShellConfig {
+        command: "sh".into(),
+        args: vec!["-c".into(), script.into()],
+        scrollback: 1000,
+    };
     let t = ShellTab::new(cfg, hints.clone(), move |e| {
         let _ = tx.send(e);
     });

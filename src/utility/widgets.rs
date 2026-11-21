@@ -58,7 +58,11 @@ pub fn message_panel(title: &str, lines: Vec<Line<'static>>, area: Rect, buf: &m
     let inner = block.inner(area);
     block.render(area, buf);
     let h = (lines.len() as u16).min(inner.height);
-    let mid = Rect { y: inner.y + inner.height.saturating_sub(h) / 2, height: h, ..inner };
+    let mid = Rect {
+        y: inner.y + inner.height.saturating_sub(h) / 2,
+        height: h,
+        ..inner
+    };
     Paragraph::new(lines).alignment(Alignment::Center).render(mid, buf);
 }
 

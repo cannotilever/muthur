@@ -1,6 +1,6 @@
 //! Streaming markdown cleaner and ASCII-safe transliteration for model output.
 
-use crate::dialect::{map_glyph, Glyph};
+use crate::dialect::{Glyph, map_glyph};
 
 const LINK_MAX: usize = 200;
 const HASH_MAX: usize = 7;
@@ -227,10 +227,42 @@ pub fn display_text(raw: &str, upper: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test] fn strips_markdown() { assert_eq!(display_text("## Status\n**All** `systems` nominal.\n* one\n```\ncode\n```\nsee [docs](http://x)\n", false), "Status\nAll systems nominal.\n- one\ncode\nsee docs (http://x)\n"); }
-    #[test] fn markers_split_across_chunks() { let src = "## Head\n**bo"; let rest = "ld** [l](u) x_y __z__\n"; for cut in 0..src.len() { let mut c = Cleaner::new(); let mut out = c.push(&src[..cut]); out += &c.push(&src[cut..]); out += &c.push(rest); out += &c.finish(); assert_eq!(out, "Head\nbold l (u) x_y z\n", "cut {cut}"); } }
-    #[test] fn unterminated_link_is_flushed() { assert_eq!(display_text("a [b c", false), "a [b c"); }
-    #[test] fn transliterates_punctuation_and_emoji() { assert_eq!(ascii_safe("A \u{2014} \u{201c}B\u{201d} \u{2026}"), "A -- \"B\" ..."); let s = ascii_safe("\u{1f680} \u{65e5}"); assert!(s.chars().all(|c| c == '\n' || (' '..='~').contains(&c))); }
-    #[test] fn tabs_expand_and_cr_dropped() { assert_eq!(ascii_safe("a\tb\r\nc\r"), "a    b\nc"); }
-    #[test] fn uppercases() { assert_eq!(display_text("ok", true), "OK"); }
+    #[test]
+    fn strips_markdown() {
+        assert_eq!(
+            display_text("## Status\n**All** `systems` nominal.\n* one\n```\ncode\n```\nsee [docs](http://x)\n", false),
+            "Status\nAll systems nominal.\n- one\ncode\nsee docs (http://x)\n"
+        );
+    }
+    #[test]
+    fn markers_split_across_chunks() {
+        let src = "## Head\n**bo";
+        let rest = "ld** [l](u) x_y __z__\n";
+        for cut in 0..src.len() {
+            let mut c = Cleaner::new();
+            let mut out = c.push(&src[..cut]);
+            out += &c.push(&src[cut..]);
+            out += &c.push(rest);
+            out += &c.finish();
+            assert_eq!(out, "Head\nbold l (u) x_y z\n", "cut {cut}");
+        }
+    }
+    #[test]
+    fn unterminated_link_is_flushed() {
+        assert_eq!(display_text("a [b c", false), "a [b c");
+    }
+    #[test]
+    fn transliterates_punctuation_and_emoji() {
+        assert_eq!(ascii_safe("A \u{2014} \u{201c}B\u{201d} \u{2026}"), "A -- \"B\" ...");
+        let s = ascii_safe("\u{1f680} \u{65e5}");
+        assert!(s.chars().all(|c| c == '\n' || (' '..='~').contains(&c)));
+    }
+    #[test]
+    fn tabs_expand_and_cr_dropped() {
+        assert_eq!(ascii_safe("a\tb\r\nc\r"), "a    b\nc");
+    }
+    #[test]
+    fn uppercases() {
+        assert_eq!(display_text("ok", true), "OK");
+    }
 }

@@ -27,7 +27,12 @@ pub struct Pty {
 }
 
 fn winsize(cols: u16, rows: u16) -> Winsize {
-    Winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 }
+    Winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    }
 }
 
 fn cloexec(fd: impl AsFd) -> nix::Result<()> {
@@ -37,13 +42,7 @@ fn cloexec(fd: impl AsFd) -> nix::Result<()> {
 impl Pty {
     /// Start `command` on a new PTY of `cols`×`rows`. `events` receives output
     /// from a reader thread, then `Exited` once the child side is closed.
-    pub fn spawn(
-        command: &str,
-        args: &[String],
-        cols: u16,
-        rows: u16,
-        events: impl Fn(PtyEvent) + Send + 'static,
-    ) -> anyhow::Result<Pty> {
+    pub fn spawn(command: &str, args: &[String], cols: u16, rows: u16, events: impl Fn(PtyEvent) + Send + 'static) -> anyhow::Result<Pty> {
         let pty = openpty(Some(&winsize(cols, rows)), None).context("openpty")?;
         cloexec(&pty.master)?;
         cloexec(&pty.slave)?;

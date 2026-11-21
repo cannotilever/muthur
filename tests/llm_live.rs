@@ -5,33 +5,58 @@
 //! hits are not asserted because short chats sit under the 512-token minimum.
 
 use muthur::chatlog::{Assistant, ChatLog, Lane};
-use muthur::ops::AgentId;
 use muthur::config::{MuthurSection, Provider};
 use muthur::llm::client::LlmClient;
 use muthur::llm::{Stop, StreamEvent};
+use muthur::ops::AgentId;
 
 const SYSTEM: &str = "You are a terse test responder. Answer in at most ten words.";
 
 /// One turn: stream the window, assert text and a clean end, return (text, raw, model).
 async fn turn(client: &LlmClient, cfg: &MuthurSection, log: &mut ChatLog, user: &str) -> Assistant {
     log.append_user(user, "2026-11-18T00:00:00Z", AgentId::Muthur).unwrap();
-    let messages = log.window(&Lane::Muthur, cfg.provider, cfg.model().unwrap_or_default(), SYSTEM, "", cfg.context_tokens, false).unwrap();
+    let messages = log
+        .window(
+            &Lane::Muthur,
+            cfg.provider,
+            cfg.model().unwrap_or_default(),
+            SYSTEM,
+            "",
+            cfg.context_tokens,
+            false,
+        )
+        .unwrap();
     let mut text = String::new();
     let mut done = None;
     client
-        .stream(muthur::llm::ChatRequest { system: SYSTEM.into(), messages, tools: vec![], tool_choice: muthur::llm::ToolChoice::Auto }, |ev| match ev {
-            StreamEvent::Text(t) => text.push_str(&t),
-            StreamEvent::Done { stop, model, raw } => done = Some((stop, model, raw)),
-            StreamEvent::Error(e) => panic!("stream error: {e:?}"),
-            StreamEvent::ToolCall { .. } => {}
-        })
+        .stream(
+            muthur::llm::ChatRequest {
+                system: SYSTEM.into(),
+                messages,
+                tools: vec![],
+                tool_choice: muthur::llm::ToolChoice::Auto,
+            },
+            |ev| match ev {
+                StreamEvent::Text(t) => text.push_str(&t),
+                StreamEvent::Done { stop, model, raw } => done = Some((stop, model, raw)),
+                StreamEvent::Error(e) => panic!("stream error: {e:?}"),
+                StreamEvent::ToolCall { .. } => {}
+            },
+        )
         .await;
     let (stop, model, raw) = done.expect("no Done event");
     assert_eq!(stop, Stop::End);
     let stop = stop.log_str().to_string();
     assert!(!text.trim().is_empty(), "empty reply");
     println!("--- reply: {text}");
-    Assistant { provider: cfg.provider, model: model.unwrap_or_default(), text, stop, raw, lane: Lane::Muthur }
+    Assistant {
+        provider: cfg.provider,
+        model: model.unwrap_or_default(),
+        text,
+        stop,
+        raw,
+        lane: Lane::Muthur,
+    }
 }
 
 async fn round_trip(cfg: MuthurSection, first: &str) {
@@ -60,7 +85,12 @@ async fn anthropic_round_trip() {
     // effort=high and a small reasoning problem so turn 1 likely carries a
     // signed thinking block that turn 2 must replay.
     round_trip(
-        MuthurSection { provider: Provider::Anthropic, api_key: Some(key), effort: "high".into(), ..MuthurSection::default() },
+        MuthurSection {
+            provider: Provider::Anthropic,
+            api_key: Some(key),
+            effort: "high".into(),
+            ..MuthurSection::default()
+        },
         "A ship travels 3 light-years at 0.5c, then 2 light-years at 0.25c. Total travel time in years? Answer with the number only.",
     )
     .await;
@@ -73,13 +103,16 @@ async fn openai_round_trip() {
         println!("skipped: MUTHUR_LIVE_OPENAI_URL / MUTHUR_LIVE_OPENAI_MODEL not set");
         return;
     };
-    round_trip(MuthurSection {
-        provider: Provider::Openai,
-        base_url: Some(url),
-        model: Some(model),
-        api_key: std::env::var("MUTHUR_LIVE_OPENAI_KEY").ok(),
-        ..MuthurSection::default()
-    }, "STATE YOUR DESIGNATION.")
+    round_trip(
+        MuthurSection {
+            provider: Provider::Openai,
+            base_url: Some(url),
+            model: Some(model),
+            api_key: std::env::var("MUTHUR_LIVE_OPENAI_KEY").ok(),
+            ..MuthurSection::default()
+        },
+        "STATE YOUR DESIGNATION.",
+    )
     .await;
 }
 
@@ -87,26 +120,33 @@ async fn openai_round_trip() {
 #[cfg(feature = "agent")]
 mod agentic {
     use super::*;
+    use muthur::config::ToolsSection;
     use muthur::llm::ToolResult;
     use muthur::metrics::Snapshot;
-    use muthur::tools::SnapshotSlot;
-    use muthur::tools::fixed::{FixedCtx, execute};
     use muthur::ops::runner::SystemRunner;
+    use muthur::tools::SnapshotSlot;
     use muthur::tools::ToolDefs;
-    use muthur::config::ToolsSection;
+    use muthur::tools::fixed::{FixedCtx, execute};
 
     /// Hand-driven tool loop (persona tools): stream, collect ToolCalls, execute,
     /// append_tool, window, stream again; at most 3 rounds.
     async fn tool_round_trip(cfg: MuthurSection) {
         let defs = ToolDefs::persona(&ToolsSection::default());
-        let snap = Snapshot { host: "NOSTROMO".into(), uptime_secs: 3 * 86400, ..Default::default() };
+        let snap = Snapshot {
+            host: "NOSTROMO".into(),
+            uptime_secs: 3 * 86400,
+            ..Default::default()
+        };
         tool_loop(cfg, defs, SYSTEM, AgentId::Muthur, snap, "WHAT IS THE SHIP'S UPTIME? USE YOUR TOOLS.").await;
     }
 
     async fn tool_loop(cfg: MuthurSection, defs: ToolDefs, system: &str, agent: AgentId, snap: Snapshot, question: &str) {
         let slot: SnapshotSlot = SnapshotSlot::default();
         *slot.lock().unwrap() = Some(snap);
-        let ctx = FixedCtx { runner: std::sync::Arc::new(SystemRunner), snapshot: slot };
+        let ctx = FixedCtx {
+            runner: std::sync::Arc::new(SystemRunner),
+            snapshot: slot,
+        };
         let dir = tempfile::tempdir().unwrap();
         let mut log = ChatLog::open(dir.path().join("chat.jsonl")).unwrap();
         let client = LlmClient::new(cfg.clone()).unwrap();
@@ -115,13 +155,32 @@ mod agentic {
         let mut final_stop = None;
         let mut final_text = String::new();
         for _ in 0..4 {
-            let messages = log.window(&agent.into(), cfg.provider, cfg.model().unwrap_or_default(), system, &defs.json(), cfg.context_tokens, agent == AgentId::Tech).unwrap();
+            let messages = log
+                .window(
+                    &agent.into(),
+                    cfg.provider,
+                    cfg.model().unwrap_or_default(),
+                    system,
+                    &defs.json(),
+                    cfg.context_tokens,
+                    agent == AgentId::Tech,
+                )
+                .unwrap();
             let mut text = String::new();
             let mut calls = Vec::new();
             let mut done = None;
             client
                 .stream(
-                    muthur::llm::ChatRequest { system: system.into(), messages, tools: defs.specs().to_vec(), tool_choice: if rounds >= 3 { muthur::llm::ToolChoice::None } else { muthur::llm::ToolChoice::Auto } },
+                    muthur::llm::ChatRequest {
+                        system: system.into(),
+                        messages,
+                        tools: defs.specs().to_vec(),
+                        tool_choice: if rounds >= 3 {
+                            muthur::llm::ToolChoice::None
+                        } else {
+                            muthur::llm::ToolChoice::Auto
+                        },
+                    },
                     |ev| match ev {
                         StreamEvent::Text(t) => text.push_str(&t),
                         StreamEvent::ToolCall { id, name, input } => calls.push((id, name, input)),
@@ -137,7 +196,14 @@ mod agentic {
                 let tool = blocks.iter().position(|b| b["type"] == "tool_use");
                 println!("--- thinking block precedes tool_use: {}", matches!((think, tool), (Some(a), Some(b)) if a < b));
             }
-            let a = Assistant { provider: cfg.provider, model: model.unwrap_or_default(), text: text.clone(), stop: stop.log_str().to_string(), raw, lane: agent.into() };
+            let a = Assistant {
+                provider: cfg.provider,
+                model: model.unwrap_or_default(),
+                text: text.clone(),
+                stop: stop.log_str().to_string(),
+                raw,
+                lane: agent.into(),
+            };
             log.append_assistant(a, "2026-11-18T00:00:01Z").unwrap();
             if stop != Stop::ToolUse || calls.is_empty() {
                 final_stop = Some(stop);
@@ -156,7 +222,13 @@ mod agentic {
                         Err(e) => (e, true),
                     };
                     println!("--- tool {name}: {content}");
-                    ToolResult { id, name, content, is_error, label: String::new() }
+                    ToolResult {
+                        id,
+                        name,
+                        content,
+                        is_error,
+                        label: String::new(),
+                    }
                 })
                 .collect();
             log.append_tool(&results, "2026-11-18T00:00:02Z", &agent.into()).unwrap();
@@ -173,7 +245,13 @@ mod agentic {
             println!("skipped: MUTHUR_LIVE_ANTHROPIC_KEY not set");
             return;
         };
-        tool_round_trip(MuthurSection { provider: Provider::Anthropic, api_key: Some(key), effort: "high".into(), ..MuthurSection::default() }).await;
+        tool_round_trip(MuthurSection {
+            provider: Provider::Anthropic,
+            api_key: Some(key),
+            effort: "high".into(),
+            ..MuthurSection::default()
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -220,7 +298,13 @@ mod agentic {
     #[ignore = "needs MUTHUR_LIVE_ANTHROPIC_KEY, MUTHUR_LIVE_OPENAI_URL/MODEL and network"]
     async fn reviewer_verdicts_live() {
         if let Ok(key) = std::env::var("MUTHUR_LIVE_ANTHROPIC_KEY") {
-            reviewer_cases(MuthurSection { provider: Provider::Anthropic, api_key: Some(key), max_tokens: 512, ..MuthurSection::default() }).await;
+            reviewer_cases(MuthurSection {
+                provider: Provider::Anthropic,
+                api_key: Some(key),
+                max_tokens: 512,
+                ..MuthurSection::default()
+            })
+            .await;
         } else {
             println!("skipped anthropic: MUTHUR_LIVE_ANTHROPIC_KEY not set");
         }
@@ -256,7 +340,11 @@ mod agentic {
         };
         let snap = Snapshot {
             host: "NOSTROMO".into(),
-            containers: Some(vec![c("web", "UP", "Up 3 hours"), c("db", "UP", "Up 3 hours"), c("old", "EXITED", "Exited (0) 2 days ago")]),
+            containers: Some(vec![
+                c("web", "UP", "Up 3 hours"),
+                c("db", "UP", "Up 3 hours"),
+                c("old", "EXITED", "Exited (0) 2 days ago"),
+            ]),
             container_runtime: Some("docker".into()),
             ..Default::default()
         };
@@ -267,7 +355,12 @@ mod agentic {
     #[ignore = "needs MUTHUR_LIVE_ANTHROPIC_KEY and/or MUTHUR_LIVE_OPENAI_URL/MODEL and network"]
     async fn tech_round_trip_live() {
         if let Ok(key) = std::env::var("MUTHUR_LIVE_ANTHROPIC_KEY") {
-            tech_round_trip(MuthurSection { provider: Provider::Anthropic, api_key: Some(key), ..MuthurSection::default() }).await;
+            tech_round_trip(MuthurSection {
+                provider: Provider::Anthropic,
+                api_key: Some(key),
+                ..MuthurSection::default()
+            })
+            .await;
         } else {
             println!("skipped anthropic: MUTHUR_LIVE_ANTHROPIC_KEY not set");
         }

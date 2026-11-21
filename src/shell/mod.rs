@@ -159,8 +159,10 @@ impl ShellTab {
             return None;
         }
         let (row, col) = s.cursor_position();
-        (row < self.pane.height && col < self.pane.width)
-            .then(|| Position { x: self.pane.x + col, y: self.pane.y + row })
+        (row < self.pane.height && col < self.pane.width).then(|| Position {
+            x: self.pane.x + col,
+            y: self.pane.y + row,
+        })
     }
 
     fn spawn(&mut self) {
@@ -193,7 +195,11 @@ impl ShellTab {
 
     fn render_message(&self, buf: &mut Buffer, lines: Vec<Line<'static>>) {
         let h = lines.len() as u16;
-        let r = Rect { y: self.pane.y + self.pane.height.saturating_sub(h) / 2, height: h.min(self.pane.height), ..self.pane };
+        let r = Rect {
+            y: self.pane.y + self.pane.height.saturating_sub(h) / 2,
+            height: h.min(self.pane.height),
+            ..self.pane
+        };
         Paragraph::new(lines).alignment(Alignment::Center).render(r, buf);
     }
 
@@ -203,7 +209,9 @@ impl ShellTab {
         for row in 0..self.pane.height {
             let mut h = DefaultHasher::new();
             for col in 0..self.pane.width {
-                let Some(cell) = screen.cell(row, col) else { continue };
+                let Some(cell) = screen.cell(row, col) else {
+                    continue;
+                };
                 if cell.is_wide_continuation() {
                     continue;
                 }
@@ -213,14 +221,20 @@ impl ShellTab {
                 };
                 let m = modifier(cell);
                 (sym, m.bits()).hash(&mut h);
-                buf[(self.pane.x + col, self.pane.y + row)].set_symbol(sym).set_style(Style::new().add_modifier(m));
+                buf[(self.pane.x + col, self.pane.y + row)]
+                    .set_symbol(sym)
+                    .set_style(Style::new().add_modifier(m));
             }
             hashes.push(h.finish());
         }
         if hashes.len() == self.prev_hashes.len()
             && let Some(lines) = detect_shift(&self.prev_hashes, &hashes)
         {
-            self.hints.set(Some(ScrollHint { top: self.pane.y, bottom: self.pane.y + self.pane.height, lines }));
+            self.hints.set(Some(ScrollHint {
+                top: self.pane.y,
+                bottom: self.pane.y + self.pane.height,
+                lines,
+            }));
         }
         self.prev_hashes = hashes;
     }
@@ -234,7 +248,11 @@ impl Tab for ShellTab {
             area
         } else {
             let offset = self.parser.screen().scrollback();
-            let title = if self.scrollback_mode { format!(" SHELL - SCROLLBACK -{offset} ") } else { " SHELL ".into() };
+            let title = if self.scrollback_mode {
+                format!(" SHELL - SCROLLBACK -{offset} ")
+            } else {
+                " SHELL ".into()
+            };
             let block = Block::bordered().title(title);
             let inner = block.inner(area);
             block.render(area, buf);

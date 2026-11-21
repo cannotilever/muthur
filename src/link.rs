@@ -4,16 +4,16 @@
 pub use crate::config::FlowControl;
 use crate::config::LinkConfig;
 use anyhow::{Context, bail};
+use nix::fcntl::{FcntlArg, OFlag, fcntl};
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::sys::termios::{
-    BaudRate, ControlFlags, FlowArg, FlushArg, InputFlags, LocalFlags, OutputFlags, SetArg,
-    SpecialCharacterIndices, Termios, cfsetspeed, tcflow, tcflush, tcgetattr, tcsetattr,
+    BaudRate, ControlFlags, FlowArg, FlushArg, InputFlags, LocalFlags, OutputFlags, SetArg, SpecialCharacterIndices, Termios, cfsetspeed, tcflow, tcflush,
+    tcgetattr, tcsetattr,
 };
-use nix::fcntl::{FcntlArg, OFlag, fcntl};
 use std::fs::File;
-use std::os::unix::fs::OpenOptionsExt;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
+use std::os::unix::fs::OpenOptionsExt;
 use std::sync::{Mutex, Once};
 use std::time::Duration;
 
@@ -35,17 +35,10 @@ pub fn baud_rate(baud: u32) -> anyhow::Result<BaudRate> {
 /// Raw-mode transform of `t`, preserving the requested flow control.
 pub fn make_raw(t: &Termios, flow: FlowControl) -> Termios {
     let mut r = t.clone();
-    r.local_flags.remove(
-        LocalFlags::ICANON | LocalFlags::ECHO | LocalFlags::ECHONL | LocalFlags::ISIG | LocalFlags::IEXTEN,
-    );
-    r.input_flags.remove(
-        InputFlags::ICRNL
-            | InputFlags::INLCR
-            | InputFlags::IGNCR
-            | InputFlags::ISTRIP
-            | InputFlags::BRKINT
-            | InputFlags::PARMRK,
-    );
+    r.local_flags
+        .remove(LocalFlags::ICANON | LocalFlags::ECHO | LocalFlags::ECHONL | LocalFlags::ISIG | LocalFlags::IEXTEN);
+    r.input_flags
+        .remove(InputFlags::ICRNL | InputFlags::INLCR | InputFlags::IGNCR | InputFlags::ISTRIP | InputFlags::BRKINT | InputFlags::PARMRK);
     r.output_flags.remove(OutputFlags::OPOST);
     r.control_flags.remove(ControlFlags::CSIZE | ControlFlags::PARENB);
     // CLOCAL: ignore modem lines (no carrier on a null-modem link); CREAD: enable receiver.

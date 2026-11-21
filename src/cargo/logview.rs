@@ -127,7 +127,17 @@ impl LogView {
             text.drain(..start);
         }
         let lines = text.lines().count();
-        Self { id, name, text, lines, scroll_from_bottom: 0, rows: 1, wrapped: 0, wrap_cache: None, last: None }
+        Self {
+            id,
+            name,
+            text,
+            lines,
+            scroll_from_bottom: 0,
+            rows: 1,
+            wrapped: 0,
+            wrap_cache: None,
+            last: None,
+        }
     }
 
     pub(super) fn name(&self) -> &str {
@@ -164,7 +174,9 @@ impl LogView {
             self.wrap_cache = Some((w, wrap(&self.text, w)));
             self.last = None;
         }
-        let Some((_, rows)) = &self.wrap_cache else { return };
+        let Some((_, rows)) = &self.wrap_cache else {
+            return;
+        };
         self.rows = (inner.height - 1) as usize;
         self.wrapped = rows.len();
         if rows.is_empty() {
@@ -177,13 +189,20 @@ impl LogView {
         for (i, row) in rows[start..end].iter().enumerate() {
             buf.set_stringn(inner.x, inner.y + i as u16, row, w, Style::new());
         }
-        let text_area = Rect { height: self.rows as u16, ..inner };
+        let text_area = Rect {
+            height: self.rows as u16,
+            ..inner
+        };
         if let Some((prev_area, prev_start)) = self.last
             && prev_area == text_area
         {
             let lines = start as isize - prev_start as isize;
             if lines != 0 && lines.unsigned_abs() < self.rows {
-                hints.set(Some(ScrollHint { top: text_area.y, bottom: text_area.y + text_area.height, lines: lines as i16 }));
+                hints.set(Some(ScrollHint {
+                    top: text_area.y,
+                    bottom: text_area.y + text_area.height,
+                    lines: lines as i16,
+                }));
             }
         }
         self.last = Some((text_area, start));
@@ -196,7 +215,10 @@ mod tests {
 
     #[test]
     fn clean_strips_ansi_cr_tabs_controls() {
-        assert_eq!(clean("\x1b[31mred\x1b[0m\r\nA\tB\nbar\r50%\x07\x1b]0;title\x07end\n"), "red\nA       B\nbar50%end\n");
+        assert_eq!(
+            clean("\x1b[31mred\x1b[0m\r\nA\tB\nbar\r50%\x07\x1b]0;title\x07end\n"),
+            "red\nA       B\nbar50%end\n"
+        );
         assert_eq!(clean("\x1b]8;;http://x\x1b\\link\x1b(Bok\u{9b}\u{7f}é"), "linkoké");
     }
 

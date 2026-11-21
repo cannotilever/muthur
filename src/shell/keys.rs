@@ -7,7 +7,9 @@ use crate::input::Key;
 /// tabs; shifted F-keys and unknown sequences have no meaning to it).
 /// `app_cursor` is DECCKM, which the running program may have switched on.
 pub fn encode_key(key: &Key, app_cursor: bool) -> Option<Vec<u8>> {
-    let arrow = |c: u8| if app_cursor { vec![0x1b, b'O', c] } else { vec![0x1b, b'[', c] };
+    let arrow = |c: u8| {
+        if app_cursor { vec![0x1b, b'O', c] } else { vec![0x1b, b'[', c] }
+    };
     let tilde = |n: u8| format!("\x1b[{n}~").into_bytes();
     Some(match key {
         Key::Char(c) => c.to_string().into_bytes(),

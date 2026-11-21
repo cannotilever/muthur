@@ -198,13 +198,7 @@ impl UtilityTab {
             Kind::Processes => {
                 lines.push(Line::from(format!("{:<7} {:<15} {:>6} {:>7}", "PID", "NAME", "CPU%", "MEM")));
                 for p in &s.top {
-                    lines.push(Line::from(format!(
-                        "{:<7} {:<15} {:>6.1} {:>7}",
-                        p.pid,
-                        p.name,
-                        p.cpu,
-                        human_bytes(p.mem)
-                    )));
+                    lines.push(Line::from(format!("{:<7} {:<15} {:>6.1} {:>7}", p.pid, p.name, p.cpu, human_bytes(p.mem))));
                 }
             }
             Kind::Services => {
@@ -251,12 +245,24 @@ impl Tab for UtilityTab {
         if area.width >= TWO_COLUMNS_FROM {
             let left_w = area.width / 2;
             let left = Rect { width: left_w, ..area };
-            let right = Rect { x: area.x + left_w, width: area.width - left_w, ..area };
+            let right = Rect {
+                x: area.x + left_w,
+                width: area.width - left_w,
+                ..area
+            };
             self.draw_column(&[Kind::System, Kind::Cpu, Kind::Memory, Kind::Network], s, left, buf);
             // Failed units first: they must never be the panel that gets dropped.
             self.draw_column(&[Kind::Services, Kind::Disks, Kind::Processes], s, right, buf);
         } else {
-            let all = [Kind::System, Kind::Services, Kind::Cpu, Kind::Memory, Kind::Disks, Kind::Network, Kind::Processes];
+            let all = [
+                Kind::System,
+                Kind::Services,
+                Kind::Cpu,
+                Kind::Memory,
+                Kind::Disks,
+                Kind::Network,
+                Kind::Processes,
+            ];
             self.draw_column(&all, s, area, buf);
         }
     }

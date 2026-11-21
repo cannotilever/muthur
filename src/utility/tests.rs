@@ -4,8 +4,18 @@ use crate::metrics::{Container, Disk, NetRate, Proc, Usage};
 use ratatui::buffer::Buffer;
 use ratatui::style::Modifier;
 
-const WINDOWED: Rect = Rect { x: 19, y: 2, width: 61, height: 40 };
-const FULL: Rect = Rect { x: 0, y: 0, width: 80, height: 43 };
+const WINDOWED: Rect = Rect {
+    x: 19,
+    y: 2,
+    width: 61,
+    height: 40,
+};
+const FULL: Rect = Rect {
+    x: 0,
+    y: 0,
+    width: 80,
+    height: 43,
+};
 const G: u64 = 1 << 30;
 
 pub(crate) fn snap() -> Snapshot {
@@ -18,16 +28,43 @@ pub(crate) fn snap() -> Snapshot {
         mem: Usage { used: 12 * G, total: 32 * G },
         swap: Usage { used: G, total: 8 * G },
         disks: vec![
-            Disk { mount: "/".into(), usage: Usage { used: 700 * G, total: 1000 * G } },
-            Disk { mount: "/tank".into(), usage: Usage { used: 1100 * G, total: 2000 * G } },
+            Disk {
+                mount: "/".into(),
+                usage: Usage {
+                    used: 700 * G,
+                    total: 1000 * G,
+                },
+            },
+            Disk {
+                mount: "/tank".into(),
+                usage: Usage {
+                    used: 1100 * G,
+                    total: 2000 * G,
+                },
+            },
         ],
         net: NetRate { rx_bps: 4608, tx_bps: 6144 },
         top: vec![
-            Proc { pid: 1382, name: "RESTIC".into(), cpu: 121.5, mem: 500 << 20 },
-            Proc { pid: 77, name: "FISH".into(), cpu: 1.0, mem: 8 << 20 },
+            Proc {
+                pid: 1382,
+                name: "RESTIC".into(),
+                cpu: 121.5,
+                mem: 500 << 20,
+            },
+            Proc {
+                pid: 77,
+                name: "FISH".into(),
+                cpu: 1.0,
+                mem: 8 << 20,
+            },
         ],
         failed_units: Some(vec!["AUTORANDR".into()]),
-        containers: Some(vec![Container { id: "1".into(), name: "web".into(), status: "UP".into(), ..Default::default() }]),
+        containers: Some(vec![Container {
+            id: "1".into(),
+            name: "web".into(),
+            status: "UP".into(),
+            ..Default::default()
+        }]),
         container_runtime: Some("docker".into()),
         containers_at: None,
     }
@@ -46,9 +83,10 @@ fn text(buf: &Buffer) -> String {
 }
 
 fn find(buf: &Buffer, needle: &str) -> Option<(u16, u16)> {
-    text(buf).lines().enumerate().find_map(|(y, l)| {
-        l.find(needle).map(|byte| (l[..byte].chars().count() as u16, y as u16))
-    })
+    text(buf)
+        .lines()
+        .enumerate()
+        .find_map(|(y, l)| l.find(needle).map(|byte| (l[..byte].chars().count() as u16, y as u16)))
 }
 
 #[test]
@@ -110,7 +148,10 @@ fn fullscreen_uses_two_columns() {
 #[test]
 fn many_cores_fit() {
     let mut t = UtilityTab::new();
-    t.on_snapshot(Snapshot { cpu_cores: (0..32).map(|i| i as f32 * 3.0).collect(), ..snap() });
+    t.on_snapshot(Snapshot {
+        cpu_cores: (0..32).map(|i| i as f32 * 3.0).collect(),
+        ..snap()
+    });
     let mut buf = Buffer::empty(FULL);
     for c in buf.content.iter_mut() {
         c.set_symbol("#");
@@ -129,8 +170,19 @@ fn many_cores_fit() {
 #[test]
 fn failed_units_survive_a_big_machine() {
     let mut t = UtilityTab::new();
-    let top: Vec<Proc> = (0..5).map(|i| Proc { pid: i, name: format!("P{i}"), cpu: 1.0, mem: 1 }).collect();
-    t.on_snapshot(Snapshot { cpu_cores: vec![5.0; 32], top, ..snap() });
+    let top: Vec<Proc> = (0..5)
+        .map(|i| Proc {
+            pid: i,
+            name: format!("P{i}"),
+            cpu: 1.0,
+            mem: 1,
+        })
+        .collect();
+    t.on_snapshot(Snapshot {
+        cpu_cores: vec![5.0; 32],
+        top,
+        ..snap()
+    });
     let s = text(&render(&mut t, WINDOWED));
     assert!(s.contains("FAILED AUTORANDR"), "{s}");
 }
@@ -140,7 +192,16 @@ fn long_mount_names_stay_distinct() {
     let mut t = UtilityTab::new();
     let u = Usage { used: G, total: 2 * G };
     t.on_snapshot(Snapshot {
-        disks: vec![Disk { mount: "/mnt/backup".into(), usage: u }, Disk { mount: "/mnt/media".into(), usage: u }],
+        disks: vec![
+            Disk {
+                mount: "/mnt/backup".into(),
+                usage: u,
+            },
+            Disk {
+                mount: "/mnt/media".into(),
+                usage: u,
+            },
+        ],
         ..snap()
     });
     let s = text(&render(&mut t, WINDOWED));
@@ -160,7 +221,11 @@ fn offline_telemetry_is_shown_and_clears() {
 #[test]
 fn services_panel_handles_none() {
     let mut t = UtilityTab::new();
-    t.on_snapshot(Snapshot { failed_units: None, containers: None, ..snap() });
+    t.on_snapshot(Snapshot {
+        failed_units: None,
+        containers: None,
+        ..snap()
+    });
     let s = text(&render(&mut t, FULL));
     assert!(s.contains("UNITS N/A") && !s.contains("CONTAINERS"), "{s}");
 }
@@ -168,7 +233,11 @@ fn services_panel_handles_none() {
 #[test]
 fn nominal_when_nothing_failed() {
     let mut t = UtilityTab::new();
-    t.on_snapshot(Snapshot { failed_units: Some(vec![]), containers: Some(vec![]), ..snap() });
+    t.on_snapshot(Snapshot {
+        failed_units: Some(vec![]),
+        containers: Some(vec![]),
+        ..snap()
+    });
     let s = text(&render(&mut t, FULL));
     assert!(s.contains("ALL SYSTEMS NOMINAL") && s.contains("CONTAINERS NONE"), "{s}");
 }
@@ -176,14 +245,20 @@ fn nominal_when_nothing_failed() {
 #[test]
 fn no_swap_says_none() {
     let mut t = UtilityTab::new();
-    t.on_snapshot(Snapshot { swap: Usage::default(), ..snap() });
+    t.on_snapshot(Snapshot {
+        swap: Usage::default(),
+        ..snap()
+    });
     assert!(text(&render(&mut t, FULL)).contains("SWAP  NONE"));
 }
 
 #[test]
 fn activity_on_new_failure() {
     let mut t = UtilityTab::new();
-    t.on_snapshot(Snapshot { failed_units: Some(vec![]), ..snap() });
+    t.on_snapshot(Snapshot {
+        failed_units: Some(vec![]),
+        ..snap()
+    });
     assert!(!t.take_activity());
     t.on_snapshot(snap());
     assert!(t.take_activity());
@@ -223,9 +298,19 @@ fn print_layouts() {
 
 #[test]
 fn many_containers_are_one_summary_line() {
-    let many: Vec<Container> = (0..60).map(|i| Container { id: format!("{i}"), name: format!("svc{i}"), status: "UP".into(), ..Default::default() }).collect();
+    let many: Vec<Container> = (0..60)
+        .map(|i| Container {
+            id: format!("{i}"),
+            name: format!("svc{i}"),
+            status: "UP".into(),
+            ..Default::default()
+        })
+        .collect();
     let mut t = UtilityTab::new();
-    t.on_snapshot(Snapshot { containers: Some(many), ..snap() });
+    t.on_snapshot(Snapshot {
+        containers: Some(many),
+        ..snap()
+    });
     for area in [WINDOWED, FULL] {
         let s = text(&render(&mut t, area));
         assert!(s.contains("CONTAINERS 60 (SEE CARGO)"), "{s}");

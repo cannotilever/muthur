@@ -217,7 +217,17 @@ mod tests {
     fn function_key_families() {
         assert_eq!(
             parser().feed(b"\x1b[17~\x1b[29~\x1b[5i\x1b[31~\x1b[1~\x1bOP\x1bOS\x1b[A\x1b[H"),
-            vec![Key::F(6), Key::F(16), Key::ShiftF(1), Key::ShiftF(6), Key::ShiftF(11), Key::Pf(1), Key::InsertKey, Key::Up, Key::Home]
+            vec![
+                Key::F(6),
+                Key::F(16),
+                Key::ShiftF(1),
+                Key::ShiftF(6),
+                Key::ShiftF(11),
+                Key::Pf(1),
+                Key::InsertKey,
+                Key::Up,
+                Key::Home
+            ]
         );
     }
 
@@ -269,7 +279,16 @@ mod tests {
     fn application_mode_keys() {
         assert_eq!(
             parser().feed(b"\x1bOA\x1bOD\x1bOM\x1bOp\x1bOy\x1bOm\x1bOl\x1bOn"),
-            vec![Key::Up, Key::Left, Key::Enter, Key::Char('0'), Key::Char('9'), Key::Char('-'), Key::Char(','), Key::Char('.')]
+            vec![
+                Key::Up,
+                Key::Left,
+                Key::Enter,
+                Key::Char('0'),
+                Key::Char('9'),
+                Key::Char('-'),
+                Key::Char(','),
+                Key::Char('.')
+            ]
         );
     }
 
@@ -283,7 +302,9 @@ mod tests {
 
     #[test]
     fn override_replaces_sequence() {
-        let km = Keymap::wy60_default().with_overrides(&BTreeMap::from([("F1".into(), "\x1b[11~".into())])).unwrap();
+        let km = Keymap::wy60_default()
+            .with_overrides(&BTreeMap::from([("F1".into(), "\x1b[11~".into())]))
+            .unwrap();
         let mut p = KeyParser::new(km);
         assert_eq!(p.feed(b"\x1b[11~"), vec![Key::F(1)]);
         assert_eq!(p.feed(b"\x1b[?5i"), vec![Key::Unknown(b"\x1b[?5i".to_vec())]);
@@ -291,7 +312,9 @@ mod tests {
 
     #[test]
     fn override_unknown_name_errors() {
-        let err = Keymap::wy60_default().with_overrides(&BTreeMap::from([("F99".into(), "x".into())])).unwrap_err();
+        let err = Keymap::wy60_default()
+            .with_overrides(&BTreeMap::from([("F99".into(), "x".into())]))
+            .unwrap_err();
         assert!(err.to_string().contains("F99"));
     }
 }

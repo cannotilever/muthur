@@ -27,26 +27,51 @@ pub struct Policy {
 #[derive(Clone, Debug, PartialEq)]
 #[allow(clippy::large_enum_variant)] // short-lived; carried straight to the tab
 pub enum Effect {
-    Spawn { forced_final: bool },
+    Spawn {
+        forced_final: bool,
+    },
     /// Ask the reviewer about `call_id`; the verdict comes back through `on_review`.
-    Review { call_id: String, input: ReviewInput },
+    Review {
+        call_id: String,
+        input: ReviewInput,
+    },
     /// Y/N prompt: `prompt` is the command or tool label, `note` the reviewer's note.
-    Confirm { call_id: String, prompt: String, note: String },
+    Confirm {
+        call_id: String,
+        prompt: String,
+        note: String,
+    },
     /// The operator's password for a root call; `given = false` means Esc.
-    AskPassword { call_id: String, prompt: String },
+    AskPassword {
+        call_id: String,
+        prompt: String,
+    },
     /// The reviewer denied; the operator may type OVERRIDE. `prompt` is the command or tool label.
-    AskOverride { call_id: String, prompt: String, note: String },
-    Run { call_id: String, invocation: Invocation },
+    AskOverride {
+        call_id: String,
+        prompt: String,
+        note: String,
+    },
+    Run {
+        call_id: String,
+        invocation: Invocation,
+    },
     /// Hand `task` to the technical agent; its outcome comes back through `on_delegate`.
     /// `operator_message` is the operator's own line, for the child's authority checks.
-    Delegate { call_id: String, task: String, operator_message: String },
+    Delegate {
+        call_id: String,
+        task: String,
+        operator_message: String,
+    },
     Note(String),
     LogTool(Vec<ToolResult>),
     Audit(AuditEntry),
     /// A running call was aborted; its late outcome is still to be audited
     /// (see `Orphan::audit`).
     Orphan(Orphan),
-    Finished { truncated: bool },
+    Finished {
+        truncated: bool,
+    },
 }
 
 /// How a delegation ended, as the persona's tool result.
@@ -60,9 +85,7 @@ impl DelegateOutcome {
     /// The tool-result text for the persona; `officer` is the agent's label.
     pub fn content(&self, officer: &str) -> String {
         let (lines, tail) = match self {
-            DelegateOutcome::Report { lines, report, truncated } => {
-                (lines, format!("REPORT{}:\n{report}", if *truncated { " (TRUNCATED)" } else { "" }))
-            }
+            DelegateOutcome::Report { lines, report, truncated } => (lines, format!("REPORT{}:\n{report}", if *truncated { " (TRUNCATED)" } else { "" })),
             DelegateOutcome::NoResponse { lines } => (lines, format!("NO RESPONSE FROM {officer}")),
         };
         let commands = if lines.is_empty() { "NONE".to_string() } else { lines.join("\n") };
@@ -110,11 +133,17 @@ enum State {
     Reviewing(Invocation),
     Confirming(Invocation),
     /// `overridden`: reached through OVERRIDE.
-    Password { inv: Invocation, overridden: bool },
+    Password {
+        inv: Invocation,
+        overridden: bool,
+    },
     Override(Invocation),
     /// Handed to the technical agent; waiting for its outcome.
     Delegating,
-    Running { inv: Invocation, decision: Decision },
+    Running {
+        inv: Invocation,
+        decision: Decision,
+    },
     Done,
 }
 
@@ -152,7 +181,10 @@ struct Delegation {
 /// The persona-facing line of a delegated call: the start line without its
 /// `RUN  ` / `RUN# ` prefix, under the officer's label.
 pub fn condensed(officer: &str, start_line: &str) -> String {
-    let rest = start_line.strip_prefix("RUN  ").or_else(|| start_line.strip_prefix("RUN# ")).unwrap_or(start_line);
+    let rest = start_line
+        .strip_prefix("RUN  ")
+        .or_else(|| start_line.strip_prefix("RUN# "))
+        .unwrap_or(start_line);
     format!("{officer}: {rest}")
 }
 
@@ -272,7 +304,12 @@ impl Slot {
     }
 
     fn resolved(&mut self, result: ToolResult, decision: Decision, exit: Option<serde_json::Value>, prior: &mut Vec<PriorCall>) {
-        prior.push(PriorCall { tool: self.call.name.clone(), args: self.call.input.clone(), decision, exit });
+        prior.push(PriorCall {
+            tool: self.call.name.clone(),
+            args: self.call.input.clone(),
+            decision,
+            exit,
+        });
         self.result = Some(result);
         self.state = State::Done;
     }
@@ -284,7 +321,10 @@ impl Slot {
         } else {
             out.push(Effect::Note(format!("ACCESSING: {}", self.label)));
         }
-        out.push(Effect::Run { call_id: self.call.id.clone(), invocation: inv.clone() });
+        out.push(Effect::Run {
+            call_id: self.call.id.clone(),
+            invocation: inv.clone(),
+        });
         self.state = State::Running { inv, decision };
     }
 
@@ -295,7 +335,10 @@ impl Slot {
         } else if decision != Decision::Aborted {
             out.push(Effect::Note(format!("ACCESS DENIED: {}", self.label)));
         }
-        out.push(Effect::Audit(AuditEntry { output: text.clone(), ..self.base_audit(agent, decision) }));
+        out.push(Effect::Audit(AuditEntry {
+            output: text.clone(),
+            ..self.base_audit(agent, decision)
+        }));
         let r = self.make_result(text, true);
         self.resolved(r, decision, None, prior);
     }
@@ -310,12 +353,17 @@ impl Slot {
         if !audit_online {
             return self.refuse_offline(agent, prior, out);
         }
-        out.push(Effect::AskPassword { call_id: self.call.id.clone(), prompt: self.label.clone() });
+        out.push(Effect::AskPassword {
+            call_id: self.call.id.clone(),
+            prompt: self.label.clone(),
+        });
         self.state = State::Password { inv, overridden };
     }
 
     fn finish(&mut self, agent: AgentId, outcome: ToolOutcome, prior: &mut Vec<PriorCall>, out: &mut Vec<Effect>) {
-        let State::Running { inv, decision } = std::mem::replace(&mut self.state, State::Done) else { return };
+        let State::Running { inv, decision } = std::mem::replace(&mut self.state, State::Done) else {
+            return;
+        };
         let argv = match &inv {
             Invocation::Run { command, as_root, .. } => {
                 if agent == AgentId::Tech && self.delegation.is_none() {
@@ -346,7 +394,11 @@ impl Slot {
         let (text, argv) = match &inv {
             Invocation::Run { command, as_root: true, .. } => {
                 if self.delegation.is_none() {
-                    out.push(Effect::Note(if tech { "OUTCOME UNKNOWN".into() } else { format!("ACCESS INTERRUPTED: {}", self.label) }));
+                    out.push(Effect::Note(if tech {
+                        "OUTCOME UNKNOWN".into()
+                    } else {
+                        format!("ACCESS INTERRUPTED: {}", self.label)
+                    }));
                 }
                 (ABORTED_ISSUED, Some(shell::argv(command, true)))
             }
@@ -359,9 +411,17 @@ impl Slot {
             }
             _ => (ABORTED, None),
         };
-        out.push(Effect::Audit(AuditEntry { argv, output: text.into(), ..self.base_audit(agent, Decision::Aborted) }));
+        out.push(Effect::Audit(AuditEntry {
+            argv,
+            output: text.into(),
+            ..self.base_audit(agent, Decision::Aborted)
+        }));
         let base = self.base_audit(agent, decision);
-        out.push(Effect::Orphan(Orphan { call_id: self.call.id.clone(), invocation: inv, base }));
+        out.push(Effect::Orphan(Orphan {
+            call_id: self.call.id.clone(),
+            invocation: inv,
+            base,
+        }));
         let r = self.make_result(text.into(), true);
         self.resolved(r, Decision::Aborted, None, prior);
     }
@@ -405,7 +465,8 @@ impl Turn {
     /// Drains the finished round's results, keeping its condensed lines.
     fn close_round(&mut self) -> Vec<ToolResult> {
         if let Some(d) = &mut self.delegation {
-            d.lines.extend(self.slots.iter_mut().filter_map(|s| s.delegation.as_mut().and_then(|x| x.line.take())));
+            d.lines
+                .extend(self.slots.iter_mut().filter_map(|s| s.delegation.as_mut().and_then(|x| x.line.take())));
         }
         self.slots.drain(..).filter_map(|s| s.result).collect()
     }
@@ -435,7 +496,11 @@ impl Turn {
                 line: None,
                 state: State::Done,
                 result: None,
-                delegation: self.slot_delegation.as_ref().map(|(officer, by)| SlotDelegation { officer: officer.clone(), by: by.clone(), line: None }),
+                delegation: self.slot_delegation.as_ref().map(|(officer, by)| SlotDelegation {
+                    officer: officer.clone(),
+                    by: by.clone(),
+                    line: None,
+                }),
             };
             if let Ok(inv) = &checked {
                 slot.label = inv.label();
@@ -451,8 +516,7 @@ impl Turn {
                 _ => None,
             };
             // Defence in depth: startup always builds the tech agent's rules.
-            let rules_offline =
-                matches!(checked, Ok(Invocation::Run { .. })) && defs.agent() == AgentId::Tech && policy.deny.is_none();
+            let rules_offline = matches!(checked, Ok(Invocation::Run { .. })) && defs.agent() == AgentId::Tech && policy.deny.is_none();
             let refusal = match checked {
                 _ if duplicate => Some(DUPLICATE_ID.to_string()),
                 _ if forced => Some(ROUND_LIMIT.to_string()),
@@ -469,7 +533,14 @@ impl Turn {
             };
             if let Some(reason) = refusal {
                 let tag = format!("DENIED: {reason}");
-                slot.refuse(self.agent, Decision::Rejected, format!("NOT AUTHORIZED: {reason}"), &tag, &mut self.prior, &mut out);
+                slot.refuse(
+                    self.agent,
+                    Decision::Rejected,
+                    format!("NOT AUTHORIZED: {reason}"),
+                    &tag,
+                    &mut self.prior,
+                    &mut out,
+                );
             }
             self.slots.push(slot);
         }
@@ -479,10 +550,14 @@ impl Turn {
 
     /// The reviewer's verdict for the call under review.
     pub fn on_review(&mut self, call_id: &str, review: Review, audit_online: bool) -> Vec<Effect> {
-        let Some(i) = self.live(call_id, |s| matches!(s, State::Reviewing(_))) else { return vec![] };
+        let Some(i) = self.live(call_id, |s| matches!(s, State::Reviewing(_))) else {
+            return vec![];
+        };
         let agent = self.agent;
         let slot = &mut self.slots[i];
-        let State::Reviewing(inv) = std::mem::replace(&mut slot.state, State::Done) else { return vec![] };
+        let State::Reviewing(inv) = std::mem::replace(&mut slot.state, State::Done) else {
+            return vec![];
+        };
         let mut review = review;
         if slot.unknown_target && review.verdict == Verdict::Allow {
             review.verdict = Verdict::Ask;
@@ -495,12 +570,20 @@ impl Turn {
             Verdict::Allow | Verdict::Ask if inv.as_root() => slot.ask_password(agent, inv, false, audit_online, prior, &mut out),
             Verdict::Allow => slot.run(agent, inv, Decision::Auto, &mut out),
             Verdict::Ask => {
-                out.push(Effect::Confirm { call_id: slot.call.id.clone(), prompt: slot.label.clone(), note: review.note });
+                out.push(Effect::Confirm {
+                    call_id: slot.call.id.clone(),
+                    prompt: slot.label.clone(),
+                    note: review.note,
+                });
                 slot.state = State::Confirming(inv);
             }
             Verdict::Deny if !audit_online => slot.refuse_offline(agent, prior, &mut out),
             Verdict::Deny => {
-                out.push(Effect::AskOverride { call_id: slot.call.id.clone(), prompt: slot.label.clone(), note: review.note });
+                out.push(Effect::AskOverride {
+                    call_id: slot.call.id.clone(),
+                    prompt: slot.label.clone(),
+                    note: review.note,
+                });
                 slot.state = State::Override(inv);
             }
         }
@@ -511,10 +594,14 @@ impl Turn {
     /// The operator's Y/N for an unprivileged `ask`.
     pub fn on_confirm(&mut self, call_id: &str, yes: bool, audit_online: bool) -> Vec<Effect> {
         let _ = audit_online; // unprivileged: runs without the audit log
-        let Some(i) = self.live(call_id, |s| matches!(s, State::Confirming(_))) else { return vec![] };
+        let Some(i) = self.live(call_id, |s| matches!(s, State::Confirming(_))) else {
+            return vec![];
+        };
         let agent = self.agent;
         let slot = &mut self.slots[i];
-        let State::Confirming(inv) = std::mem::replace(&mut slot.state, State::Done) else { return vec![] };
+        let State::Confirming(inv) = std::mem::replace(&mut slot.state, State::Done) else {
+            return vec![];
+        };
         let mut out = Vec::new();
         if yes {
             slot.run(agent, inv, Decision::Confirmed, &mut out);
@@ -527,10 +614,14 @@ impl Turn {
 
     /// The password prompt was answered (`given`) or refused with Esc.
     pub fn on_password(&mut self, call_id: &str, given: bool, audit_online: bool) -> Vec<Effect> {
-        let Some(i) = self.live(call_id, |s| matches!(s, State::Password { .. })) else { return vec![] };
+        let Some(i) = self.live(call_id, |s| matches!(s, State::Password { .. })) else {
+            return vec![];
+        };
         let agent = self.agent;
         let slot = &mut self.slots[i];
-        let State::Password { inv, overridden } = std::mem::replace(&mut slot.state, State::Done) else { return vec![] };
+        let State::Password { inv, overridden } = std::mem::replace(&mut slot.state, State::Done) else {
+            return vec![];
+        };
         let mut out = Vec::new();
         if !given {
             slot.refuse(agent, Decision::Denied, DENIED.into(), DENIED, &mut self.prior, &mut out);
@@ -546,15 +637,26 @@ impl Turn {
 
     /// The operator typed OVERRIDE (`yes`) or refused with Esc.
     pub fn on_override(&mut self, call_id: &str, yes: bool, audit_online: bool) -> Vec<Effect> {
-        let Some(i) = self.live(call_id, |s| matches!(s, State::Override(_))) else { return vec![] };
+        let Some(i) = self.live(call_id, |s| matches!(s, State::Override(_))) else {
+            return vec![];
+        };
         let agent = self.agent;
         let slot = &mut self.slots[i];
-        let State::Override(inv) = std::mem::replace(&mut slot.state, State::Done) else { return vec![] };
+        let State::Override(inv) = std::mem::replace(&mut slot.state, State::Done) else {
+            return vec![];
+        };
         let mut out = Vec::new();
         let prior = &mut self.prior;
         if !yes {
             let note = slot.review.as_ref().map(|r| r.note.clone()).unwrap_or_default();
-            slot.refuse(agent, Decision::Denied, format!("DENIED BY REVIEWER: {note}"), "DENIED BY REVIEWER", prior, &mut out);
+            slot.refuse(
+                agent,
+                Decision::Denied,
+                format!("DENIED BY REVIEWER: {note}"),
+                "DENIED BY REVIEWER",
+                prior,
+                &mut out,
+            );
         } else if !audit_online {
             slot.refuse_offline(agent, prior, &mut out);
         } else if inv.as_root() {
@@ -567,7 +669,9 @@ impl Turn {
     }
 
     pub fn on_tool_done(&mut self, call_id: &str, outcome: ToolOutcome) -> Vec<Effect> {
-        let Some(i) = self.live(call_id, |s| matches!(s, State::Running { .. })) else { return vec![] };
+        let Some(i) = self.live(call_id, |s| matches!(s, State::Running { .. })) else {
+            return vec![];
+        };
         let mut out = Vec::new();
         self.slots[i].finish(self.agent, outcome, &mut self.prior, &mut out);
         self.advance(&mut out);
@@ -576,12 +680,17 @@ impl Turn {
 
     /// The delegation finished: resolves the waiting call and moves on.
     pub fn on_delegate(&mut self, call_id: &str, outcome: DelegateOutcome, officer: &str) -> Vec<Effect> {
-        let Some(i) = self.live(call_id, |s| matches!(s, State::Delegating)) else { return vec![] };
+        let Some(i) = self.live(call_id, |s| matches!(s, State::Delegating)) else {
+            return vec![];
+        };
         let mut out = Vec::new();
         let content = outcome.content(officer);
         let is_error = matches!(outcome, DelegateOutcome::NoResponse { .. });
         let slot = &mut self.slots[i];
-        out.push(Effect::Audit(AuditEntry { output: content.clone(), ..slot.base_audit(self.agent, Decision::Auto) }));
+        out.push(Effect::Audit(AuditEntry {
+            output: content.clone(),
+            ..slot.base_audit(self.agent, Decision::Auto)
+        }));
         let r = slot.make_result(content, is_error);
         slot.resolved(r, Decision::Auto, None, &mut self.prior);
         self.advance(&mut out);
@@ -590,7 +699,10 @@ impl Turn {
 
     /// The call id of the slot waiting on a delegation.
     pub fn delegating(&self) -> Option<&str> {
-        self.slots.iter().find(|s| matches!(s.state, State::Delegating) && s.result.is_none()).map(|s| s.call.id.as_str())
+        self.slots
+            .iter()
+            .find(|s| matches!(s.state, State::Delegating) && s.result.is_none())
+            .map(|s| s.call.id.as_str())
     }
 
     /// Ctrl-C: every unresolved call is aborted, the round logged, the turn finished.
@@ -672,12 +784,20 @@ impl Turn {
     /// Review-free tools run at once; the others go to the reviewer.
     fn start(&mut self, i: usize, out: &mut Vec<Effect>) {
         let slot = &mut self.slots[i];
-        let State::Pending(inv) = std::mem::replace(&mut slot.state, State::Done) else { return };
+        let State::Pending(inv) = std::mem::replace(&mut slot.state, State::Done) else {
+            return;
+        };
         match inv.gate() {
             Gate::Free => slot.run(self.agent, inv, Decision::Auto, out),
             Gate::Delegate => {
-                let Invocation::Delegate { task } = &inv else { return };
-                out.push(Effect::Delegate { call_id: slot.call.id.clone(), task: task.clone(), operator_message: self.operator_message.clone() });
+                let Invocation::Delegate { task } = &inv else {
+                    return;
+                };
+                out.push(Effect::Delegate {
+                    call_id: slot.call.id.clone(),
+                    task: task.clone(),
+                    operator_message: self.operator_message.clone(),
+                });
                 slot.state = State::Delegating;
             }
             Gate::Reviewed => {
@@ -689,7 +809,10 @@ impl Turn {
                     prior: self.prior.clone(),
                     delegated_task: self.delegated_task.clone(),
                 };
-                out.push(Effect::Review { call_id: slot.call.id.clone(), input });
+                out.push(Effect::Review {
+                    call_id: slot.call.id.clone(),
+                    input,
+                });
                 slot.state = State::Reviewing(inv);
             }
         }

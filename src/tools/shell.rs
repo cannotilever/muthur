@@ -49,17 +49,17 @@ pub fn cleanup_argv() -> Vec<String> {
 }
 
 fn out(content: &str, is_error: bool, argv: Vec<String>, exit: serde_json::Value, ms: u64, audit: Option<String>) -> ToolOutcome {
-    ToolOutcome { content: content.into(), is_error, argv: Some(argv), exit: Some(exit), ms, audit_output: audit }
+    ToolOutcome {
+        content: content.into(),
+        is_error,
+        argv: Some(argv),
+        exit: Some(exit),
+        ms,
+        audit_output: audit,
+    }
 }
 
-pub fn run(
-    runner: &dyn Runner,
-    command: &str,
-    as_root: bool,
-    timeout: Duration,
-    password: Option<&Secret>,
-    cancel: &AtomicBool,
-) -> ToolOutcome {
+pub fn run(runner: &dyn Runner, command: &str, as_root: bool, timeout: Duration, password: Option<&Secret>, cancel: &AtomicBool) -> ToolOutcome {
     let argv = argv(command, as_root);
     // Only the root path ever feeds stdin. Pre-size so no un-wiped copy is freed.
     let stdin: Option<Zeroizing<String>> = password.filter(|_| as_root).map(|p| {
@@ -182,11 +182,12 @@ pub fn probe(runner: &dyn Runner) -> Probe {
     // UDP sender at once. TCP is rejected with a reset, and "Connection
     // refused" could just as well come from a remote host.
     let udp = argv(PROBE_UDP, false);
-    let spec = RunSpec { merged: true, ..RunSpec::new(&udp, STEP) };
+    let spec = RunSpec {
+        merged: true,
+        ..RunSpec::new(&udp, STEP)
+    };
     match runner.run_spec(&spec) {
-        RunOutput::Exited { code, stdout, stderr } if code != 0 && format!("{stdout}{stderr}").contains("write error: Operation not permitted") => {
-            Probe::Ready
-        }
+        RunOutput::Exited { code, stdout, stderr } if code != 0 && format!("{stdout}{stderr}").contains("write error: Operation not permitted") => Probe::Ready,
         _ => Probe::NotIsolated,
     }
 }
@@ -204,7 +205,10 @@ mod tests {
     }
     impl Fake {
         fn new(r: Vec<RunOutput>) -> Self {
-            Fake { calls: Mutex::new(vec![]), replies: Mutex::new(r.into_iter().rev().collect()) }
+            Fake {
+                calls: Mutex::new(vec![]),
+                replies: Mutex::new(r.into_iter().rev().collect()),
+            }
         }
         fn next(&self, argv: &[String], stdin: Option<&[u8]>) -> RunOutput {
             self.calls.lock().unwrap().push((argv.to_vec(), stdin.map(<[u8]>::to_vec)));
@@ -220,7 +224,11 @@ mod tests {
         }
     }
     fn exited(code: i32, s: &str) -> RunOutput {
-        RunOutput::Exited { code, stdout: s.into(), stderr: String::new() }
+        RunOutput::Exited {
+            code,
+            stdout: s.into(),
+            stderr: String::new(),
+        }
     }
     fn go(f: &Fake, root: bool) -> ToolOutcome {
         run(f, "id", root, Duration::from_secs(9), None, &AtomicBool::new(false))
@@ -230,9 +238,26 @@ mod tests {
     fn unprivileged_argv_exact() {
         assert_eq!(
             argv("ls -la", false),
-            strs(&["sudo", "-n", "-u", "muthur-agent", "--", "/usr/bin/env", "-i", "-C", "/var/lib/muthur-agent",
-                "HOME=/var/lib/muthur-agent", "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin", "LANG=C.UTF-8", "TERM=dumb",
-                "/bin/bash", "--noprofile", "--norc", "-c", "ls -la"])
+            strs(&[
+                "sudo",
+                "-n",
+                "-u",
+                "muthur-agent",
+                "--",
+                "/usr/bin/env",
+                "-i",
+                "-C",
+                "/var/lib/muthur-agent",
+                "HOME=/var/lib/muthur-agent",
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin",
+                "LANG=C.UTF-8",
+                "TERM=dumb",
+                "/bin/bash",
+                "--noprofile",
+                "--norc",
+                "-c",
+                "ls -la"
+            ])
         );
     }
 
@@ -240,9 +265,27 @@ mod tests {
     fn root_argv_exact() {
         assert_eq!(
             argv("id", true),
-            strs(&["sudo", "-k", "-S", "-p", "", "--", "/usr/bin/env", "-i", "-C", "/root", "HOME=/root",
-                "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin", "LANG=C.UTF-8", "TERM=dumb",
-                "/bin/bash", "--noprofile", "--norc", "-c", "exec </dev/null\nid"])
+            strs(&[
+                "sudo",
+                "-k",
+                "-S",
+                "-p",
+                "",
+                "--",
+                "/usr/bin/env",
+                "-i",
+                "-C",
+                "/root",
+                "HOME=/root",
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin",
+                "LANG=C.UTF-8",
+                "TERM=dumb",
+                "/bin/bash",
+                "--noprofile",
+                "--norc",
+                "-c",
+                "exec </dev/null\nid"
+            ])
         );
     }
 
@@ -265,9 +308,15 @@ mod tests {
     #[test]
     fn root_prefix_closes_stdin() {
         let a = strs(&["bash", "--noprofile", "--norc", "-c", "exec </dev/null\ncat; echo done"]);
-        let spec = RunSpec { merged: true, stdin: Some(b"secret\n"), ..RunSpec::new(&a, Duration::from_secs(10)) };
+        let spec = RunSpec {
+            merged: true,
+            stdin: Some(b"secret\n"),
+            ..RunSpec::new(&a, Duration::from_secs(10))
+        };
         match SystemRunner.run_spec(&spec) {
-            RunOutput::Exited { stdout, stderr, .. } => assert_eq!(format!("{stdout}{stderr}"), "done\n"),
+            RunOutput::Exited { stdout, stderr, .. } => {
+                assert_eq!(format!("{stdout}{stderr}"), "done\n")
+            }
             o => panic!("{o:?}"),
         }
     }
@@ -371,7 +420,10 @@ mod tests {
     fn probe_states() {
         let p = |r: Vec<RunOutput>| probe(&Fake::new(r));
         assert_eq!(p(vec![exited(1, "")]), Probe::AccountOffline);
-        assert_eq!(p(vec![exited(0, ""), exited(1, "bash: line 1: echo: write error: Operation not permitted")]), Probe::Ready);
+        assert_eq!(
+            p(vec![exited(0, ""), exited(1, "bash: line 1: echo: write error: Operation not permitted")]),
+            Probe::Ready
+        );
         assert_eq!(p(vec![exited(0, ""), exited(1, "bash: connect: Operation not permitted")]), Probe::NotIsolated);
         assert_eq!(p(vec![exited(0, ""), exited(0, "")]), Probe::NotIsolated);
         assert_eq!(p(vec![exited(0, ""), exited(1, "Network is unreachable")]), Probe::NotIsolated);

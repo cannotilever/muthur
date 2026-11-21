@@ -126,8 +126,7 @@ mod tests {
     fn card_probes_every_feature() {
         let s = String::from_utf8(card(80, 43)).unwrap();
         for seq in [
-            "\x1b[1m", "\x1b[4m", "\x1b[5m", "\x1b[7m", "\x1b[2m", "\x1b(0", "\x1b(B", "\x1b#6", "\x1b#3",
-            "\x1b#4", "\x1b[r",
+            "\x1b[1m", "\x1b[4m", "\x1b[5m", "\x1b[7m", "\x1b[2m", "\x1b(0", "\x1b(B", "\x1b#6", "\x1b#3", "\x1b#4", "\x1b[r",
         ] {
             assert!(s.contains(seq), "missing {seq:?}");
         }

@@ -16,7 +16,10 @@ pub enum MessageContent {
     Blocks(Vec<serde_json::Value>),
     ToolResults(Vec<ToolResult>),
     /// OpenAI assistant turn that called tools: `calls` in OpenAI wire format.
-    ToolCalls { text: String, calls: Vec<serde_json::Value> },
+    ToolCalls {
+        text: String,
+        calls: Vec<serde_json::Value>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -112,9 +115,17 @@ impl LlmError {
 #[derive(Clone, Debug, PartialEq)]
 pub enum StreamEvent {
     Text(String),
-    ToolCall { id: String, name: String, input: serde_json::Value },
+    ToolCall {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
     /// `raw`: Anthropic content blocks as they'd appear non-streamed; None for openai.
-    Done { stop: Stop, model: Option<String>, raw: Option<Vec<serde_json::Value>> },
+    Done {
+        stop: Stop,
+        model: Option<String>,
+        raw: Option<Vec<serde_json::Value>>,
+    },
     Error(LlmError),
 }
 
@@ -138,10 +149,24 @@ mod tests {
     use super::*;
     #[test]
     fn reasons_are_uppercase_ascii() {
-        for e in [LlmError::NoCarrier, LlmError::Auth, LlmError::Overloaded, LlmError::Malformed, LlmError::SignalLost, LlmError::Transmission, LlmError::Restricted, LlmError::NoAccessCode, LlmError::NotConfigured] {
+        for e in [
+            LlmError::NoCarrier,
+            LlmError::Auth,
+            LlmError::Overloaded,
+            LlmError::Malformed,
+            LlmError::SignalLost,
+            LlmError::Transmission,
+            LlmError::Restricted,
+            LlmError::NoAccessCode,
+            LlmError::NotConfigured,
+        ] {
             let r = e.reason();
             assert!(!r.is_empty() && r.chars().all(|c| c.is_ascii_uppercase() || c == ' '), "{r}");
         }
     }
-    #[test] fn crypto_provider_install_is_idempotent() { install_crypto_provider(); install_crypto_provider(); }
+    #[test]
+    fn crypto_provider_install_is_idempotent() {
+        install_crypto_provider();
+        install_crypto_provider();
+    }
 }

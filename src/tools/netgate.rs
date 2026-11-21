@@ -17,9 +17,8 @@ pub fn valid_host(h: &str) -> bool {
     if name.is_empty() || name.len() > 253 {
         return false;
     }
-    name.split('.').all(|l| {
-        (1..=63).contains(&l.len()) && !l.starts_with('-') && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-    })
+    name.split('.')
+        .all(|l| (1..=63).contains(&l.len()) && !l.starts_with('-') && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
 }
 
 /// Host of an http(s) URL, or None if the URL is not acceptable.
@@ -107,7 +106,9 @@ pub fn known_host(host: &str, operator_msg: &str, allow: &[String]) -> bool {
 }
 
 pub fn known_url(url: &str, operator_msg: &str, allow: &[String]) -> bool {
-    let Some(host) = url_host(url) else { return false };
+    let Some(host) = url_host(url) else {
+        return false;
+    };
     if is_loopback(&host) || allowed(&host, allow) {
         return true;
     }

@@ -142,14 +142,7 @@ mod tests {
 
     #[test]
     fn double_ctrl_bracket_exits_and_logs() {
-        let mut io = ScriptedIo::new(vec![
-            Some(b"x".to_vec()),
-            None,
-            Some(vec![0x1d]),
-            None,
-            Some(vec![0x1d]),
-            None,
-        ]);
+        let mut io = ScriptedIo::new(vec![Some(b"x".to_vec()), None, Some(vec![0x1d]), None, Some(vec![0x1d]), None]);
         let mut log = Vec::new();
         echo_loop(&mut io, &mut log).unwrap();
         assert_eq!(String::from_utf8(log).unwrap(), "x  (78)\n^]  (1d)\n^]  (1d)\n");

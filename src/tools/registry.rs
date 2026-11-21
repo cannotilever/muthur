@@ -57,15 +57,40 @@ impl DnsType {
 pub enum Invocation {
     ShipStatus,
     Containers,
-    ContainerInspect { name: String },
-    ContainerLogs { name: String, lines: u32 },
-    Ping { host: String, count: u32 },
-    Traceroute { host: String },
-    DnsLookup { name: String, rtype: DnsType },
-    PortCheck { host: String, port: u16 },
-    HttpCheck { url: String },
-    Run { command: String, reason: String, as_root: bool, timeout_secs: u32 },
-    Delegate { task: String },
+    ContainerInspect {
+        name: String,
+    },
+    ContainerLogs {
+        name: String,
+        lines: u32,
+    },
+    Ping {
+        host: String,
+        count: u32,
+    },
+    Traceroute {
+        host: String,
+    },
+    DnsLookup {
+        name: String,
+        rtype: DnsType,
+    },
+    PortCheck {
+        host: String,
+        port: u16,
+    },
+    HttpCheck {
+        url: String,
+    },
+    Run {
+        command: String,
+        reason: String,
+        as_root: bool,
+        timeout_secs: u32,
+    },
+    Delegate {
+        task: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,10 +141,7 @@ impl Invocation {
 
     pub fn gate(&self) -> Gate {
         match self {
-            Invocation::ShipStatus
-            | Invocation::Containers
-            | Invocation::ContainerInspect { .. }
-            | Invocation::ContainerLogs { .. } => Gate::Free,
+            Invocation::ShipStatus | Invocation::Containers | Invocation::ContainerInspect { .. } | Invocation::ContainerLogs { .. } => Gate::Free,
             Invocation::Delegate { .. } => Gate::Delegate,
             _ => Gate::Reviewed,
         }
@@ -131,9 +153,7 @@ impl Invocation {
 
     pub fn target(&self) -> Option<NetTarget> {
         match self {
-            Invocation::Ping { host, .. } | Invocation::Traceroute { host } | Invocation::PortCheck { host, .. } => {
-                Some(NetTarget::Host(host.clone()))
-            }
+            Invocation::Ping { host, .. } | Invocation::Traceroute { host } | Invocation::PortCheck { host, .. } => Some(NetTarget::Host(host.clone())),
             Invocation::DnsLookup { name, .. } => Some(NetTarget::Host(name.clone())),
             Invocation::HttpCheck { url } => Some(NetTarget::Url(url.clone())),
             _ => None,
@@ -247,8 +267,11 @@ impl ToolDefs {
     }
 
     pub fn json(&self) -> String {
-        let v: Vec<Value> =
-            self.specs.iter().map(|s| json!({"name": s.name, "description": s.description, "input_schema": s.schema})).collect();
+        let v: Vec<Value> = self
+            .specs
+            .iter()
+            .map(|s| json!({"name": s.name, "description": s.description, "input_schema": s.schema}))
+            .collect();
         serde_json::to_string(&v).unwrap_or_default()
     }
 
@@ -280,7 +303,10 @@ impl ToolDefs {
             }
         }
         let text = |k: &str| -> Result<&str, String> {
-            args.get(k).ok_or_else(|| format!("missing {k}"))?.as_str().ok_or_else(|| format!("invalid {k}"))
+            args.get(k)
+                .ok_or_else(|| format!("missing {k}"))?
+                .as_str()
+                .ok_or_else(|| format!("invalid {k}"))
         };
         let int = |k: &str| -> Result<Option<u64>, String> { Ok(args.get(k).ok_or_else(|| format!("missing {k}"))?.as_u64()) };
         let container = || -> Result<String, String> {
@@ -339,9 +365,16 @@ impl ToolDefs {
                     return Err("invalid reason".into());
                 }
                 let as_root = args.get("as_root").ok_or("missing as_root")?.as_bool().ok_or("invalid as_root")?;
-                let t = int("timeout_secs")?.filter(|n| *n <= u64::from(self.max_timeout_secs)).ok_or("timeout out of range")?;
+                let t = int("timeout_secs")?
+                    .filter(|n| *n <= u64::from(self.max_timeout_secs))
+                    .ok_or("timeout out of range")?;
                 let timeout_secs = if t == 0 { self.default_timeout_secs } else { t as u32 };
-                Ok(Invocation::Run { command: command.to_string(), reason: reason.to_string(), as_root, timeout_secs })
+                Ok(Invocation::Run {
+                    command: command.to_string(),
+                    reason: reason.to_string(),
+                    as_root,
+                    timeout_secs,
+                })
             }
             "delegate" => {
                 let task = text("task")?.trim();
@@ -372,7 +405,14 @@ mod tests {
         assert_eq!(names(&d), ["ship_status", "containers", "container_inspect", "container_logs", "delegate"]);
         assert_eq!(d.agent(), AgentId::Muthur);
         assert_eq!(d.max_rounds(), 8);
-        assert!(ToolDefs::persona(&ToolsSection { enabled: false, ..Default::default() }).specs().is_empty());
+        assert!(
+            ToolDefs::persona(&ToolsSection {
+                enabled: false,
+                ..Default::default()
+            })
+            .specs()
+            .is_empty()
+        );
     }
 
     #[test]
@@ -389,7 +429,10 @@ mod tests {
     #[test]
     fn delegate_validates_task() {
         let d = ToolDefs::persona(&ToolsSection::default());
-        assert_eq!(d.validate("delegate", &json!({"task":"  check nginx  "})), Ok(Invocation::Delegate { task: "check nginx".into() }));
+        assert_eq!(
+            d.validate("delegate", &json!({"task":"  check nginx  "})),
+            Ok(Invocation::Delegate { task: "check nginx".into() })
+        );
         assert_eq!(d.validate("delegate", &json!({"task":"   "})), Err("invalid task".into()));
         assert_eq!(d.validate("delegate", &json!({"task":"a".repeat(4001)})), Err("invalid task".into()));
         assert!(d.validate("delegate", &json!({"task":"é".repeat(4000)})).is_ok());
@@ -410,7 +453,18 @@ mod tests {
         let d = tech();
         assert_eq!(
             names(&d),
-            ["run", "ship_status", "containers", "container_inspect", "container_logs", "ping", "traceroute", "dns_lookup", "port_check", "http_check"]
+            [
+                "run",
+                "ship_status",
+                "containers",
+                "container_inspect",
+                "container_logs",
+                "ping",
+                "traceroute",
+                "dns_lookup",
+                "port_check",
+                "http_check"
+            ]
         );
         assert_eq!(d.agent(), AgentId::Tech);
         assert_eq!(d.max_rounds(), 24);
@@ -425,7 +479,12 @@ mod tests {
         let ok = json!({"command":"ls","reason":"look","as_root":false,"timeout_secs":0});
         assert_eq!(
             d.validate("run", &ok),
-            Ok(Invocation::Run { command: "ls".into(), reason: "look".into(), as_root: false, timeout_secs: 30 })
+            Ok(Invocation::Run {
+                command: "ls".into(),
+                reason: "look".into(),
+                as_root: false,
+                timeout_secs: 30
+            })
         );
         let with = |k: &str, v: Value| {
             let mut m = ok.clone();
@@ -456,7 +515,10 @@ mod tests {
         assert!(d.validate("port_check", &json!({"host":"db.lan","port":65536})).is_err());
         assert_eq!(
             d.validate("port_check", &json!({"host":"db.lan","port":5432})),
-            Ok(Invocation::PortCheck { host: "db.lan".into(), port: 5432 })
+            Ok(Invocation::PortCheck {
+                host: "db.lan".into(),
+                port: 5432
+            })
         );
         assert_eq!(d.validate("container_inspect", &json!({"name":"-x"})), Err("invalid container name".into()));
         assert_eq!(d.validate("container_inspect", &json!({"name":"a b"})), Err("invalid container name".into()));
@@ -466,18 +528,43 @@ mod tests {
 
     #[test]
     fn labels_and_gates() {
-        let p = Invocation::Ping { host: "example.com".into(), count: 3 };
+        let p = Invocation::Ping {
+            host: "example.com".into(),
+            count: 3,
+        };
         assert_eq!(p.label(), "PING example.com 3");
         assert_eq!(p.gate(), Gate::Reviewed);
         assert_eq!(p.target(), Some(NetTarget::Host("example.com".into())));
         assert_eq!(Invocation::ShipStatus.gate(), Gate::Free);
         assert_eq!(Invocation::ShipStatus.label(), "SHIP STATUS");
         assert_eq!(Invocation::ContainerLogs { name: "web".into(), lines: 50 }.label(), "CONTAINER LOGS web 50");
-        assert_eq!(Invocation::DnsLookup { name: "example.com".into(), rtype: DnsType::Mx }.label(), "DNS LOOKUP example.com MX");
-        assert_eq!(Invocation::PortCheck { host: "db.lan".into(), port: 5432 }.label(), "PORT CHECK db.lan 5432");
+        assert_eq!(
+            Invocation::DnsLookup {
+                name: "example.com".into(),
+                rtype: DnsType::Mx
+            }
+            .label(),
+            "DNS LOOKUP example.com MX"
+        );
+        assert_eq!(
+            Invocation::PortCheck {
+                host: "db.lan".into(),
+                port: 5432
+            }
+            .label(),
+            "PORT CHECK db.lan 5432"
+        );
         assert_eq!(Invocation::HttpCheck { url: "https://x".into() }.label(), "HTTP CHECK https://x");
-        assert_eq!(Invocation::HttpCheck { url: "https://x".into() }.target(), Some(NetTarget::Url("https://x".into())));
-        let r = Invocation::Run { command: "ls -l".into(), reason: "r".into(), as_root: true, timeout_secs: 5 };
+        assert_eq!(
+            Invocation::HttpCheck { url: "https://x".into() }.target(),
+            Some(NetTarget::Url("https://x".into()))
+        );
+        let r = Invocation::Run {
+            command: "ls -l".into(),
+            reason: "r".into(),
+            as_root: true,
+            timeout_secs: 5,
+        };
         assert_eq!(r.label(), "ls -l");
         assert!(r.as_root());
         assert_eq!(r.gate(), Gate::Reviewed);
@@ -485,8 +572,18 @@ mod tests {
 
     #[test]
     fn schemas_use_only_strict_keywords() {
-        const ALLOWED: [&str; 10] =
-            ["type", "properties", "required", "additionalProperties", "description", "enum", "const", "anyOf", "allOf", "$ref"];
+        const ALLOWED: [&str; 10] = [
+            "type",
+            "properties",
+            "required",
+            "additionalProperties",
+            "description",
+            "enum",
+            "const",
+            "anyOf",
+            "allOf",
+            "$ref",
+        ];
         fn walk(v: &Value, path: &str) {
             let Some(o) = v.as_object() else { return };
             for (k, child) in o {

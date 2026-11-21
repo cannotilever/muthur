@@ -3,12 +3,12 @@
 pub mod chrome;
 pub mod tabs;
 
+use crate::cargo::CargoTab;
 use crate::input::Key;
 use crate::metrics::Snapshot;
 use crate::muthur::MuthurTab;
 use crate::shell::{PtyEvent, ShellTab};
 use crate::splash::Splash;
-use crate::cargo::CargoTab;
 use crate::utility::UtilityTab;
 use chrono::NaiveDateTime;
 use ratatui::Frame;

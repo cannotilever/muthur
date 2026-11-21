@@ -4,8 +4,8 @@ use crate::chatlog::{Assistant, ChatLog, Lane};
 use crate::config::{MuthurSection, Provider};
 use crate::input::Key;
 use crate::llm::{ChatRequest, LlmError, MessageContent, Stop, StreamEvent};
-use crate::ops::audit::AuditLog;
 use crate::ops::AgentId;
+use crate::ops::audit::AuditLog;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use std::cell::{Cell, RefCell};
@@ -63,7 +63,10 @@ impl H {
 }
 
 fn cfg() -> MuthurSection {
-    MuthurSection { api_key: Some("sk-test".into()), ..MuthurSection::default() }
+    MuthurSection {
+        api_key: Some("sk-test".into()),
+        ..MuthurSection::default()
+    }
 }
 
 /// The tab under test, made by `new_tab` from the config, the prefilled log,
@@ -79,7 +82,11 @@ fn harness_base(
     let audit_path = dir.path().join("muthur/audit.jsonl");
     let mut log = ChatLog::open(path.clone()).unwrap();
     prefill(&mut log);
-    let audit = crate::ops::audit::shared(if audit_online { AuditLog::open(audit_path.clone()).unwrap() } else { AuditLog::offline() });
+    let audit = crate::ops::audit::shared(if audit_online {
+        AuditLog::open(audit_path.clone()).unwrap()
+    } else {
+        AuditLog::offline()
+    });
     let shared_audit = audit.clone();
     let sent: Sent = Rc::default();
     let agents: Rc<RefCell<Vec<AgentId>>> = Rc::default();
@@ -87,8 +94,13 @@ fn harness_base(
     let clock = Rc::new(Cell::new(Instant::now()));
     let (s, g, a, c) = (sent.clone(), agents.clone(), aborted.clone(), clock.clone());
     #[cfg(feature = "agent")]
-    let (ran, secrets, cancels, reviews, review_aborted) =
-        (Ran::default(), Secrets::default(), Cancels::default(), Reviews::default(), Rc::new(Cell::new(false)));
+    let (ran, secrets, cancels, reviews, review_aborted) = (
+        Ran::default(),
+        Secrets::default(),
+        Cancels::default(),
+        Reviews::default(),
+        Rc::new(Cell::new(false)),
+    );
     #[cfg(feature = "agent")]
     let (r, sec, can, rev, ra) = (ran.clone(), secrets.clone(), cancels.clone(), reviews.clone(), review_aborted.clone());
     let deps = MuthurDeps {
@@ -145,7 +157,9 @@ fn harness_with(cfg: MuthurSection, prefill: impl FnOnce(&mut ChatLog)) -> H {
 
 #[cfg(not(feature = "agent"))]
 fn harness_with(cfg: MuthurSection, prefill: impl FnOnce(&mut ChatLog)) -> H {
-    harness_base(cfg, true, prefill, |cfg, log, audit, deps| MuthurTab::new(cfg, "USCSS NOSTROMO", log, audit, deps))
+    harness_base(cfg, true, prefill, |cfg, log, audit, deps| {
+        MuthurTab::new(cfg, "USCSS NOSTROMO", log, audit, deps)
+    })
 }
 
 fn harness() -> H {
@@ -175,12 +189,23 @@ fn text(t: &mut MuthurTab) -> String {
 }
 
 fn done(stop: Stop) -> StreamEvent {
-    StreamEvent::Done { stop, model: Some("claude-test".into()), raw: None }
+    StreamEvent::Done {
+        stop,
+        model: Some("claude-test".into()),
+        raw: None,
+    }
 }
 
 fn exchange(log: &mut ChatLog, user: &str, reply: &str, stop: &str) {
     log.append_user(user, "ts", AgentId::Muthur).unwrap();
-    let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: reply.into(), stop: stop.into(), raw: None, lane: Lane::Muthur };
+    let a = Assistant {
+        provider: Provider::Anthropic,
+        model: "m".into(),
+        text: reply.into(),
+        stop: stop.into(),
+        raw: None,
+        lane: Lane::Muthur,
+    };
     log.append_assistant(a, "ts").unwrap();
 }
 
@@ -201,9 +226,15 @@ fn wrap_hanging_indents_continuations() {
 fn system_prompt_override_and_ship() {
     let s = system_prompt(&cfg(), "USCSS NOSTROMO", "");
     assert!(s.starts_with("You are MU/TH/UR 6000, the mainframe computer of the USCSS NOSTROMO."), "{s}");
-    let blank = MuthurSection { system_prompt: Some("  ".into()), ..cfg() };
+    let blank = MuthurSection {
+        system_prompt: Some("  ".into()),
+        ..cfg()
+    };
     assert_eq!(system_prompt(&blank, "X", ""), system_prompt(&cfg(), "X", ""));
-    let own = MuthurSection { system_prompt: Some("Computer of {SHIP}.".into()), ..cfg() };
+    let own = MuthurSection {
+        system_prompt: Some("Computer of {SHIP}.".into()),
+        ..cfg()
+    };
     assert_eq!(system_prompt(&own, "X", ""), "Computer of X.");
 }
 
@@ -214,7 +245,9 @@ fn submit_logs_with_ship_time_and_spawns() {
     h.t.handle_key(&Key::Enter);
     let s = h.sent.borrow();
     assert_eq!(s.len(), 1);
-    let MessageContent::Text(u) = &s[0].1.messages.last().unwrap().content else { panic!() };
+    let MessageContent::Text(u) = &s[0].1.messages.last().unwrap().content else {
+        panic!()
+    };
     assert_eq!(u, "[SHIP TIME 18 NOV 2137 14:02] STATUS");
     assert!(s[0].1.system.contains("MU/TH/UR 6000"));
 }
@@ -353,7 +386,11 @@ fn help_and_unknown_command() {
     submit(&mut h, "/help");
     let s = text(&mut h.t);
     assert!(s.contains("/PURGE   CLEAR MEMORY BANKS") && s.contains("PGUP/PGDN SCROLL"), "{s}");
-    assert_eq!(s.contains("/DIRECT  OPEN DIRECT LINK") && s.contains("/MUTHUR  CLOSE DIRECT LINK"), cfg!(feature = "agent"), "{s}");
+    assert_eq!(
+        s.contains("/DIRECT  OPEN DIRECT LINK") && s.contains("/MUTHUR  CLOSE DIRECT LINK"),
+        cfg!(feature = "agent"),
+        "{s}"
+    );
     h.t.handle_key(&Key::Ctrl('u'));
     submit(&mut h, "/frob");
     assert!(text(&mut h.t).contains("UNKNOWN COMMAND"));
@@ -387,7 +424,10 @@ fn history_notes_and_error_pairs() {
         exchange(l, "C", "", "error");
     });
     let s = text(&mut h.t);
-    assert!(s.contains("[INTERRUPTED]") && s.contains("[TRANSMISSION TRUNCATED]") && s.contains("> C"), "{s}");
+    assert!(
+        s.contains("[INTERRUPTED]") && s.contains("[TRANSMISSION TRUNCATED]") && s.contains("> C"),
+        "{s}"
+    );
 }
 
 #[test]
@@ -500,7 +540,6 @@ fn scrolled_back_view_holds_while_output_arrives() {
     assert!(n(&after[37]) > n0, "{} vs {}", after[37], before[37]);
 }
 
-
 // ---- Without the `agent` feature: M4's chat ----
 
 #[cfg(not(feature = "agent"))]
@@ -531,9 +570,23 @@ mod plain {
         let mut h = harness();
         submit(&mut h, "status");
         h.t.on_llm(1, StreamEvent::Text("NOMINAL.".into()));
-        h.t.on_llm(1, StreamEvent::ToolCall { id: "c1".into(), name: "ship_status".into(), input: json!({}) });
+        h.t.on_llm(
+            1,
+            StreamEvent::ToolCall {
+                id: "c1".into(),
+                name: "ship_status".into(),
+                input: json!({}),
+            },
+        );
         let raw = vec![json!({"type":"tool_use","id":"c1","name":"ship_status","input":{}})];
-        h.t.on_llm(1, StreamEvent::Done { stop: Stop::ToolUse, model: Some("claude-test".into()), raw: Some(raw) });
+        h.t.on_llm(
+            1,
+            StreamEvent::Done {
+                stop: Stop::ToolUse,
+                model: Some("claude-test".into()),
+                raw: Some(raw),
+            },
+        );
         assert_eq!(h.t.state, State::Ready);
         assert_eq!(h.sent.borrow().len(), 1, "nothing is dispatched");
         h.tick(1000);
@@ -569,7 +622,13 @@ mod plain {
             l.append_user("[SHIP TIME X] ALPHA", "ts", AgentId::Muthur).unwrap();
             let raw = vec![json!({"type":"tool_use","id":"c1","name":"ship_status","input":{}})];
             l.append_assistant(asst(AgentId::Muthur, "", "tool_use", Some(raw)), "ts").unwrap();
-            let r = ToolResult { id: "c1".into(), name: "ship_status".into(), content: "UP".into(), is_error: false, label: "SHIP STATUS".into() };
+            let r = ToolResult {
+                id: "c1".into(),
+                name: "ship_status".into(),
+                content: "UP".into(),
+                is_error: false,
+                label: "SHIP STATUS".into(),
+            };
             l.append_tool(&[r], "ts", &Lane::Muthur).unwrap();
             l.append_assistant(asst(AgentId::Muthur, "ALPHA DONE.", "end_turn", None), "ts").unwrap();
             // B: a direct-link exchange.
@@ -598,7 +657,12 @@ mod plain {
         assert_eq!(texts.len(), 5, "{texts:?}");
         assert_eq!(texts[..4], ["[SHIP TIME X] ALPHA", "ALPHA DONE.", "[SHIP TIME X] CHARLIE", "CHARLIE DONE."]);
         // The epoch hash is taken with no tools.
-        let hash = crate::chatlog::fnv64(&format!("{:?}\n{}\n{}\n", Provider::Anthropic, cfg().model().unwrap_or_default(), sent[0].1.system));
+        let hash = crate::chatlog::fnv64(&format!(
+            "{:?}\n{}\n{}\n",
+            Provider::Anthropic,
+            cfg().model().unwrap_or_default(),
+            sent[0].1.system
+        ));
         let log = std::fs::read_to_string(&h.path).unwrap();
         assert!(log.contains(&format!("\"system_hash\":\"{hash}\"")), "{log}");
     }
@@ -632,7 +696,9 @@ fn rendered_user_message_is_underlined_but_not_its_marker() {
     let area = Rect::new(0, 0, 61, 40);
     let mut buf = Buffer::empty(area);
     h.t.render(area, &mut buf);
-    let y = (0..40).find(|&y| (0..61).map(|x| buf[(x, y)].symbol()).collect::<String>().contains("> STATUS")).unwrap();
+    let y = (0..40)
+        .find(|&y| (0..61).map(|x| buf[(x, y)].symbol()).collect::<String>().contains("> STATUS"))
+        .unwrap();
     let x0 = (0..61).find(|&x| buf[(x, y)].symbol() == ">").unwrap();
     let ul = |x: u16| buf[(x, y)].modifier.contains(Modifier::UNDERLINED);
     assert!(!ul(x0) && !ul(x0 + 1));

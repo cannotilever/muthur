@@ -68,7 +68,11 @@ impl MuthurTab {
         self.abort = None;
         let calls = std::mem::take(&mut self.calls);
         let online = self.audit.borrow().is_online();
-        let (defs, policy) = if self.tech_active() { (&self.tech.defs, &self.tech.policy) } else { (&self.tools, &self.policy) };
+        let (defs, policy) = if self.tech_active() {
+            (&self.tech.defs, &self.tech.policy)
+        } else {
+            (&self.tools, &self.policy)
+        };
         let turn = match &mut self.child {
             Some(c) => Some(&mut c.turn),
             None => self.turn.as_mut(),
@@ -100,7 +104,9 @@ impl MuthurTab {
         if req_id != self.req_id {
             return;
         }
-        let Some(effects) = self.active_turn().map(|t| t.on_tool_done(call_id, outcome)) else { return };
+        let Some(effects) = self.active_turn().map(|t| t.on_tool_done(call_id, outcome)) else {
+            return;
+        };
         self.cancel = None;
         self.apply(effects, None);
     }
@@ -112,7 +118,9 @@ impl MuthurTab {
             return;
         }
         let online = self.audit.borrow().is_online();
-        let Some(effects) = self.active_turn().map(|t| t.on_review(call_id, review.clone(), online)) else { return };
+        let Some(effects) = self.active_turn().map(|t| t.on_review(call_id, review.clone(), online)) else {
+            return;
+        };
         if !effects.is_empty() {
             self.review_abort = None;
             // For the pending block of a prompt that may follow.
@@ -251,7 +259,14 @@ impl MuthurTab {
 
     /// Resolve the child's open round as aborted (in its lane) and take it.
     fn close_child(&mut self) -> Option<Child> {
-        let effects = self.child.as_mut()?.turn.abort().into_iter().filter(|e| !matches!(e, Effect::Finished { .. })).collect();
+        let effects = self
+            .child
+            .as_mut()?
+            .turn
+            .abort()
+            .into_iter()
+            .filter(|e| !matches!(e, Effect::Finished { .. }))
+            .collect();
         self.apply(effects, None);
         self.child.take()
     }
@@ -267,14 +282,18 @@ impl MuthurTab {
         self.log_assistant(a);
         self.partial_raw.clear();
         self.abort = None;
-        let Some(child) = self.close_child() else { return };
+        let Some(child) = self.close_child() else {
+            return;
+        };
         let lines = child.turn.lines().to_vec();
         self.resume_persona(&child.call_id, DelegateOutcome::NoResponse { lines });
     }
 
     /// The child finished: show the report in verbatim mode and hand it to the persona.
     fn finish_child(&mut self, truncated: bool) {
-        let Some(Child { call_id, turn, report, .. }) = self.child.take() else { return };
+        let Some(Child { call_id, turn, report, .. }) = self.child.take() else {
+            return;
+        };
         let label = self.tech.label.clone();
         if self.tech.delegate_report == DelegateReport::Verbatim && !report.trim().is_empty() {
             self.transcript.push(Entry::Harness(format!("{label} REPORTS:")));
@@ -332,7 +351,12 @@ impl MuthurTab {
         };
         self.transcript.push(Entry::Harness(format!("DELEGATING TO {label}")));
         let turn = Turn::delegated(self.tech.max_rounds, operator_message, task, label, delegation_id.clone());
-        self.child = Some(Child { call_id, delegation_id, turn, report: String::new() });
+        self.child = Some(Child {
+            call_id,
+            delegation_id,
+            turn,
+            report: String::new(),
+        });
         self.spawn_request(self.tech.max_rounds == 0);
     }
 
@@ -388,20 +412,43 @@ impl MuthurTab {
                 }
                 // Prompts arm only from renders, so one raised in the background still gets its delay.
                 Effect::Confirm { call_id, prompt, note } => {
-                    self.state = State::Ask { call_id, prompt, note, drawn: false, armed_at: None };
+                    self.state = State::Ask {
+                        call_id,
+                        prompt,
+                        note,
+                        drawn: false,
+                        armed_at: None,
+                    };
                     self.activity = true;
                 }
                 Effect::AskPassword { call_id, prompt } => {
                     // Type-ahead must not be mistaken for (or end up next to) the password.
                     self.clear_input();
-                    self.state = State::Password { call_id, prompt, secret: Secret::new(), drawn: false, armed_at: None };
+                    self.state = State::Password {
+                        call_id,
+                        prompt,
+                        secret: Secret::new(),
+                        drawn: false,
+                        armed_at: None,
+                    };
                     self.activity = true;
                 }
                 Effect::AskOverride { call_id, prompt, note } => {
-                    self.state = State::OverridePrompt { call_id, prompt, note, typed: String::new(), drawn: false, armed_at: None };
+                    self.state = State::OverridePrompt {
+                        call_id,
+                        prompt,
+                        note,
+                        typed: String::new(),
+                        drawn: false,
+                        armed_at: None,
+                    };
                     self.activity = true;
                 }
-                Effect::Delegate { call_id, task, operator_message } => {
+                Effect::Delegate {
+                    call_id,
+                    task,
+                    operator_message,
+                } => {
                     self.delegate(call_id, task, operator_message);
                     if self.turn.is_none() {
                         break;

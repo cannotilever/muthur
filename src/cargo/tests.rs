@@ -7,16 +7,37 @@ use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 
-const WINDOWED: Rect = Rect { x: 19, y: 2, width: 61, height: 40 };
-const FULL: Rect = Rect { x: 0, y: 0, width: 80, height: 43 };
+const WINDOWED: Rect = Rect {
+    x: 19,
+    y: 2,
+    width: 61,
+    height: 40,
+};
+const FULL: Rect = Rect {
+    x: 0,
+    y: 0,
+    width: 80,
+    height: 43,
+};
 
 fn snap(containers: Option<Vec<Container>>) -> Snapshot {
     let container_runtime = containers.as_ref().map(|_| "docker".to_string());
-    Snapshot { containers, container_runtime, ..Default::default() }
+    Snapshot {
+        containers,
+        container_runtime,
+        ..Default::default()
+    }
 }
 
 fn ship(n: usize) -> Vec<Container> {
-    (0..n).map(|i| Container { id: format!("id{i}"), name: format!("crate{i:03}"), status: "UP".into(), ..Default::default() }).collect()
+    (0..n)
+        .map(|i| Container {
+            id: format!("id{i}"),
+            name: format!("crate{i:03}"),
+            status: "UP".into(),
+            ..Default::default()
+        })
+        .collect()
 }
 
 fn render(t: &mut CargoTab, area: Rect) -> Buffer {
@@ -32,7 +53,10 @@ fn text(buf: &Buffer) -> String {
 }
 
 fn find(buf: &Buffer, needle: &str) -> Option<(u16, u16)> {
-    text(buf).lines().enumerate().find_map(|(y, l)| l.find(needle).map(|b| (l[..b].chars().count() as u16, y as u16)))
+    text(buf)
+        .lines()
+        .enumerate()
+        .find_map(|(y, l)| l.find(needle).map(|b| (l[..b].chars().count() as u16, y as u16)))
 }
 
 #[test]
@@ -59,8 +83,18 @@ fn no_runtime_and_empty_hold() {
 fn lists_containers_with_status_column() {
     let mut t = CargoTab::detached();
     t.on_metrics(&snap(Some(vec![
-        Container { id: "1".into(), name: "web".into(), status: "UP".into(), ..Default::default() },
-        Container { id: "2".into(), name: "db".into(), status: "EXITED".into(), ..Default::default() },
+        Container {
+            id: "1".into(),
+            name: "web".into(),
+            status: "UP".into(),
+            ..Default::default()
+        },
+        Container {
+            id: "2".into(),
+            name: "db".into(),
+            status: "EXITED".into(),
+            ..Default::default()
+        },
     ])));
     let buf = render(&mut t, WINDOWED);
     let s = text(&buf);
@@ -92,7 +126,12 @@ fn singular_title() {
 fn long_names_are_cut() {
     let mut t = CargoTab::detached();
     let name = "X".repeat(200);
-    t.on_metrics(&snap(Some(vec![Container { id: "1".into(), name: name.clone(), status: "UP".into(), ..Default::default() }])));
+    t.on_metrics(&snap(Some(vec![Container {
+        id: "1".into(),
+        name: name.clone(),
+        status: "UP".into(),
+        ..Default::default()
+    }])));
     let buf = render(&mut t, WINDOWED);
     let (_, y) = find(&buf, "XXXX").unwrap();
     let row = text(&buf).lines().nth(y as usize).unwrap().to_string();
@@ -107,7 +146,10 @@ fn long_manifest_pages() {
     t.on_metrics(&snap(Some(ship(100))));
     // 40 rows - 2 borders - heading - detail line - hint line = 35 per page.
     let s = text(&render(&mut t, WINDOWED));
-    assert!(s.contains("CARGO - 100 CONTAINERS (1-35)") && s.contains(">CRATE000") && s.contains("CRATE034") && !s.contains("CRATE035"), "{s}");
+    assert!(
+        s.contains("CARGO - 100 CONTAINERS (1-35)") && s.contains(">CRATE000") && s.contains("CRATE034") && !s.contains("CRATE035"),
+        "{s}"
+    );
     t.handle_key(&Key::PageDown);
     let s = text(&render(&mut t, WINDOWED));
     assert!(s.contains("(36-70)") && s.contains(">CRATE035") && !s.contains("CRATE034"), "{s}");
@@ -144,17 +186,36 @@ fn fullscreen_fits_more() {
 #[test]
 fn trouble_sorts_to_the_top_in_runtime_order() {
     let mut t = CargoTab::detached();
-    let k = |name: &str, status: &str| Container { id: name.into(), name: name.into(), status: status.into(), ..Default::default() };
-    t.on_metrics(&snap(Some(vec![k("alpha", "UP"), k("bravo", "EXITED"), k("charlie", "UP"), k("delta", "RESTARTING"), k("echo", "UP")])));
+    let k = |name: &str, status: &str| Container {
+        id: name.into(),
+        name: name.into(),
+        status: status.into(),
+        ..Default::default()
+    };
+    t.on_metrics(&snap(Some(vec![
+        k("alpha", "UP"),
+        k("bravo", "EXITED"),
+        k("charlie", "UP"),
+        k("delta", "RESTARTING"),
+        k("echo", "UP"),
+    ])));
     let buf = render(&mut t, WINDOWED);
-    let rows: Vec<u16> = ["BRAVO ", "DELTA ", "ALPHA ", "CHARLIE ", "ECHO "].iter().map(|n| find(&buf, n).unwrap().1).collect();
+    let rows: Vec<u16> = ["BRAVO ", "DELTA ", "ALPHA ", "CHARLIE ", "ECHO "]
+        .iter()
+        .map(|n| find(&buf, n).unwrap().1)
+        .collect();
     assert!(rows.windows(2).all(|w| w[0] < w[1]), "{rows:?}\n{}", text(&buf));
 }
 
 #[test]
 fn names_display_upper_case() {
     let mut t = CargoTab::detached();
-    t.on_metrics(&snap(Some(vec![Container { id: "1".into(), name: "web".into(), status: "UP".into(), ..Default::default() }])));
+    t.on_metrics(&snap(Some(vec![Container {
+        id: "1".into(),
+        name: "web".into(),
+        status: "UP".into(),
+        ..Default::default()
+    }])));
     assert!(text(&render(&mut t, WINDOWED)).contains("WEB"));
 }
 
@@ -206,10 +267,21 @@ fn selection_clamps_when_selected_vanishes() {
 #[test]
 fn detail_and_hint_lines() {
     let mut t = CargoTab::detached();
-    t.on_metrics(&snap(Some(vec![Container { id: "1".into(), name: "db".into(), status: "EXITED".into(), detail: "Exited (137) 2 hours ago".into() }])));
+    t.on_metrics(&snap(Some(vec![Container {
+        id: "1".into(),
+        name: "db".into(),
+        status: "EXITED".into(),
+        detail: "Exited (137) 2 hours ago".into(),
+    }])));
     let s = text(&render(&mut t, WINDOWED));
-    assert!(s.contains("DB: EXITED (137) 2 HOURS AGO") && s.contains("U START  R RESTART  D STOP  L LOGS"), "{s}");
-    t.on_metrics(&Snapshot { container_runtime: None, ..snap(Some(ship(1))) });
+    assert!(
+        s.contains("DB: EXITED (137) 2 HOURS AGO") && s.contains("U START  R RESTART  D STOP  L LOGS"),
+        "{s}"
+    );
+    t.on_metrics(&Snapshot {
+        container_runtime: None,
+        ..snap(Some(ship(1)))
+    });
     let s = text(&render(&mut t, WINDOWED));
     assert!(s.contains("NO CONTAINER RUNTIME") && !s.contains("U START"), "{s}");
 }
@@ -243,7 +315,12 @@ struct H {
 }
 
 fn c(id: &str, name: &str, status: &str) -> Container {
-    Container { id: id.into(), name: name.into(), status: status.into(), detail: String::new() }
+    Container {
+        id: id.into(),
+        name: name.into(),
+        status: status.into(),
+        detail: String::new(),
+    }
 }
 
 /// A tab with a recording `run`, a hand-driven clock and a real audit file;
@@ -256,7 +333,11 @@ fn harness(list: Vec<Container>) -> H {
 fn harness_audit(list: Vec<Container>, online: bool) -> H {
     let dir = tempfile::tempdir().unwrap();
     let audit_path = dir.path().join("audit.jsonl");
-    let audit = shared(if online { AuditLog::open(audit_path.clone()).unwrap() } else { AuditLog::offline() });
+    let audit = shared(if online {
+        AuditLog::open(audit_path.clone()).unwrap()
+    } else {
+        AuditLog::offline()
+    });
     let calls: Calls = Rc::default();
     let clock = Rc::new(Cell::new(Instant::now()));
     let (rec, clk) = (calls.clone(), clock.clone());
@@ -270,7 +351,14 @@ fn harness_audit(list: Vec<Container>, online: bool) -> H {
     let mut t = CargoTab::new(deps, audit);
     t.on_metrics(&snap(Some(list)));
     render(&mut t, WINDOWED);
-    H { t, calls, clock, audit_path, hints, _dir: dir }
+    H {
+        t,
+        calls,
+        clock,
+        audit_path,
+        hints,
+        _dir: dir,
+    }
 }
 
 impl H {
@@ -310,7 +398,11 @@ impl H {
 }
 
 fn exited(code: i32, stdout: &str, stderr: &str) -> RunOutput {
-    RunOutput::Exited { code, stdout: stdout.into(), stderr: stderr.into() }
+    RunOutput::Exited {
+        code,
+        stdout: stdout.into(),
+        stderr: stderr.into(),
+    }
 }
 
 fn v(a: &[&str]) -> Vec<String> {
@@ -466,7 +558,10 @@ fn actions_ignored_when_empty() {
     }
     assert_eq!(h.n_calls(), 0);
     let mut h = harness(vec![c("a1", "web", "UP")]);
-    h.t.on_metrics(&Snapshot { container_runtime: None, ..snap(Some(vec![c("a1", "web", "UP")])) });
+    h.t.on_metrics(&Snapshot {
+        container_runtime: None,
+        ..snap(Some(vec![c("a1", "web", "UP")]))
+    });
     for k in "URDLurdl".chars() {
         h.key(Key::Char(k));
     }
@@ -528,7 +623,10 @@ fn logs_open_at_bottom_and_scroll() {
     let mut h = harness(vec![c("a1", "web", "UP")]);
     h.key(Key::Char('L'));
     let (_, argv, timeout, merged) = h.last();
-    assert_eq!((argv, timeout, merged), (v(&["docker", "logs", "--tail", "200", "a1"]), Duration::from_secs(10), true));
+    assert_eq!(
+        (argv, timeout, merged),
+        (v(&["docker", "logs", "--tail", "200", "a1"]), Duration::from_secs(10), true)
+    );
     h.done(exited(0, &numbered(100), ""));
     let s = h.screen();
     assert!(s.contains("LOGS - WEB (100 LINES)") && s.contains("line099") && !s.contains("line000"), "{s}");
@@ -624,7 +722,10 @@ fn refresh_not_undone_by_older_probe() {
     h.key(Key::Char('U'));
     h.done(exited(0, "a1\n", ""));
     // A snapshot arrives before the refresh returns: the refresh still counts.
-    let stale = Snapshot { containers_at: Some(probed_before), ..snap(Some(vec![c("a1", "web", "EXITED")])) };
+    let stale = Snapshot {
+        containers_at: Some(probed_before),
+        ..snap(Some(vec![c("a1", "web", "EXITED")]))
+    };
     h.t.on_metrics(&stale);
     h.done(exited(0, "a1\tweb\tUp 1 second\n", ""));
     let row = |h: &mut H| {
@@ -637,7 +738,10 @@ fn refresh_not_undone_by_older_probe() {
     h.t.on_metrics(&stale);
     assert!(row(&mut h).contains(" UP "), "stale snapshot ignored");
     // A probe taken after the refresh wins again.
-    let fresh = Snapshot { containers_at: Some(h.clock.get() + Duration::from_secs(5)), ..snap(Some(vec![c("a1", "web", "EXITED")])) };
+    let fresh = Snapshot {
+        containers_at: Some(h.clock.get() + Duration::from_secs(5)),
+        ..snap(Some(vec![c("a1", "web", "EXITED")]))
+    };
     h.t.on_metrics(&fresh);
     assert!(row(&mut h).contains("EXITED"), "newer probe applies");
 }
@@ -681,11 +785,20 @@ fn audit_offline_at_y_refuses() {
     let mut h = harness(vec![c("a1", "web", "UP")]);
     h.key(Key::Char('d'));
     h.arm();
-    h.t.audit.borrow_mut().append(&crate::ops::audit::AuditEntry::new("x", serde_json::json!({}), crate::ops::audit::Decision::Auto), "ts").unwrap();
+    h.t.audit
+        .borrow_mut()
+        .append(
+            &crate::ops::audit::AuditEntry::new("x", serde_json::json!({}), crate::ops::audit::Decision::Auto),
+            "ts",
+        )
+        .unwrap();
     std::fs::remove_file(&h.audit_path).unwrap();
     std::fs::create_dir(&h.audit_path).unwrap();
     // MU/TH/UR's write fails while the prompt is up: the log is now offline.
-    let _ = h.t.audit.borrow_mut().append(&crate::ops::audit::AuditEntry::new("x", serde_json::json!({}), crate::ops::audit::Decision::Auto), "ts");
+    let _ = h.t.audit.borrow_mut().append(
+        &crate::ops::audit::AuditEntry::new("x", serde_json::json!({}), crate::ops::audit::Decision::Auto),
+        "ts",
+    );
     h.key(Key::Char('y'));
     assert_eq!(h.n_calls(), 0);
     assert!(h.screen().contains("AUDIT LOG OFFLINE"));
@@ -700,7 +813,10 @@ fn long_name_prompt_keeps_question_and_id() {
     h.key(Key::Char('d'));
     let s = h.screen();
     let line = s.lines().find(|l| l.contains("Y/N")).unwrap_or_else(|| panic!("{s}"));
-    assert!(line.contains("STOP XXX") && line.contains("~") && line.contains("-ALPHA (A1B2C3D4E5F6)? Y/N"), "{line}");
+    assert!(
+        line.contains("STOP XXX") && line.contains("~") && line.contains("-ALPHA (A1B2C3D4E5F6)? Y/N"),
+        "{line}"
+    );
 }
 
 #[test]
@@ -782,8 +898,11 @@ fn pending_commands_audited_as_aborted_on_drop() {
     h.key(Key::Char('U')); // still running at quit
     let H { t, audit_path, _dir, .. } = h;
     drop(t);
-    let a: Vec<serde_json::Value> =
-        std::fs::read_to_string(&audit_path).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let a: Vec<serde_json::Value> = std::fs::read_to_string(&audit_path)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
     let tools: Vec<&str> = a.iter().map(|e| e["tool"].as_str().unwrap()).collect();
     assert_eq!(tools, vec!["cargo_start", "cargo_logs"], "{a:?}");
     for e in &a {
@@ -795,7 +914,11 @@ fn pending_commands_audited_as_aborted_on_drop() {
 fn runtime_not_answering_keeps_list() {
     let mut h = harness(vec![c("a1", "web", "UP")]);
     h.key(Key::Char('d'));
-    h.t.on_metrics(&Snapshot { containers: None, container_runtime: None, ..Default::default() });
+    h.t.on_metrics(&Snapshot {
+        containers: None,
+        container_runtime: None,
+        ..Default::default()
+    });
     let s = h.screen();
     assert!(s.contains(">WEB") && s.contains("STOP WEB (A1)? Y/N"), "prompt kept\n{s}");
     h.key(Key::Esc);

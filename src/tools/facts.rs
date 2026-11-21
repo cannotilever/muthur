@@ -6,7 +6,8 @@ fn os_name() -> String {
     std::fs::read_to_string("/etc/os-release")
         .ok()
         .and_then(|s| {
-            s.lines().find_map(|l| l.strip_prefix("PRETTY_NAME=").map(|v| v.trim().trim_matches('"').to_string()))
+            s.lines()
+                .find_map(|l| l.strip_prefix("PRETTY_NAME=").map(|v| v.trim().trim_matches('"').to_string()))
         })
         .unwrap_or_else(|| "unknown".into())
 }
@@ -21,12 +22,19 @@ pub fn operator() -> String {
 }
 
 pub fn host_facts(runtime: Option<&str>) -> String {
-    let host = nix::unistd::gethostname().ok().and_then(|h| h.into_string().ok()).unwrap_or_else(|| "unknown".into());
+    let host = nix::unistd::gethostname()
+        .ok()
+        .and_then(|h| h.into_string().ok())
+        .unwrap_or_else(|| "unknown".into());
     let kernel = nix::sys::utsname::uname()
         .ok()
         .map(|u| u.release().to_string_lossy().into_owned())
         .unwrap_or_else(|| "unknown".into());
-    let init = if std::path::Path::new("/run/systemd/system").exists() { "systemd" } else { "unknown" };
+    let init = if std::path::Path::new("/run/systemd/system").exists() {
+        "systemd"
+    } else {
+        "unknown"
+    };
     format!(
         "HOST: {host}\nOS: {}\nKERNEL: {kernel}\nINIT: {init}\nCONTAINER RUNTIME: {}\nOPERATOR: {}",
         os_name(),

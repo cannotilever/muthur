@@ -9,14 +9,14 @@ use crate::link::{Link, ReadTimeout, install_panic_hook};
 use crate::metrics::local::LocalSource;
 use crate::metrics::{MetricsSource, Snapshot};
 use crate::scroll::HintSlot;
-use crate::utility::UtilityTab;
 use crate::shell::{PtyEvent, ShellConfig, ShellTab};
+use crate::splash::{Splash, SplashInfo};
 use crate::strict::StrictWriter;
 use crate::testcard::keys::KEY_GAP;
+use crate::utility::UtilityTab;
 use chrono::NaiveDateTime;
 use ratatui::Terminal;
 use std::io::Write;
-use crate::splash::{Splash, SplashInfo};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver, UnboundedSender};
 
@@ -34,12 +34,27 @@ pub enum Event {
     MetricsOffline(String),
     Hangup,
     Tick,
-    Llm { req_id: u64, ev: crate::llm::StreamEvent },
+    Llm {
+        req_id: u64,
+        ev: crate::llm::StreamEvent,
+    },
     #[cfg(feature = "agent")]
-    ToolDone { req_id: u64, call_id: String, outcome: crate::tools::ToolOutcome },
+    ToolDone {
+        req_id: u64,
+        call_id: String,
+        outcome: crate::tools::ToolOutcome,
+    },
     #[cfg(feature = "agent")]
-    Review { req_id: u64, call_id: String, review: crate::review::Review },
-    CargoDone { seq: u64, output: crate::ops::runner::RunOutput, ms: u64 },
+    Review {
+        req_id: u64,
+        call_id: String,
+        review: crate::review::Review,
+    },
+    CargoDone {
+        seq: u64,
+        output: crate::ops::runner::RunOutput,
+        ms: u64,
+    },
 }
 
 /// The chrome is laid out for 80×43; smaller screens cannot hold it.
@@ -251,7 +266,11 @@ fn init_logging() -> anyhow::Result<tracing_appender::non_blocking::WorkerGuard>
     let dir = dirs::state_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("muthur");
     std::fs::create_dir_all(&dir)?;
     let (writer, guard) = tracing_appender::non_blocking(tracing_appender::rolling::daily(&dir, "muthur.log"));
-    let level = if std::env::var("MUTHUR_DEBUG").is_ok() { tracing::Level::DEBUG } else { tracing::Level::INFO };
+    let level = if std::env::var("MUTHUR_DEBUG").is_ok() {
+        tracing::Level::DEBUG
+    } else {
+        tracing::Level::INFO
+    };
     tracing_subscriber::fmt().with_writer(writer).with_ansi(false).with_max_level(level).init();
     Ok(guard)
 }
@@ -306,7 +325,10 @@ fn tech_startup(cfg: &Config, config_path: &std::path::Path) -> anyhow::Result<T
 fn deny_ctx(config_path: &std::path::Path, state_base: Option<&std::path::Path>) -> crate::tools::deny::DenyCtx {
     crate::tools::deny::DenyCtx {
         // `--config` may be relative; commands name it by its full path.
-        config_path: std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.into()).to_string_lossy().into_owned(),
+        config_path: std::fs::canonicalize(config_path)
+            .unwrap_or_else(|_| config_path.into())
+            .to_string_lossy()
+            .into_owned(),
         state_dir: state_base.map(|d| d.join("muthur").to_string_lossy().into_owned()).unwrap_or_default(),
         exe: std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
         operator: crate::tools::facts::operator(),
@@ -321,7 +343,10 @@ fn tech_policy(agent: &crate::config::AgentSection, ctx: &crate::tools::deny::De
         anyhow::bail!("bad [agent] net_allow entry {} ({h:?}): not a valid host", i + 1);
     }
     let deny = crate::tools::deny::DenyRules::new(ctx, &agent.deny).map_err(|e| anyhow::anyhow!(e))?;
-    Ok(crate::agent::Policy { deny: Some(deny), net_allow: agent.net_allow.clone() })
+    Ok(crate::agent::Policy {
+        deny: Some(deny),
+        net_allow: agent.net_allow.clone(),
+    })
 }
 
 #[cfg(feature = "agent")]
@@ -363,7 +388,11 @@ fn llm_client(cfg: crate::config::MuthurSection, who: &str) -> Option<std::sync:
 type Client = Option<std::sync::Arc<crate::llm::client::LlmClient>>;
 
 /// Starts each agent's requests on its client; an agent without one gets NO CARRIER.
-fn spawner(persona: Client, technical: Client, tx: UnboundedSender<Event>) -> Box<dyn FnMut(u64, crate::ops::AgentId, crate::llm::ChatRequest) -> crate::muthur::Abort> {
+fn spawner(
+    persona: Client,
+    technical: Client,
+    tx: UnboundedSender<Event>,
+) -> Box<dyn FnMut(u64, crate::ops::AgentId, crate::llm::ChatRequest) -> crate::muthur::Abort> {
     use crate::llm::{LlmError, StreamEvent};
     use crate::ops::AgentId;
     Box::new(move |req_id, agent, req| {
@@ -377,7 +406,10 @@ fn spawner(persona: Client, technical: Client, tx: UnboundedSender<Event>) -> Bo
                 Box::new(move || h.abort())
             }
             None => {
-                let _ = tx.send(Event::Llm { req_id, ev: StreamEvent::Error(LlmError::NoCarrier) });
+                let _ = tx.send(Event::Llm {
+                    req_id,
+                    ev: StreamEvent::Error(LlmError::NoCarrier),
+                });
                 Box::new(|| {})
             }
         }
@@ -428,7 +460,10 @@ fn build_muthur(
     let technical = llm_client(tech_cfg.clone(), "technical");
     let review = review_dispatch(&cfg.muthur.reviewer_cfg(), startup.reviewer_ready, tx.clone());
     let tools = crate::tools::ToolDefs::persona(&cfg.tools);
-    let ctx = crate::tools::fixed::FixedCtx { runner: std::sync::Arc::new(crate::ops::runner::SystemRunner), snapshot: slot.clone() };
+    let ctx = crate::tools::fixed::FixedCtx {
+        runner: std::sync::Arc::new(crate::ops::runner::SystemRunner),
+        snapshot: slot.clone(),
+    };
     let deps = MuthurDeps {
         spawn: spawner(persona, technical, tx),
         now: Box::new(std::time::Instant::now),
@@ -474,7 +509,12 @@ fn execute_tool(
     cancel: &std::sync::atomic::AtomicBool,
 ) -> crate::tools::ToolOutcome {
     match inv {
-        crate::tools::Invocation::Run { command, as_root, timeout_secs, .. } => {
+        crate::tools::Invocation::Run {
+            command,
+            as_root,
+            timeout_secs,
+            ..
+        } => {
             let timeout = Duration::from_secs(u64::from(*timeout_secs));
             crate::tools::shell::run(&crate::ops::runner::SystemRunner, command, *as_root, timeout, secret.as_ref(), cancel)
         }
@@ -499,7 +539,11 @@ fn build_cargo(tx: UnboundedSender<Event>, audit: crate::ops::audit::SharedAudit
             let tx = tx.clone();
             tokio::task::spawn_blocking(move || {
                 let start = Instant::now();
-                let output = if merged { SystemRunner.run_merged(&argv, timeout) } else { SystemRunner.run(&argv, timeout) };
+                let output = if merged {
+                    SystemRunner.run_merged(&argv, timeout)
+                } else {
+                    SystemRunner.run(&argv, timeout)
+                };
                 let ms = start.elapsed().as_millis() as u64;
                 let _ = tx.send(Event::CargoDone { seq, output, ms });
             });
@@ -548,8 +592,11 @@ fn open_session(cfg: &Config, strict: bool) -> anyhow::Result<Session> {
     spawn_input(link.reader()?, KeyParser::new(keymap), tx.clone(), move || unsticker.unstick());
 
     let out = link.writer()?;
-    let writer: Box<dyn Write> =
-        if strict { Box::new(StrictWriter::new(out, Vt100Dialect)) } else { Box::new(out) };
+    let writer: Box<dyn Write> = if strict {
+        Box::new(StrictWriter::new(out, Vt100Dialect))
+    } else {
+        Box::new(out)
+    };
     let (cols, rows) = (cfg.terminal.cols, cfg.terminal.rows);
     let hints = HintSlot::default();
     let mut terminal = Terminal::new(Wy60Backend::new(writer, Vt100Dialect, cols, rows).with_hints(hints.clone()))?;
@@ -600,10 +647,19 @@ pub fn run_splash(cfg: &Config, strict: bool) -> anyhow::Result<()> {
     let _log = init_logging()?;
     log_config_warnings(cfg);
     install_panic_hook();
-    let Session { link, tx, mut rx, mut terminal, .. } = open_session(cfg, strict)?;
+    let Session {
+        link,
+        tx,
+        mut rx,
+        mut terminal,
+        ..
+    } = open_session(cfg, strict)?;
     let ship = ship_name(cfg);
     start_metrics(cfg, &tx, crate::metrics::SnapshotSlot::default());
-    let chrome = ChromeView { ship_name: ship.clone(), year_offset: cfg.chrome.year_offset };
+    let chrome = ChromeView {
+        ship_name: ship.clone(),
+        year_offset: cfg.chrome.year_offset,
+    };
     let mut app = App::new(chrome).with_splash(splash_for(cfg, &ship));
     app.quit_after_splash = true;
     let (_pty_tx, mut pty_rx) = tokio::sync::mpsc::channel(PTY_QUEUE);
@@ -625,7 +681,13 @@ pub fn run(cfg: &Config, config_path: &std::path::Path, strict: bool) -> anyhow:
     install_panic_hook();
     // Before the link is taken over, so a bad config entry reaches stderr.
     let tech = tech_startup(cfg, config_path)?;
-    let Session { link, tx, mut rx, mut terminal, hints } = open_session(cfg, strict)?;
+    let Session {
+        link,
+        tx,
+        mut rx,
+        mut terminal,
+        hints,
+    } = open_session(cfg, strict)?;
     let (cols, rows) = (cfg.terminal.cols, cfg.terminal.rows);
     let shell_cfg = ShellConfig {
         command: cfg.shell.command.clone(),
@@ -639,7 +701,10 @@ pub fn run(cfg: &Config, config_path: &std::path::Path, strict: bool) -> anyhow:
         let _ = pty_tx.blocking_send(e);
     });
     let ship = ship_name(cfg);
-    let chrome = ChromeView { ship_name: ship.clone(), year_offset: cfg.chrome.year_offset };
+    let chrome = ChromeView {
+        ship_name: ship.clone(),
+        year_offset: cfg.chrome.year_offset,
+    };
     let slot = crate::metrics::SnapshotSlot::default();
     start_metrics(cfg, &tx, slot.clone());
     // One audit log for every writer: MU/TH/UR's tools and CARGO's commands.
@@ -689,7 +754,10 @@ mod tests {
     }
 
     fn setup() -> (App, Terminal<Wy60Backend<Vec<u8>, Vt100Dialect>>) {
-        let app = App::new(ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 });
+        let app = App::new(ChromeView {
+            ship_name: "USCSS TEST".into(),
+            year_offset: 111,
+        });
         let mut t = Terminal::new(Wy60Backend::new(Vec::new(), Vt100Dialect, 80, 43)).unwrap();
         t.clear().unwrap();
         (app, t)
@@ -726,7 +794,12 @@ mod tests {
 
     fn stale_splash() -> crate::splash::Splash {
         use crate::splash::{Interface, Splash, SplashInfo};
-        let info = SplashInfo { ship_name: "USCSS TEST".into(), year: 2137, link: "38400 BAUD  XON/XOFF".into(), interface: Interface::Online };
+        let info = SplashInfo {
+            ship_name: "USCSS TEST".into(),
+            year: 2137,
+            link: "38400 BAUD  XON/XOFF".into(),
+            interface: Interface::Online,
+        };
         let mut s = Splash::new(info, std::time::Instant::now() - Duration::from_secs(60));
         s.on_metrics(&Default::default());
         s
@@ -819,7 +892,10 @@ mod tests {
             if self.fail_every_other && self.calls % 2 == 1 {
                 anyhow::bail!("probe exploded");
             }
-            Ok(crate::metrics::Snapshot { host: format!("HOST{}", self.calls), ..Default::default() })
+            Ok(crate::metrics::Snapshot {
+                host: format!("HOST{}", self.calls),
+                ..Default::default()
+            })
         }
     }
 
@@ -838,7 +914,15 @@ mod tests {
     #[test]
     fn collector_sends_snapshots() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        spawn_metrics(Box::new(FakeSource { calls: 0, fail_every_other: false }), Duration::from_millis(10), tx, Default::default());
+        spawn_metrics(
+            Box::new(FakeSource {
+                calls: 0,
+                fail_every_other: false,
+            }),
+            Duration::from_millis(10),
+            tx,
+            Default::default(),
+        );
         assert_eq!(next_metrics(&mut rx).unwrap().host, "HOST1");
         assert_eq!(next_metrics(&mut rx).unwrap().host, "HOST2");
     }
@@ -846,7 +930,15 @@ mod tests {
     #[test]
     fn collector_survives_errors() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        spawn_metrics(Box::new(FakeSource { calls: 0, fail_every_other: true }), Duration::from_millis(10), tx, Default::default());
+        spawn_metrics(
+            Box::new(FakeSource {
+                calls: 0,
+                fail_every_other: true,
+            }),
+            Duration::from_millis(10),
+            tx,
+            Default::default(),
+        );
         assert_eq!(next_metrics(&mut rx).unwrap().host, "HOST2");
     }
 
@@ -877,10 +969,17 @@ mod tests {
     #[tokio::test]
     async fn metrics_event_reaches_utility() {
         let (_, mut t) = setup();
-        let mut app = crate::app::App::new(ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 })
-            .with_tab(crate::app::TabId::Utility, Box::new(crate::utility::UtilityTab::new()));
+        let mut app = crate::app::App::new(ChromeView {
+            ship_name: "USCSS TEST".into(),
+            year_offset: 111,
+        })
+        .with_tab(crate::app::TabId::Utility, Box::new(crate::utility::UtilityTab::new()));
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let snap = crate::metrics::Snapshot { host: "NOSTROMO".into(), cpu_cores: vec![1.0], ..Default::default() };
+        let snap = crate::metrics::Snapshot {
+            host: "NOSTROMO".into(),
+            cpu_cores: vec![1.0],
+            ..Default::default()
+        };
         tx.send(Event::Metrics(Box::new(snap))).unwrap();
         tx.send(Event::Keys(vec![Key::Ctrl(']'), Key::Char('q')])).unwrap();
         event_loop(&mut app, &mut t, &mut rx, &mut no_pty(), || 0, now).await.unwrap();
@@ -894,12 +993,19 @@ mod tests {
         let (_, mut t) = setup();
         let (m, _dir) = crate::app::tests::fake_muthur();
         let shell = crate::shell::ShellTab::new(
-            crate::shell::ShellConfig { command: "sh".into(), args: vec!["-c".into(), "sleep 2".into()], scrollback: 10 },
+            crate::shell::ShellConfig {
+                command: "sh".into(),
+                args: vec!["-c".into(), "sleep 2".into()],
+                scrollback: 10,
+            },
             crate::scroll::HintSlot::default(),
             |_| {},
         );
         let mut app = App::assemble(
-            ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 },
+            ChromeView {
+                ship_name: "USCSS TEST".into(),
+                year_offset: 111,
+            },
             m,
             crate::utility::UtilityTab::new(),
             crate::cargo::CargoTab::detached(),
@@ -910,8 +1016,20 @@ mod tests {
         ks.extend("HI".chars().map(Key::Char));
         ks.push(Key::Enter);
         tx.send(Event::Keys(ks)).unwrap();
-        tx.send(Event::Llm { req_id: 1, ev: StreamEvent::Text("NOMINAL".into()) }).unwrap();
-        tx.send(Event::Llm { req_id: 1, ev: StreamEvent::Done { stop: Stop::End, model: None, raw: None } }).unwrap();
+        tx.send(Event::Llm {
+            req_id: 1,
+            ev: StreamEvent::Text("NOMINAL".into()),
+        })
+        .unwrap();
+        tx.send(Event::Llm {
+            req_id: 1,
+            ev: StreamEvent::Done {
+                stop: Stop::End,
+                model: None,
+                raw: None,
+            },
+        })
+        .unwrap();
         let quit = async move {
             tokio::time::sleep(Duration::from_millis(1500)).await;
             tx.send(Event::Keys(vec![Key::Ctrl(']'), Key::Char('q')])).unwrap();
@@ -929,7 +1047,15 @@ mod tests {
     fn collector_fills_snapshot_slot() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let slot = crate::metrics::SnapshotSlot::default();
-        spawn_metrics(Box::new(FakeSource { calls: 0, fail_every_other: false }), Duration::from_millis(10), tx, slot.clone());
+        spawn_metrics(
+            Box::new(FakeSource {
+                calls: 0,
+                fail_every_other: false,
+            }),
+            Duration::from_millis(10),
+            tx,
+            slot.clone(),
+        );
         next_metrics(&mut rx).unwrap();
         assert_eq!(slot.lock().unwrap().as_ref().unwrap().host, "HOST1");
     }
@@ -955,7 +1081,10 @@ mod tests {
         let (_, mut t) = setup();
         let dir = tempfile::tempdir().unwrap();
         let log = crate::chatlog::ChatLog::open(dir.path().join("chat.jsonl")).unwrap();
-        let cfg = crate::config::MuthurSection { api_key: Some("sk-test".into()), ..Default::default() };
+        let cfg = crate::config::MuthurSection {
+            api_key: Some("sk-test".into()),
+            ..Default::default()
+        };
         let spawned = std::rc::Rc::new(std::cell::Cell::new(0u32));
         let sp = spawned.clone();
         let deps = MuthurDeps {
@@ -974,12 +1103,19 @@ mod tests {
         let tech = crate::app::tests::fake_tech(&cfg);
         let m = MuthurTab::new(cfg, tools, "USCSS TEST", log, crate::ops::audit::shared(audit), deps, tech);
         let shell = crate::shell::ShellTab::new(
-            crate::shell::ShellConfig { command: "sh".into(), args: vec!["-c".into(), "sleep 2".into()], scrollback: 10 },
+            crate::shell::ShellConfig {
+                command: "sh".into(),
+                args: vec!["-c".into(), "sleep 2".into()],
+                scrollback: 10,
+            },
             crate::scroll::HintSlot::default(),
             |_| {},
         );
         let mut app = App::assemble(
-            ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 },
+            ChromeView {
+                ship_name: "USCSS TEST".into(),
+                year_offset: 111,
+            },
             m,
             crate::utility::UtilityTab::new(),
             crate::cargo::CargoTab::detached(),
@@ -991,11 +1127,39 @@ mod tests {
         ks.push(Key::Enter);
         tx.send(Event::Keys(ks)).unwrap();
         let input = serde_json::json!({});
-        tx.send(Event::Llm { req_id: 1, ev: StreamEvent::ToolCall { id: "c1".into(), name: "ship_status".into(), input: input.clone() } }).unwrap();
+        tx.send(Event::Llm {
+            req_id: 1,
+            ev: StreamEvent::ToolCall {
+                id: "c1".into(),
+                name: "ship_status".into(),
+                input: input.clone(),
+            },
+        })
+        .unwrap();
         let raw = vec![serde_json::json!({"type":"tool_use","id":"c1","name":"ship_status","input":input})];
-        tx.send(Event::Llm { req_id: 1, ev: StreamEvent::Done { stop: Stop::ToolUse, model: None, raw: Some(raw) } }).unwrap();
-        let outcome = ToolOutcome { content: "UP 3D".into(), is_error: false, argv: None, exit: None, ms: 1, audit_output: None };
-        tx.send(Event::ToolDone { req_id: 1, call_id: "c1".into(), outcome }).unwrap();
+        tx.send(Event::Llm {
+            req_id: 1,
+            ev: StreamEvent::Done {
+                stop: Stop::ToolUse,
+                model: None,
+                raw: Some(raw),
+            },
+        })
+        .unwrap();
+        let outcome = ToolOutcome {
+            content: "UP 3D".into(),
+            is_error: false,
+            argv: None,
+            exit: None,
+            ms: 1,
+            audit_output: None,
+        };
+        tx.send(Event::ToolDone {
+            req_id: 1,
+            call_id: "c1".into(),
+            outcome,
+        })
+        .unwrap();
         tx.send(Event::Keys(vec![Key::Ctrl(']'), Key::Char('q')])).unwrap();
         event_loop(&mut app, &mut t, &mut rx, &mut no_pty(), || 0, now).await.unwrap();
         assert_eq!(spawned.get(), 2, "tool result did not trigger a second request");
@@ -1010,7 +1174,10 @@ mod tests {
         let (_, mut t) = setup();
         let dir = tempfile::tempdir().unwrap();
         let log = crate::chatlog::ChatLog::open(dir.path().join("chat.jsonl")).unwrap();
-        let cfg = crate::config::MuthurSection { api_key: Some("sk-test".into()), ..Default::default() };
+        let cfg = crate::config::MuthurSection {
+            api_key: Some("sk-test".into()),
+            ..Default::default()
+        };
         let reviewed = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
         let ran = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
         let (rv, rn) = (reviewed.clone(), ran.clone());
@@ -1030,12 +1197,19 @@ mod tests {
         let tech = crate::app::tests::fake_tech(&cfg);
         let m = MuthurTab::new(cfg, tools, "USCSS TEST", log, crate::ops::audit::shared(audit), deps, tech);
         let shell = crate::shell::ShellTab::new(
-            crate::shell::ShellConfig { command: "sh".into(), args: vec!["-c".into(), "sleep 2".into()], scrollback: 10 },
+            crate::shell::ShellConfig {
+                command: "sh".into(),
+                args: vec!["-c".into(), "sleep 2".into()],
+                scrollback: 10,
+            },
             crate::scroll::HintSlot::default(),
             |_| {},
         );
         let mut app = App::assemble(
-            ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 },
+            ChromeView {
+                ship_name: "USCSS TEST".into(),
+                year_offset: 111,
+            },
             m,
             crate::utility::UtilityTab::new(),
             crate::cargo::CargoTab::detached(),
@@ -1049,11 +1223,39 @@ mod tests {
             tx.send(Event::Keys(ks)).unwrap();
         }
         let input = serde_json::json!({"command": "ls", "reason": "asked", "as_root": false, "timeout_secs": 0});
-        tx.send(Event::Llm { req_id: 1, ev: StreamEvent::ToolCall { id: "c1".into(), name: "run".into(), input: input.clone() } }).unwrap();
+        tx.send(Event::Llm {
+            req_id: 1,
+            ev: StreamEvent::ToolCall {
+                id: "c1".into(),
+                name: "run".into(),
+                input: input.clone(),
+            },
+        })
+        .unwrap();
         let raw = vec![serde_json::json!({"type":"tool_use","id":"c1","name":"run","input":input})];
-        tx.send(Event::Llm { req_id: 1, ev: StreamEvent::Done { stop: Stop::ToolUse, model: None, raw: Some(raw) } }).unwrap();
-        let review = Review { verdict: Verdict::Allow, risk: Risk::Low, note: "read-only".into(), model: "r".into(), ms: 1, error: None };
-        tx.send(Event::Review { req_id: 1, call_id: "c1".into(), review }).unwrap();
+        tx.send(Event::Llm {
+            req_id: 1,
+            ev: StreamEvent::Done {
+                stop: Stop::ToolUse,
+                model: None,
+                raw: Some(raw),
+            },
+        })
+        .unwrap();
+        let review = Review {
+            verdict: Verdict::Allow,
+            risk: Risk::Low,
+            note: "read-only".into(),
+            model: "r".into(),
+            ms: 1,
+            error: None,
+        };
+        tx.send(Event::Review {
+            req_id: 1,
+            call_id: "c1".into(),
+            review,
+        })
+        .unwrap();
         tx.send(Event::Keys(vec![Key::Ctrl(']'), Key::Char('q')])).unwrap();
         event_loop(&mut app, &mut t, &mut rx, &mut no_pty(), || 0, now).await.unwrap();
         assert_eq!(*reviewed.borrow(), ["c1"], "the call was not sent for review");
@@ -1073,7 +1275,11 @@ mod tests {
     #[cfg(feature = "agent")]
     #[test]
     fn tech_policy_builds_deny_rules() {
-        let agent = crate::config::AgentSection { deny: vec!["^shutdown".into()], net_allow: vec!["example.com".into()], ..Default::default() };
+        let agent = crate::config::AgentSection {
+            deny: vec!["^shutdown".into()],
+            net_allow: vec!["example.com".into()],
+            ..Default::default()
+        };
         let p = tech_policy(&agent, &deny_ctx_for_tests()).unwrap();
         assert_eq!(p.deny.as_ref().unwrap().check("shutdown -h now", true).as_deref(), Some("CONFIG RULE 1"));
         assert_eq!(p.net_allow, ["example.com"]);
@@ -1082,10 +1288,16 @@ mod tests {
     #[cfg(feature = "agent")]
     #[test]
     fn tech_policy_rejects_bad_entries() {
-        let agent = crate::config::AgentSection { deny: vec!["ok".into(), "(".into()], ..Default::default() };
+        let agent = crate::config::AgentSection {
+            deny: vec!["ok".into(), "(".into()],
+            ..Default::default()
+        };
         let e = format!("{:#}", tech_policy(&agent, &deny_ctx_for_tests()).err().unwrap());
         assert!(e.contains("deny entry 2"), "{e}");
-        let agent = crate::config::AgentSection { net_allow: vec!["example.com".into(), "bad host!".into()], ..Default::default() };
+        let agent = crate::config::AgentSection {
+            net_allow: vec!["example.com".into(), "bad host!".into()],
+            ..Default::default()
+        };
         let e = format!("{:#}", tech_policy(&agent, &deny_ctx_for_tests()).err().unwrap());
         assert!(e.contains("net_allow") && e.contains("bad host!"), "{e}");
     }
@@ -1105,7 +1317,10 @@ mod tests {
     #[tokio::test]
     async fn review_dispatch_offline_when_not_ready() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let cfg = crate::config::MuthurSection { api_key: None, ..Default::default() };
+        let cfg = crate::config::MuthurSection {
+            api_key: None,
+            ..Default::default()
+        };
         let mut review = review_dispatch(&cfg, false, tx);
         let input = crate::review::ReviewInput {
             operator_message: "x".into(),

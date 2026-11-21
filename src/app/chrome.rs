@@ -16,7 +16,12 @@ pub const BOX_H: u16 = 5;
 pub const BOX_TOP: u16 = 4;
 pub const BOX_GAP: u16 = 1;
 /// The tab's area in windowed mode.
-pub const CONTENT: Rect = Rect { x: 19, y: 2, width: 61, height: 40 };
+pub const CONTENT: Rect = Rect {
+    x: 19,
+    y: 2,
+    width: 61,
+    height: 40,
+};
 
 const FOOTER: &str = "F1-F4 SELECT .... ^] F FULLSCREEN .... SH-F15/16 SCROLL .... ^] ? HELP";
 const PREFIX: &str = "PREFIX: F FULL  R REDRAW  D DATE  ? HELP  Q QUIT  ] SEND ^]";

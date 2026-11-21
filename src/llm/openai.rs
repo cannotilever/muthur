@@ -1,8 +1,8 @@
 //! OpenAI-compatible (vLLM) chat-completions protocol: request JSON and SSE stream parser.
 use super::sse::SseRecord;
-use super::{ChatRequest, ToolChoice, LlmError, MessageContent, Role, Stop, StreamEvent, StreamParser};
+use super::{ChatRequest, LlmError, MessageContent, Role, Stop, StreamEvent, StreamParser, ToolChoice};
 use crate::config::MuthurSection;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 pub const PATH: &str = "/v1/chat/completions";
@@ -95,11 +95,19 @@ impl StreamParser for Parser {
             let mut raw = vec![];
             for (_, (id, name, args)) in std::mem::take(&mut self.calls) {
                 raw.push(json!({"id": id, "type": "function", "function": {"name": name, "arguments": args}}));
-                let input = if args.trim().is_empty() { json!({}) } else { serde_json::from_str(&args).unwrap_or_else(|_| json!({})) };
+                let input = if args.trim().is_empty() {
+                    json!({})
+                } else {
+                    serde_json::from_str(&args).unwrap_or_else(|_| json!({}))
+                };
                 out.push(StreamEvent::ToolCall { id, name, input });
             }
             // Some servers report "stop" (or nothing) after tool calls; calls mean ToolUse.
-            let stop = if raw.is_empty() { map_stop(self.finish.as_deref().unwrap_or("stop")) } else { Stop::ToolUse };
+            let stop = if raw.is_empty() {
+                map_stop(self.finish.as_deref().unwrap_or("stop"))
+            } else {
+                Stop::ToolUse
+            };
             out.push(StreamEvent::Done {
                 stop,
                 model: self.model.clone(),
@@ -107,7 +115,9 @@ impl StreamParser for Parser {
             });
             return out;
         }
-        let Ok(v) = serde_json::from_str::<Value>(data) else { return out };
+        let Ok(v) = serde_json::from_str::<Value>(data) else {
+            return out;
+        };
         if v.get("error").is_some() {
             self.done = true;
             return vec![StreamEvent::Error(LlmError::Transmission)];
@@ -115,7 +125,9 @@ impl StreamParser for Parser {
         if self.model.is_none() {
             self.model = v["model"].as_str().map(str::to_string);
         }
-        let Some(choice) = v["choices"].get(0) else { return out };
+        let Some(choice) = v["choices"].get(0) else {
+            return out;
+        };
         if let Some(t) = choice["delta"]["content"].as_str().filter(|t| !t.is_empty()) {
             out.push(StreamEvent::Text(t.to_string()));
         }
@@ -170,62 +182,185 @@ mod tests {
         ev
     }
     fn texts(ev: &[StreamEvent]) -> String {
-        ev.iter().filter_map(|e| if let StreamEvent::Text(t) = e { Some(t.as_str()) } else { None }).collect()
+        ev.iter()
+            .filter_map(|e| if let StreamEvent::Text(t) = e { Some(t.as_str()) } else { None })
+            .collect()
     }
-    fn user(s: &str) -> Message { Message { role: Role::User, content: MessageContent::Text(s.into()) } }
+    fn user(s: &str) -> Message {
+        Message {
+            role: Role::User,
+            content: MessageContent::Text(s.into()),
+        }
+    }
     fn cfg() -> MuthurSection {
-        MuthurSection { provider: crate::config::Provider::Openai, base_url: Some("http://10.0.0.5:8000".into()), model: Some("qwen".into()), ..Default::default() }
+        MuthurSection {
+            provider: crate::config::Provider::Openai,
+            base_url: Some("http://10.0.0.5:8000".into()),
+            model: Some("qwen".into()),
+            ..Default::default()
+        }
     }
 
-    #[test] fn text_stream() { let ev = run("openai_text.sse"); assert_eq!(texts(&ev), "ALL SYSTEMS NOMINAL."); assert!(matches!(ev.last(), Some(StreamEvent::Done{stop: Stop::End, raw: None, ..}))); }
-    #[test] fn tool_calls_accumulate_by_index() { let ev = run("openai_tool.sse"); assert!(ev.iter().any(|e| matches!(e, StreamEvent::ToolCall{name, input, ..} if name == "metrics" && input == &json!({"host":"local"})))); assert!(matches!(ev.last(), Some(StreamEvent::Done{stop: Stop::ToolUse, ..}))); }
-    #[test] fn length_is_max_tokens() { assert!(matches!(run("openai_length.sse").last(), Some(StreamEvent::Done{stop: Stop::MaxTokens, ..}))); }
-    #[test] fn system_goes_first() { let b = request_body(&cfg(), &ChatRequest{ system: "SYS".into(), messages: vec![user("HI")], tools: vec![], tool_choice: ToolChoice::Auto }); assert_eq!(b["messages"][0], json!({"role":"system","content":"SYS"})); assert_eq!(b["messages"][1], json!({"role":"user","content":"HI"})); assert_eq!(b["model"], "qwen"); assert_eq!(b["stream"], true); }
-    #[test] fn bearer_only_with_key() { assert!(!headers(&cfg()).iter().any(|(k,_)| *k == "authorization")); assert!(headers(&MuthurSection{ api_key: Some("k".into()), ..cfg() }).contains(&("authorization", "Bearer k".into()))); }
-    #[test] fn api_key_is_trimmed() { assert!(headers(&MuthurSection{ api_key: Some(" k\n".into()), ..cfg() }).contains(&("authorization", "Bearer k".into()))); assert!(!headers(&MuthurSection{ api_key: Some("  ".into()), ..cfg() }).iter().any(|(k,_)| *k == "authorization")); }
-    #[test] fn missing_done_is_transmission_error() {
+    #[test]
+    fn text_stream() {
+        let ev = run("openai_text.sse");
+        assert_eq!(texts(&ev), "ALL SYSTEMS NOMINAL.");
+        assert!(matches!(
+            ev.last(),
+            Some(StreamEvent::Done {
+                stop: Stop::End,
+                raw: None,
+                ..
+            })
+        ));
+    }
+    #[test]
+    fn tool_calls_accumulate_by_index() {
+        let ev = run("openai_tool.sse");
+        assert!(
+            ev.iter()
+                .any(|e| matches!(e, StreamEvent::ToolCall{name, input, ..} if name == "metrics" && input == &json!({"host":"local"})))
+        );
+        assert!(matches!(ev.last(), Some(StreamEvent::Done { stop: Stop::ToolUse, .. })));
+    }
+    #[test]
+    fn length_is_max_tokens() {
+        assert!(matches!(run("openai_length.sse").last(), Some(StreamEvent::Done { stop: Stop::MaxTokens, .. })));
+    }
+    #[test]
+    fn system_goes_first() {
+        let b = request_body(
+            &cfg(),
+            &ChatRequest {
+                system: "SYS".into(),
+                messages: vec![user("HI")],
+                tools: vec![],
+                tool_choice: ToolChoice::Auto,
+            },
+        );
+        assert_eq!(b["messages"][0], json!({"role":"system","content":"SYS"}));
+        assert_eq!(b["messages"][1], json!({"role":"user","content":"HI"}));
+        assert_eq!(b["model"], "qwen");
+        assert_eq!(b["stream"], true);
+    }
+    #[test]
+    fn bearer_only_with_key() {
+        assert!(!headers(&cfg()).iter().any(|(k, _)| *k == "authorization"));
+        assert!(
+            headers(&MuthurSection {
+                api_key: Some("k".into()),
+                ..cfg()
+            })
+            .contains(&("authorization", "Bearer k".into()))
+        );
+    }
+    #[test]
+    fn api_key_is_trimmed() {
+        assert!(
+            headers(&MuthurSection {
+                api_key: Some(" k\n".into()),
+                ..cfg()
+            })
+            .contains(&("authorization", "Bearer k".into()))
+        );
+        assert!(
+            !headers(&MuthurSection {
+                api_key: Some("  ".into()),
+                ..cfg()
+            })
+            .iter()
+            .any(|(k, _)| *k == "authorization")
+        );
+    }
+    #[test]
+    fn missing_done_is_transmission_error() {
         let mut p = Parser::new();
         let mut dec = SseDecoder::default();
         let s = "data: {\"model\":\"qwen\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"AL\"},\"finish_reason\":null}]}\n\n";
-        for rec in dec.push(s.as_bytes()) { p.feed(&rec); }
+        for rec in dec.push(s.as_bytes()) {
+            p.feed(&rec);
+        }
         assert_eq!(p.finish(), vec![StreamEvent::Error(LlmError::Transmission)]);
     }
-    fn spec(name: &str) -> crate::llm::ToolSpec { crate::llm::ToolSpec{ name: name.into(), description: "d".into(), schema: json!({"type":"object","properties":{}}) } }
-    fn req_with(messages: Vec<Message>) -> ChatRequest { ChatRequest { system: "SYS".into(), messages, tools: vec![], tool_choice: ToolChoice::Auto } }
-    #[test] fn tools_and_choice_in_body() {
+    fn spec(name: &str) -> crate::llm::ToolSpec {
+        crate::llm::ToolSpec {
+            name: name.into(),
+            description: "d".into(),
+            schema: json!({"type":"object","properties":{}}),
+        }
+    }
+    fn req_with(messages: Vec<Message>) -> ChatRequest {
+        ChatRequest {
+            system: "SYS".into(),
+            messages,
+            tools: vec![],
+            tool_choice: ToolChoice::Auto,
+        }
+    }
+    #[test]
+    fn tools_and_choice_in_body() {
         let mut r = req_with(vec![user("HI")]);
         assert!(request_body(&cfg(), &r).get("tools").is_none());
         r.tools = vec![spec("ship_status")];
         let b = request_body(&cfg(), &r);
-        assert_eq!(b["tools"][0], json!({"type":"function","function":{"name":"ship_status","description":"d","parameters":{"type":"object","properties":{}}}}));
+        assert_eq!(
+            b["tools"][0],
+            json!({"type":"function","function":{"name":"ship_status","description":"d","parameters":{"type":"object","properties":{}}}})
+        );
         assert!(b.get("tool_choice").is_none());
         r.tool_choice = ToolChoice::None;
         assert_eq!(request_body(&cfg(), &r)["tool_choice"], "none");
     }
-    #[test] fn forced_choice_bodies() {
+    #[test]
+    fn forced_choice_bodies() {
         let mut r = req_with(vec![user("HI")]);
         r.tools = vec![spec("verdict")];
         r.tool_choice = ToolChoice::Force("verdict".into());
-        assert_eq!(request_body(&cfg(), &r)["tool_choice"], json!({"type":"function","function":{"name":"verdict"}}));
+        assert_eq!(
+            request_body(&cfg(), &r)["tool_choice"],
+            json!({"type":"function","function":{"name":"verdict"}})
+        );
         assert!(request_body(&cfg(), &r).get("thinking").is_none());
     }
-    #[test] fn assistant_tool_calls_and_results() {
+    #[test]
+    fn assistant_tool_calls_and_results() {
         let c = json!({"id":"call_1","type":"function","function":{"name":"metrics","arguments":"{}"}});
-        let tr = |id: &str, content: &str, e: bool| crate::llm::ToolResult { id: id.into(), name: "metrics".into(), content: content.into(), is_error: e, label: String::new() };
-        let r = req_with(vec![user("HI"),
-            Message { role: Role::Assistant, content: MessageContent::ToolCalls { text: " ".into(), calls: vec![c.clone()] } },
-            Message { role: Role::User, content: MessageContent::ToolResults(vec![tr("call_1", "X", false), tr("call_2", "Y", true)]) }]);
+        let tr = |id: &str, content: &str, e: bool| crate::llm::ToolResult {
+            id: id.into(),
+            name: "metrics".into(),
+            content: content.into(),
+            is_error: e,
+            label: String::new(),
+        };
+        let r = req_with(vec![
+            user("HI"),
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::ToolCalls {
+                    text: " ".into(),
+                    calls: vec![c.clone()],
+                },
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::ToolResults(vec![tr("call_1", "X", false), tr("call_2", "Y", true)]),
+            },
+        ]);
         let m = &request_body(&cfg(), &r)["messages"];
         assert_eq!(m[2], json!({"role":"assistant","content":null,"tool_calls":[c]}));
         assert_eq!(m[3], json!({"role":"tool","tool_call_id":"call_1","content":"X"}));
         assert_eq!(m[4]["content"], "ERROR: Y");
         assert_eq!(m[4]["tool_call_id"], "call_2");
     }
-    #[test] fn done_raw_carries_tool_calls() {
+    #[test]
+    fn done_raw_carries_tool_calls() {
         let ev = run("openai_tool.sse");
-        assert!(matches!(ev.last(), Some(StreamEvent::Done{raw: Some(r), ..}) if r == &vec![json!({"id":"call_1","type":"function","function":{"name":"metrics","arguments":"{\"host\":\"local\"}"}})]));
+        assert!(
+            matches!(ev.last(), Some(StreamEvent::Done{raw: Some(r), ..}) if r == &vec![json!({"id":"call_1","type":"function","function":{"name":"metrics","arguments":"{\"host\":\"local\"}"}})])
+        );
     }
-    #[test] fn tool_calls_with_stop_finish_are_tool_use() {
+    #[test]
+    fn tool_calls_with_stop_finish_are_tool_use() {
         // Some OpenAI-compatible servers end a tool-calling response with finish_reason "stop" (or none).
         for finish in ["\"stop\"", "null"] {
             let mut p = Parser::new();
@@ -236,10 +371,18 @@ mod tests {
                  data: [DONE]\n\n"
             );
             let mut ev = Vec::new();
-            for rec in dec.push(s.as_bytes()) { ev.extend(p.feed(&rec)); }
-            assert!(ev.iter().any(|e| matches!(e, StreamEvent::ToolCall{name, ..} if name == "ship_status")), "{ev:?}");
-            assert!(matches!(ev.last(), Some(StreamEvent::Done{stop: Stop::ToolUse, ..})), "{finish}: {ev:?}");
+            for rec in dec.push(s.as_bytes()) {
+                ev.extend(p.feed(&rec));
+            }
+            assert!(
+                ev.iter().any(|e| matches!(e, StreamEvent::ToolCall{name, ..} if name == "ship_status")),
+                "{ev:?}"
+            );
+            assert!(matches!(ev.last(), Some(StreamEvent::Done { stop: Stop::ToolUse, .. })), "{finish}: {ev:?}");
         }
     }
-    #[test] fn plain_text_done_raw_none() { assert!(matches!(run("openai_text.sse").last(), Some(StreamEvent::Done{raw: None, ..}))); }
+    #[test]
+    fn plain_text_done_raw_none() {
+        assert!(matches!(run("openai_text.sse").last(), Some(StreamEvent::Done { raw: None, .. })));
+    }
 }

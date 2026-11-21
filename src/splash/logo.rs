@@ -63,12 +63,23 @@ impl Logo {
 
     /// Screen columns: a double-height line's are double width.
     pub fn width(&self) -> usize {
-        self.rows.iter().zip(&self.double).map(|(r, &d)| r.len() * if d { 2 } else { 1 }).max().unwrap_or(0)
+        self.rows
+            .iter()
+            .zip(&self.double)
+            .map(|(r, &d)| r.len() * if d { 2 } else { 1 })
+            .max()
+            .unwrap_or(0)
     }
 
     /// Width of the single-height lines, which are centred as one block.
     pub fn single_width(&self) -> usize {
-        self.rows.iter().zip(&self.double).filter(|(_, d)| !**d).map(|(r, _)| r.len()).max().unwrap_or(0)
+        self.rows
+            .iter()
+            .zip(&self.double)
+            .filter(|(_, d)| !**d)
+            .map(|(r, _)| r.len())
+            .max()
+            .unwrap_or(0)
     }
 }
 

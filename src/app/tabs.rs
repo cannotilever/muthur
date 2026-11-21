@@ -2,8 +2,8 @@
 
 use crate::input::Key;
 use crate::shell::PtyEvent;
-use ratatui::layout::Position;
 use ratatui::buffer::Buffer;
+use ratatui::layout::Position;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Paragraph, Widget};
@@ -97,7 +97,11 @@ impl Tab for PlaceholderTab {
         let inner = block.inner(area);
         block.render(area, buf);
         let mid = inner.y + inner.height.saturating_sub(2) / 2;
-        let text = Rect { y: mid, height: 2.min(inner.height), ..inner };
+        let text = Rect {
+            y: mid,
+            height: 2.min(inner.height),
+            ..inner
+        };
         Paragraph::new(vec![Line::from("MODULE OFFLINE"), Line::from("AWAITING INSTALLATION")])
             .alignment(Alignment::Center)
             .render(text, buf);

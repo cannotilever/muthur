@@ -26,7 +26,10 @@ impl SseDecoder {
             let line = String::from_utf8_lossy(&line);
             if line.is_empty() {
                 if !self.data.is_empty() {
-                    out.push(SseRecord { event: self.event.take(), data: self.data.join("\n") });
+                    out.push(SseRecord {
+                        event: self.event.take(),
+                        data: self.data.join("\n"),
+                    });
                 }
                 self.event = None;
                 self.data.clear();
@@ -52,8 +55,55 @@ impl SseDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test] fn splits_records_on_blank_line() { let mut d = SseDecoder::default(); let r = d.push(b"event: a\ndata: {\"x\":1}\n\ndata: two\n\n"); assert_eq!(r, vec![SseRecord{event:Some("a".into()),data:"{\"x\":1}".into()}, SseRecord{event:None,data:"two".into()}]); }
-    #[test] fn handles_crlf_comments_and_multiline() { let mut d = SseDecoder::default(); assert_eq!(d.push(b": ping\r\ndata: a\r\ndata: b\r\n\r\n"), vec![SseRecord{event:None,data:"a\nb".into()}]); }
-    #[test] fn arbitrary_splits_including_utf8() { let all = "data: caf\u{e9} \u{2014}\n\n".as_bytes(); for cut in 0..all.len() { let mut d = SseDecoder::default(); let mut r = d.push(&all[..cut]); r.extend(d.push(&all[cut..])); assert_eq!(r, vec![SseRecord{event:None,data:"caf\u{e9} \u{2014}".into()}], "cut {cut}"); } }
-    #[test] fn done_sentinel_is_plain_data() { let mut d = SseDecoder::default(); assert_eq!(d.push(b"data: [DONE]\n\n")[0].data, "[DONE]"); }
+    #[test]
+    fn splits_records_on_blank_line() {
+        let mut d = SseDecoder::default();
+        let r = d.push(b"event: a\ndata: {\"x\":1}\n\ndata: two\n\n");
+        assert_eq!(
+            r,
+            vec![
+                SseRecord {
+                    event: Some("a".into()),
+                    data: "{\"x\":1}".into()
+                },
+                SseRecord {
+                    event: None,
+                    data: "two".into()
+                }
+            ]
+        );
+    }
+    #[test]
+    fn handles_crlf_comments_and_multiline() {
+        let mut d = SseDecoder::default();
+        assert_eq!(
+            d.push(b": ping\r\ndata: a\r\ndata: b\r\n\r\n"),
+            vec![SseRecord {
+                event: None,
+                data: "a\nb".into()
+            }]
+        );
+    }
+    #[test]
+    fn arbitrary_splits_including_utf8() {
+        let all = "data: caf\u{e9} \u{2014}\n\n".as_bytes();
+        for cut in 0..all.len() {
+            let mut d = SseDecoder::default();
+            let mut r = d.push(&all[..cut]);
+            r.extend(d.push(&all[cut..]));
+            assert_eq!(
+                r,
+                vec![SseRecord {
+                    event: None,
+                    data: "caf\u{e9} \u{2014}".into()
+                }],
+                "cut {cut}"
+            );
+        }
+    }
+    #[test]
+    fn done_sentinel_is_plain_data() {
+        let mut d = SseDecoder::default();
+        assert_eq!(d.push(b"data: [DONE]\n\n")[0].data, "[DONE]");
+    }
 }

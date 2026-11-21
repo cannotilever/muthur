@@ -42,7 +42,11 @@ impl DenyRules {
     pub fn new(ctx: &DenyCtx, extra: &[String]) -> Result<DenyRules, String> {
         // An empty runtime value (unknown path or user) would match every
         // command, so its pattern is left out.
-        let who = if ctx.operator.is_empty() { "muthur-agent".to_string() } else { format!("muthur-agent|{}", escape(&ctx.operator)) };
+        let who = if ctx.operator.is_empty() {
+            "muthur-agent".to_string()
+        } else {
+            format!("muthur-agent|{}", escape(&ctx.operator))
+        };
         let mut control = vec![
             "/etc/sudoers".to_string(),
             r"(sysusers|tmpfiles)\.d/muthur-agent".to_string(),
@@ -50,7 +54,12 @@ impl DenyRules {
             word_then_user("usermod|gpasswd|passwd|userdel|chsh", &who),
             format!(r"{B}nft\W.*(flush|delete|muthur_agent)"),
         ];
-        control.extend([&ctx.config_path, &ctx.state_dir, &ctx.exe].into_iter().filter(|p| !p.is_empty()).map(|p| escape(p)));
+        control.extend(
+            [&ctx.config_path, &ctx.state_dir, &ctx.exe]
+                .into_iter()
+                .filter(|p| !p.is_empty())
+                .map(|p| escape(p)),
+        );
         let lockout = vec![
             format!("serial-getty@wy60.*{}", w("stop|mask|disable|kill")),
             format!("{}.*serial-getty@wy60", w("stop|mask|disable|kill")),
@@ -58,18 +67,14 @@ impl DenyRules {
             "/dev/wy60".to_string(),
         ];
         let destructive = vec![
-            format!(
-                r#"{B}rm\s(?:[^;&|]*\s)?(?:-[a-z]*[rf][a-z]*|--recursive|--force)\s(?:[^;&|]*\s)?["']?/+\.?\*?["']?(?:$|[\s;&|])"#
-            ),
+            format!(r#"{B}rm\s(?:[^;&|]*\s)?(?:-[a-z]*[rf][a-z]*|--recursive|--force)\s(?:[^;&|]*\s)?["']?/+\.?\*?["']?(?:$|[\s;&|])"#),
             "--no-preserve-root".to_string(),
             format!(r"{B}mkfs(\.\w+)?{A}"),
             format!("{}.*of=/dev/(sd|nvme|vd|mmcblk)", w("dd")),
             format!(r"{B}wipefs\s"),
             r":\(\)\s*\{".to_string(),
         ];
-        let compile = |v: Vec<String>| -> Result<Vec<Regex>, String> {
-            v.iter().map(|p| build(p).map_err(|e| e.to_string())).collect()
-        };
+        let compile = |v: Vec<String>| -> Result<Vec<Regex>, String> { v.iter().map(|p| build(p).map_err(|e| e.to_string())).collect() };
         let mut extra_re = Vec::new();
         for (i, p) in extra.iter().enumerate() {
             extra_re.push(build(p).map_err(|e| format!("bad [agent] deny entry {} ({p:?}): {e}", i + 1))?);
@@ -176,7 +181,12 @@ mod tests {
 
     #[test]
     fn empty_runtime_values_match_nothing() {
-        let blank = DenyCtx { config_path: String::new(), state_dir: String::new(), exe: String::new(), operator: String::new() };
+        let blank = DenyCtx {
+            config_path: String::new(),
+            state_dir: String::new(),
+            exe: String::new(),
+            operator: String::new(),
+        };
         let rules = DenyRules::new(&blank, &[]).unwrap();
         for cmd in ["ls -la", "uptime", "usermod -aG docker alice"] {
             assert_eq!(rules.check(cmd, true), None, "{cmd:?}");

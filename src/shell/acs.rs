@@ -65,7 +65,12 @@ fn graphic(b: u8) -> Option<char> {
 
 impl AcsFilter {
     pub fn new() -> Self {
-        Self { state: State::Ground, g0_graphics: false, g1_graphics: false, shifted: false }
+        Self {
+            state: State::Ground,
+            g0_graphics: false,
+            g1_graphics: false,
+            shifted: false,
+        }
     }
 
     fn graphics_active(&self) -> bool {

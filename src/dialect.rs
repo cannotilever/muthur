@@ -57,7 +57,9 @@ pub enum Glyph {
 /// Map a ratatui cell symbol to something the VT100 can show.
 pub fn map_glyph(symbol: &str) -> Glyph {
     let mut chars = symbol.chars();
-    let Some(c) = chars.next() else { return Glyph::Ascii(b' ') };
+    let Some(c) = chars.next() else {
+        return Glyph::Ascii(b' ');
+    };
     if chars.next().is_some() {
         return Glyph::Ascii(b'?');
     }
@@ -90,7 +92,9 @@ pub fn map_glyph(symbol: &str) -> Glyph {
         '⎻' => b'p',
         '⎼' => b'r',
         '⎽' => b's',
-        '█' | '▉' | '▊' | '▋' | '▇' | '▆' | '▅' | '▌' | '▐' | '▀' | '▄' => return Glyph::ReverseSpace,
+        '█' | '▉' | '▊' | '▋' | '▇' | '▆' | '▅' | '▌' | '▐' | '▀' | '▄' => {
+            return Glyph::ReverseSpace;
+        }
         '▁' | '▂' | '▃' | '▏' | '▎' | '▍' => return Glyph::Ascii(b' '),
         _ => return transliterate(c),
     };
@@ -272,7 +276,14 @@ mod tests {
     fn emitters_are_one_based() {
         let mut o = vec![];
         Vt100Dialect.cup(&mut o, 0, 0);
-        Vt100Dialect.sgr(&mut o, Attrs { bold: true, reverse: true, ..Default::default() });
+        Vt100Dialect.sgr(
+            &mut o,
+            Attrs {
+                bold: true,
+                reverse: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(o, b"\x1b[1;1H\x1b[0;1;7m");
     }
 
@@ -280,15 +291,29 @@ mod tests {
     fn modifier_conversion() {
         use ratatui::style::Modifier;
         let a = Attrs::from(Modifier::BOLD | Modifier::RAPID_BLINK | Modifier::ITALIC);
-        assert_eq!(a, Attrs { bold: true, blink: true, ..Default::default() });
+        assert_eq!(
+            a,
+            Attrs {
+                bold: true,
+                blink: true,
+                ..Default::default()
+            }
+        );
     }
 
     #[test]
     fn allowlist() {
         let d = Vt100Dialect;
         for ok in [
-            &b"\x1b[12;80H"[..], b"\x1b[0;1;4;5;7m", b"\x1b[m", b"\x1b[2J", b"\x1b[r", b"\x1b[3;20r", b"\x1b(0",
-            b"\x1b#6", b"\x1b[5C",
+            &b"\x1b[12;80H"[..],
+            b"\x1b[0;1;4;5;7m",
+            b"\x1b[m",
+            b"\x1b[2J",
+            b"\x1b[r",
+            b"\x1b[3;20r",
+            b"\x1b(0",
+            b"\x1b#6",
+            b"\x1b[5C",
         ] {
             assert!(d.is_allowed(ok), "{ok:?}");
         }

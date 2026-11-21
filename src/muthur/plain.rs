@@ -2,7 +2,7 @@
 //! its namesake in `turn` or `mod.rs`; there are no tools, prompts or direct
 //! link, and a stream always ends the inquiry.
 
-use super::{push_reply, strip_ship_time, Entry, MuthurTab, State};
+use super::{Entry, MuthurTab, State, push_reply, strip_ship_time};
 use crate::config::MuthurSection;
 use crate::input::Key;
 use crate::llm::{Stop, ToolSpec};

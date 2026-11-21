@@ -26,7 +26,13 @@ fn muthur_tab(path: &std::path::Path, prefill: Option<(&str, &str)>) -> (muthur:
 fn muthur_parts(
     path: &std::path::Path,
     prefill: Option<(&str, &str)>,
-) -> (muthur::config::MuthurSection, muthur::chatlog::ChatLog, muthur::ops::audit::SharedAudit, muthur::muthur::MuthurDeps, Clock) {
+) -> (
+    muthur::config::MuthurSection,
+    muthur::chatlog::ChatLog,
+    muthur::ops::audit::SharedAudit,
+    muthur::muthur::MuthurDeps,
+    Clock,
+) {
     use muthur::chatlog::{Assistant, ChatLog, Lane};
     use muthur::config::{MuthurSection, Provider};
     use muthur::muthur::MuthurDeps;
@@ -35,7 +41,14 @@ fn muthur_parts(
     let mut log = ChatLog::open(path.to_path_buf()).unwrap();
     if let Some((q, a)) = prefill {
         log.append_user(q, "ts", AgentId::Muthur).unwrap();
-        let a = Assistant { provider: Provider::Anthropic, model: "m".into(), text: a.into(), stop: "end".into(), raw: None, lane: Lane::Muthur };
+        let a = Assistant {
+            provider: Provider::Anthropic,
+            model: "m".into(),
+            text: a.into(),
+            stop: "end".into(),
+            raw: None,
+            lane: Lane::Muthur,
+        };
         log.append_assistant(a, "ts").unwrap();
     }
     let clock: Clock = std::rc::Rc::new(std::cell::Cell::new(std::time::Instant::now()));
@@ -50,7 +63,10 @@ fn muthur_parts(
         #[cfg(feature = "agent")]
         review: Box::new(|_, _, _| Box::new(|| {})),
     };
-    let cfg = MuthurSection { api_key: Some("sk-test".into()), ..Default::default() };
+    let cfg = MuthurSection {
+        api_key: Some("sk-test".into()),
+        ..Default::default()
+    };
     let audit = AuditLog::open(path.with_file_name("audit.jsonl")).unwrap();
     (cfg, log, muthur::ops::audit::shared(audit), deps, clock)
 }
@@ -75,12 +91,18 @@ fn muthur_tab_probe(
         prompt: muthur::muthur::tech_prompt(&agent),
         facts: Box::new(|| "HOST: test".into()),
         policy: muthur::agent::Policy {
-            deny: Some(muthur::tools::deny::DenyRules::new(&muthur::tools::deny::DenyCtx {
-                config_path: "/home/op/.config/muthur/config.toml".into(),
-                state_dir: "/home/op/.local/state/muthur".into(),
-                exe: "/home/op/.local/bin/muthur".into(),
-                operator: "op".into(),
-            }, &[]).unwrap()),
+            deny: Some(
+                muthur::tools::deny::DenyRules::new(
+                    &muthur::tools::deny::DenyCtx {
+                        config_path: "/home/op/.config/muthur/config.toml".into(),
+                        state_dir: "/home/op/.local/state/muthur".into(),
+                        exe: "/home/op/.local/bin/muthur".into(),
+                        operator: "op".into(),
+                    },
+                    &[],
+                )
+                .unwrap(),
+            ),
             net_allow: Vec::new(),
         },
         label: agent.label.clone(),
@@ -94,7 +116,10 @@ fn muthur_tab_probe(
 
 fn scene(name: &str, keys: &[Key]) {
     let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 17).unwrap().and_hms_opt(14, 2, 0).unwrap();
-    let mut app = App::new(ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 });
+    let mut app = App::new(ChromeView {
+        ship_name: "USCSS TEST".into(),
+        year_offset: 111,
+    });
     let w = StrictWriter::new(Vec::new(), Vt100Dialect);
     let mut t = Terminal::new(Wy60Backend::new(w, Vt100Dialect, 80, 43)).unwrap();
     t.clear().unwrap();
@@ -158,14 +183,30 @@ fn cargo_app() -> (App, std::rc::Rc<std::cell::RefCell<Vec<u64>>>, tempfile::Tem
         timestamp: Box::new(String::new),
         hints: Default::default(),
     };
-    let mut app = App::new(ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 })
-        .with_tab(TabId::Cargo, Box::new(CargoTab::new(deps, shared(AuditLog::open(dir.path().join("audit.jsonl")).unwrap()))));
-    let mut containers: Vec<Container> =
-        (0..50).map(|i| Container { id: format!("{i:012x}"), name: format!("refinery-unit-{i:02}"), status: "UP".into(), detail: "Up 3 hours".into() }).collect();
+    let mut app = App::new(ChromeView {
+        ship_name: "USCSS TEST".into(),
+        year_offset: 111,
+    })
+    .with_tab(
+        TabId::Cargo,
+        Box::new(CargoTab::new(deps, shared(AuditLog::open(dir.path().join("audit.jsonl")).unwrap()))),
+    );
+    let mut containers: Vec<Container> = (0..50)
+        .map(|i| Container {
+            id: format!("{i:012x}"),
+            name: format!("refinery-unit-{i:02}"),
+            status: "UP".into(),
+            detail: "Up 3 hours".into(),
+        })
+        .collect();
     containers[3].status = "EXITED".into();
     containers[3].detail = "Exited (137) 2 hours ago".into();
     containers[7].name = "AN-EXCEPTIONALLY-LONG-CONTAINER-NAME-THAT-WILL-NOT-FIT-IN-THE-PANE".into();
-    app.on_metrics(Snapshot { containers: Some(containers), container_runtime: Some("docker".into()), ..Default::default() });
+    app.on_metrics(Snapshot {
+        containers: Some(containers),
+        container_runtime: Some("docker".into()),
+        ..Default::default()
+    });
     app.handle_key(Key::F(3));
     (app, seqs, dir)
 }
@@ -193,7 +234,15 @@ fn cargo_logs() {
     log.push_str(&format!("2137-11-17T14:38:00Z refinery: {}\n", "very long line ".repeat(10)));
     log.push_str("2137-11-17T14:39:00Z health check \x1b[32mOK\x1b[0m\n");
     let seq = *seqs.borrow().last().unwrap();
-    app.on_cargo_done(seq, RunOutput::Exited { code: 0, stdout: log, stderr: String::new() }, 5);
+    app.on_cargo_done(
+        seq,
+        RunOutput::Exited {
+            code: 0,
+            stdout: log,
+            stderr: String::new(),
+        },
+        5,
+    );
     check_app("cargo_logs", &mut app);
 }
 
@@ -226,7 +275,10 @@ fn shell_windowed_echo() {
     });
     let dir = tempfile::tempdir().unwrap();
     let mut app = App::assemble(
-        ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 },
+        ChromeView {
+            ship_name: "USCSS TEST".into(),
+            year_offset: 111,
+        },
         muthur_tab(&dir.path().join("c.jsonl"), None).0,
         muthur::utility::UtilityTab::new(),
         muthur::cargo::CargoTab::detached(),
@@ -266,8 +318,11 @@ fn utility_fullscreen() {
     use muthur::utility::UtilityTab;
     const G: u64 = 1 << 30;
     let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 17).unwrap().and_hms_opt(14, 2, 0).unwrap();
-    let mut app = App::new(ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 })
-        .with_tab(TabId::Utility, Box::new(UtilityTab::new()));
+    let mut app = App::new(ChromeView {
+        ship_name: "USCSS TEST".into(),
+        year_offset: 111,
+    })
+    .with_tab(TabId::Utility, Box::new(UtilityTab::new()));
     for i in 0..20u64 {
         app.on_metrics(Snapshot {
             host: "NOSTROMO".into(),
@@ -278,17 +333,47 @@ fn utility_fullscreen() {
             mem: Usage { used: 12 * G, total: 32 * G },
             swap: Usage { used: G, total: 8 * G },
             disks: vec![
-                Disk { mount: "/".into(), usage: Usage { used: 700 * G, total: 1000 * G } },
-                Disk { mount: "/boot".into(), usage: Usage { used: G / 2, total: G } },
-                Disk { mount: "/tank".into(), usage: Usage { used: 1100 * G, total: 2000 * G } },
+                Disk {
+                    mount: "/".into(),
+                    usage: Usage {
+                        used: 700 * G,
+                        total: 1000 * G,
+                    },
+                },
+                Disk {
+                    mount: "/boot".into(),
+                    usage: Usage { used: G / 2, total: G },
+                },
+                Disk {
+                    mount: "/tank".into(),
+                    usage: Usage {
+                        used: 1100 * G,
+                        total: 2000 * G,
+                    },
+                },
             ],
             net: NetRate { rx_bps: i * 400, tx_bps: 6144 },
             top: vec![
-                Proc { pid: 1382, name: "RESTIC".into(), cpu: 121.5, mem: 500 << 20 },
-                Proc { pid: 77, name: "FISH".into(), cpu: 1.0, mem: 8 << 20 },
+                Proc {
+                    pid: 1382,
+                    name: "RESTIC".into(),
+                    cpu: 121.5,
+                    mem: 500 << 20,
+                },
+                Proc {
+                    pid: 77,
+                    name: "FISH".into(),
+                    cpu: 1.0,
+                    mem: 8 << 20,
+                },
             ],
             failed_units: Some(vec!["AUTORANDR".into()]),
-            containers: Some(vec![Container { id: "1".into(), name: "web".into(), status: "UP".into(), ..Default::default() }]),
+            containers: Some(vec![Container {
+                id: "1".into(),
+                name: "web".into(),
+                status: "UP".into(),
+                ..Default::default()
+            }]),
             container_runtime: Some("docker".into()),
             containers_at: None,
         });
@@ -318,14 +403,20 @@ fn muthur_windowed() {
     let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 17).unwrap().and_hms_opt(14, 2, 0).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let (tab, clock) = muthur_tab(&dir.path().join("chat.jsonl"), Some(("HI", "GREETINGS.")));
-    let mut app = App::new(ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 })
-        .with_tab(muthur::app::TabId::Muthur, Box::new(tab));
+    let mut app = App::new(ChromeView {
+        ship_name: "USCSS TEST".into(),
+        year_offset: 111,
+    })
+    .with_tab(muthur::app::TabId::Muthur, Box::new(tab));
     app.handle_key(Key::F(1));
     for c in "REACTOR STATUS".chars() {
         app.handle_key(Key::Char(c));
     }
     app.handle_key(Key::Enter);
-    app.on_llm(1, StreamEvent::Text("NO REACTOR TELEMETRY AVAILABLE \u{2014} SENSOR ACCESS NOT INSTALLED.".into()));
+    app.on_llm(
+        1,
+        StreamEvent::Text("NO REACTOR TELEMETRY AVAILABLE \u{2014} SENSOR ACCESS NOT INSTALLED.".into()),
+    );
     let mut t = Terminal::new(Wy60Backend::new(StrictWriter::new(Vec::new(), Vt100Dialect), Vt100Dialect, 80, 43)).unwrap();
     t.clear().unwrap();
     t.draw(|f| app.render(f, now)).unwrap(); // starts the reveal clock
@@ -361,9 +452,18 @@ mod direct {
     /// An app with the MU/TH/UR tab focused, in direct mode, and a cleared terminal.
     fn direct_app(probe: muthur::tools::shell::Probe, reviewer_ready: bool) -> (App, Clock, Term, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let (tab, clock) = muthur_tab_probe(&dir.path().join("chat.jsonl"), None, probe, reviewer_ready, muthur::config::DelegateReport::Relayed);
-        let mut app = App::new(ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 })
-            .with_tab(muthur::app::TabId::Muthur, Box::new(tab));
+        let (tab, clock) = muthur_tab_probe(
+            &dir.path().join("chat.jsonl"),
+            None,
+            probe,
+            reviewer_ready,
+            muthur::config::DelegateReport::Relayed,
+        );
+        let mut app = App::new(ChromeView {
+            ship_name: "USCSS TEST".into(),
+            year_offset: 111,
+        })
+        .with_tab(muthur::app::TabId::Muthur, Box::new(tab));
         app.handle_key(Key::F(1));
         type_line(&mut app, "/direct");
         let mut t = Terminal::new(Wy60Backend::new(StrictWriter::new(Vec::new(), Vt100Dialect), Vt100Dialect, 80, 43)).unwrap();
@@ -382,13 +482,34 @@ mod direct {
     fn run_call(app: &mut App, req: u64, id: &str, command: &str, as_root: bool) {
         use muthur::llm::{Stop, StreamEvent};
         let input = serde_json::json!({"command": command, "reason": "operator asked", "as_root": as_root, "timeout_secs": 0});
-        app.on_llm(req, StreamEvent::ToolCall { id: id.into(), name: "run".into(), input: input.clone() });
+        app.on_llm(
+            req,
+            StreamEvent::ToolCall {
+                id: id.into(),
+                name: "run".into(),
+                input: input.clone(),
+            },
+        );
         let raw = vec![serde_json::json!({"type":"tool_use","id":id,"name":"run","input":input})];
-        app.on_llm(req, StreamEvent::Done { stop: Stop::ToolUse, model: Some("m".into()), raw: Some(raw) });
+        app.on_llm(
+            req,
+            StreamEvent::Done {
+                stop: Stop::ToolUse,
+                model: Some("m".into()),
+                raw: Some(raw),
+            },
+        );
     }
 
     fn verdict(v: muthur::review::Verdict, risk: muthur::review::Risk, note: &str) -> muthur::review::Review {
-        muthur::review::Review { verdict: v, risk, note: note.into(), model: "r".into(), ms: 1, error: None }
+        muthur::review::Review {
+            verdict: v,
+            risk,
+            note: note.into(),
+            model: "r".into(),
+            ms: 1,
+            error: None,
+        }
     }
 
     fn exited(code: i64, lines: usize, ms: u64) -> muthur::tools::ToolOutcome {
@@ -453,7 +574,10 @@ mod direct {
         // The windowed status row cuts the command to fit.
         assert!(line.contains("CLEARANCE REQUIRED -- ls -l /etc/... -- PASSWORD: *******"), "{line}");
         assert!(!p.screen().contents().contains("hunter2"));
-        assert!(p.screen().contents().lines().any(|l| l.contains("x ls -l /etc/shadow ")), "full command in the pending block");
+        assert!(
+            p.screen().contents().lines().any(|l| l.contains("x ls -l /etc/shadow ")),
+            "full command in the pending block"
+        );
     }
 
     #[test]
@@ -471,7 +595,10 @@ mod direct {
         assert!(inverse, "override row is not reverse video");
         assert!(line.contains("-- TYPE OVERRIDE TO FORCE, ESC TO REFUSE"), "{line}");
         let text = p.screen().contents();
-        assert!(text.contains("x rm -rf /var/log/journal ") && text.contains("     DENIED BY REVIEWER: deletes the whole system journal"), "{text}");
+        assert!(
+            text.contains("x rm -rf /var/log/journal ") && text.contains("     DENIED BY REVIEWER: deletes the whole system journal"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -489,8 +616,11 @@ mod direct {
     fn persona_app(report: muthur::config::DelegateReport) -> (App, Clock, Term, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let (tab, clock) = muthur_tab_probe(&dir.path().join("chat.jsonl"), None, muthur::tools::shell::Probe::Ready, true, report);
-        let mut app = App::new(ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 })
-            .with_tab(muthur::app::TabId::Muthur, Box::new(tab));
+        let mut app = App::new(ChromeView {
+            ship_name: "USCSS TEST".into(),
+            year_offset: 111,
+        })
+        .with_tab(muthur::app::TabId::Muthur, Box::new(tab));
         app.handle_key(Key::F(1));
         let mut t = Terminal::new(Wy60Backend::new(StrictWriter::new(Vec::new(), Vt100Dialect), Vt100Dialect, 80, 43)).unwrap();
         t.clear().unwrap();
@@ -504,14 +634,32 @@ mod direct {
         use muthur::review::{Risk, Verdict};
         type_line(app, "check why nginx keeps restarting");
         let input = serde_json::json!({"task": "find out why nginx keeps restarting and restart it if needed"});
-        app.on_llm(1, StreamEvent::ToolCall { id: "d1".into(), name: "delegate".into(), input: input.clone() });
+        app.on_llm(
+            1,
+            StreamEvent::ToolCall {
+                id: "d1".into(),
+                name: "delegate".into(),
+                input: input.clone(),
+            },
+        );
         let raw = vec![serde_json::json!({"type":"tool_use","id":"d1","name":"delegate","input":input})];
-        app.on_llm(1, StreamEvent::Done { stop: Stop::ToolUse, model: Some("m".into()), raw: Some(raw) });
+        app.on_llm(
+            1,
+            StreamEvent::Done {
+                stop: Stop::ToolUse,
+                model: Some("m".into()),
+                raw: Some(raw),
+            },
+        );
         run_call(app, 2, "c1", "systemctl status nginx --no-pager", false);
         app.on_review(2, "c1".into(), verdict(Verdict::Allow, Risk::Low, "read-only status check"));
         app.on_tool_done(2, "c1".into(), exited(3, 12, 100));
         run_call(app, 3, "c2", "systemctl restart nginx", true);
-        app.on_review(3, "c2".into(), verdict(Verdict::Allow, Risk::Medium, "restarts a service the operator asked about"));
+        app.on_review(
+            3,
+            "c2".into(),
+            verdict(Verdict::Allow, Risk::Medium, "restarts a service the operator asked about"),
+        );
         arm(app, t, clock);
     }
 
@@ -543,9 +691,26 @@ mod direct {
         app.handle_key(Key::Enter);
         app.on_tool_done(3, "c2".into(), exited(0, 0, 1400));
         app.on_llm(4, StreamEvent::Text("Found: nginx failed its config test.\nChanged: restarted nginx.".into()));
-        app.on_llm(4, StreamEvent::Done { stop: Stop::End, model: Some("m".into()), raw: None });
-        app.on_llm(5, StreamEvent::Text("Nginx was failing its config test. The science officer restarted it.".into()));
-        app.on_llm(5, StreamEvent::Done { stop: Stop::End, model: Some("m".into()), raw: None });
+        app.on_llm(
+            4,
+            StreamEvent::Done {
+                stop: Stop::End,
+                model: Some("m".into()),
+                raw: None,
+            },
+        );
+        app.on_llm(
+            5,
+            StreamEvent::Text("Nginx was failing its config test. The science officer restarted it.".into()),
+        );
+        app.on_llm(
+            5,
+            StreamEvent::Done {
+                stop: Stop::End,
+                model: Some("m".into()),
+                raw: None,
+            },
+        );
         app.handle_key(Key::Esc); // skip the reveal
         let p = check_golden("muthur_delegate_verbatim", &mut app, &mut t);
         let text = p.screen().contents();
@@ -568,15 +733,29 @@ mod direct {
         app.on_review(1, "c1".into(), verdict(Verdict::Allow, Risk::Low, "read-only status check"));
         app.on_tool_done(1, "c1".into(), exited(3, 12, 100));
         run_call(&mut app, 2, "c2", "systemctl restart nginx", true);
-        app.on_review(2, "c2".into(), verdict(Verdict::Ask, Risk::Medium, "restarts a service the operator asked about"));
+        app.on_review(
+            2,
+            "c2".into(),
+            verdict(Verdict::Ask, Risk::Medium, "restarts a service the operator asked about"),
+        );
         arm(&mut app, &mut t, &clock);
         for c in "pw".chars() {
             app.handle_key(Key::Char(c));
         }
         app.handle_key(Key::Enter);
         app.on_tool_done(2, "c2".into(), exited(0, 0, 1400));
-        app.on_llm(3, StreamEvent::Text("Found: nginx failed its config test.\nChanged: restarted nginx.\nLeft undone: nothing.".into()));
-        app.on_llm(3, StreamEvent::Done { stop: Stop::End, model: Some("m".into()), raw: None });
+        app.on_llm(
+            3,
+            StreamEvent::Text("Found: nginx failed its config test.\nChanged: restarted nginx.\nLeft undone: nothing.".into()),
+        );
+        app.on_llm(
+            3,
+            StreamEvent::Done {
+                stop: Stop::End,
+                model: Some("m".into()),
+                raw: None,
+            },
+        );
         app.handle_key(Key::Esc); // skip the reveal
         let p = check_golden("muthur_direct_run", &mut app, &mut t);
         let text = p.screen().contents();
@@ -611,7 +790,10 @@ fn splash_for_golden() -> muthur::splash::Splash {
         host: "NOSTROMO".into(),
         uptime_secs: 86400 * 3 + 4 * 3600 + 12 * 60,
         cpu_cores: vec![0.0; 16],
-        mem: Usage { used: 12 * G, total: 31 * G + G / 5 },
+        mem: Usage {
+            used: 12 * G,
+            total: 31 * G + G / 5,
+        },
         failed_units: Some(vec![]),
         ..Default::default()
     });
@@ -646,7 +828,12 @@ fn splash() {
 #[test]
 fn splash_logo_frame_fits_the_wire_budget() {
     use muthur::splash::{Interface, Splash, SplashInfo};
-    let info = SplashInfo { ship_name: "USCSS TEST".into(), year: 2137, link: "38400 BAUD  XON/XOFF".into(), interface: Interface::Online };
+    let info = SplashInfo {
+        ship_name: "USCSS TEST".into(),
+        year: 2137,
+        link: "38400 BAUD  XON/XOFF".into(),
+        interface: Interface::Online,
+    };
     let s = Splash::new(info, std::time::Instant::now());
     let mut t = Terminal::new(Wy60Backend::new(Vec::new(), Vt100Dialect, 80, 43)).unwrap();
     t.clear().unwrap();

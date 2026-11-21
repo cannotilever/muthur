@@ -38,9 +38,7 @@ fn strs(a: &[&str]) -> Vec<String> {
 pub fn argv_for(inv: &Invocation, runtime: Option<&str>) -> Option<Vec<String>> {
     Some(match inv {
         Invocation::ShipStatus | Invocation::PortCheck { .. } | Invocation::Run { .. } | Invocation::Delegate { .. } => return None,
-        Invocation::Containers => {
-            strs(&[runtime?, "ps", "-a", "--no-trunc", "--format", "{{.Names}}\\t{{.Image}}\\t{{.Status}}"])
-        }
+        Invocation::Containers => strs(&[runtime?, "ps", "-a", "--no-trunc", "--format", "{{.Names}}\\t{{.Image}}\\t{{.Status}}"]),
         Invocation::ContainerInspect { name } => strs(&[runtime?, "inspect", "--type", "container", "--", name]),
         Invocation::ContainerLogs { name, lines } => strs(&[runtime?, "logs", "--tail", &lines.to_string(), "--", name]),
         Invocation::Ping { host, count } => strs(&["ping", "-c", &count.to_string(), "-W", "2", "--", host]),
@@ -53,8 +51,21 @@ pub fn argv_for(inv: &Invocation, runtime: Option<&str>) -> Option<Vec<String>> 
             }
         }
         Invocation::HttpCheck { url } => strs(&[
-            "curl", "-q", "-sS", "-o", "/dev/null", "--max-time", "10", "--max-redirs", "0", "--proto", "=http,https", "-w",
-            "%{http_code} %{time_total}", "--", url,
+            "curl",
+            "-q",
+            "-sS",
+            "-o",
+            "/dev/null",
+            "--max-time",
+            "10",
+            "--max-redirs",
+            "0",
+            "--proto",
+            "=http,https",
+            "-w",
+            "%{http_code} %{time_total}",
+            "--",
+            url,
         ]),
     })
 }
@@ -72,7 +83,9 @@ fn timeout_for(inv: &Invocation) -> Duration {
 /// Accepts an array of objects or a single object.
 pub fn redact_env(inspect_json: &str) -> String {
     fn one(item: &mut Value) {
-        let Some(env) = item.pointer_mut("/Config/Env").and_then(Value::as_array_mut) else { return };
+        let Some(env) = item.pointer_mut("/Config/Env").and_then(Value::as_array_mut) else {
+            return;
+        };
         for e in env {
             if let Some(s) = e.as_str() {
                 let key = s.split_once('=').map_or(s, |(k, _)| k);
@@ -80,7 +93,9 @@ pub fn redact_env(inspect_json: &str) -> String {
             }
         }
     }
-    let Ok(mut v) = serde_json::from_str::<Value>(inspect_json) else { return inspect_json.to_string() };
+    let Ok(mut v) = serde_json::from_str::<Value>(inspect_json) else {
+        return inspect_json.to_string();
+    };
     match v.as_array_mut() {
         Some(items) => items.iter_mut().for_each(one),
         None => one(&mut v),
@@ -89,7 +104,14 @@ pub fn redact_env(inspect_json: &str) -> String {
 }
 
 fn outcome(content: impl Into<String>, is_error: bool, argv: Option<Vec<String>>, exit: Option<Value>, ms: u64) -> ToolOutcome {
-    ToolOutcome { content: cap(content.into()), is_error, argv, exit, ms, audit_output: None }
+    ToolOutcome {
+        content: cap(content.into()),
+        is_error,
+        argv,
+        exit,
+        ms,
+        audit_output: None,
+    }
 }
 
 fn port_check(host: &str, port: u16) -> ToolOutcome {
@@ -124,7 +146,9 @@ pub fn execute(inv: &Invocation, ctx: &FixedCtx) -> ToolOutcome {
             };
         }
         Invocation::PortCheck { host, port } => return port_check(host, *port),
-        Invocation::Run { .. } => return outcome("NOT AVAILABLE ON THIS SHIP", true, None, None, 0),
+        Invocation::Run { .. } => {
+            return outcome("NOT AVAILABLE ON THIS SHIP", true, None, None, 0);
+        }
         _ => {}
     }
     let runtime = snap.as_ref().and_then(|s| s.container_runtime.as_deref());
@@ -138,13 +162,18 @@ pub fn execute(inv: &Invocation, ctx: &FixedCtx) -> ToolOutcome {
             return outcome("NOT AVAILABLE ON THIS SHIP", true, None, None, 0);
         }
         if let Some(name) = name {
-            let known = snap.as_ref().and_then(|s| s.containers.as_ref()).is_some_and(|c| c.iter().any(|c| &c.name == name));
+            let known = snap
+                .as_ref()
+                .and_then(|s| s.containers.as_ref())
+                .is_some_and(|c| c.iter().any(|c| &c.name == name));
             if !known {
                 return outcome("NOT AUTHORIZED: UNKNOWN CONTAINER", true, None, None, 0);
             }
         }
     }
-    let Some(argv) = argv_for(inv, runtime) else { return outcome("NOT AVAILABLE ON THIS SHIP", true, None, None, 0) };
+    let Some(argv) = argv_for(inv, runtime) else {
+        return outcome("NOT AVAILABLE ON THIS SHIP", true, None, None, 0);
+    };
     let start = Instant::now();
     let res = ctx.runner.run(&argv, timeout_for(inv));
     let ms = start.elapsed().as_millis() as u64;
@@ -190,32 +219,15 @@ pub fn format_snapshot(s: &Snapshot) -> String {
         format!("UPTIME {}", human_uptime(s.uptime_secs)),
         format!("LOAD {:.2} {:.2} {:.2}", s.load[0], s.load[1], s.load[2]),
         format!("CPU {:.0}%", s.cpu_total),
-        format!(
-            "MEMORY {}/{}",
-            human_bytes(s.mem.used),
-            human_bytes(s.mem.total)
-        ),
-        format!(
-            "SWAP {}/{}",
-            human_bytes(s.swap.used),
-            human_bytes(s.swap.total)
-        ),
+        format!("MEMORY {}/{}", human_bytes(s.mem.used), human_bytes(s.mem.total)),
+        format!("SWAP {}/{}", human_bytes(s.swap.used), human_bytes(s.swap.total)),
     ];
     for d in &s.disks {
         l.push(format!("DISK {} {:.0}%", d.mount, d.usage.percent()));
     }
-    l.push(format!(
-        "NET RX {} TX {}",
-        human_rate(s.net.rx_bps),
-        human_rate(s.net.tx_bps)
-    ));
+    l.push(format!("NET RX {} TX {}", human_rate(s.net.rx_bps), human_rate(s.net.tx_bps)));
     for p in s.top.iter().take(5) {
-        l.push(format!(
-            "PROC {} CPU {:.0}% MEM {}",
-            p.name,
-            p.cpu,
-            human_bytes(p.mem)
-        ));
+        l.push(format!("PROC {} CPU {:.0}% MEM {}", p.name, p.cpu, human_bytes(p.mem)));
     }
     l.push(match &s.failed_units {
         None => "FAILED UNITS N/A".into(),
@@ -259,40 +271,98 @@ mod tests {
         }
     }
     fn ctx(reply: RunOutput, runtime: Option<&str>, names: &[&str]) -> (FixedCtx, Arc<Fake>) {
-        let f = Arc::new(Fake { calls: Mutex::new(vec![]), reply });
+        let f = Arc::new(Fake {
+            calls: Mutex::new(vec![]),
+            reply,
+        });
         let snap = Snapshot {
             container_runtime: runtime.map(String::from),
             containers: Some(
-                names.iter().map(|n| Container { id: "i".into(), name: n.to_string(), status: "UP".into(), detail: "Up".into() }).collect(),
+                names
+                    .iter()
+                    .map(|n| Container {
+                        id: "i".into(),
+                        name: n.to_string(),
+                        status: "UP".into(),
+                        detail: "Up".into(),
+                    })
+                    .collect(),
             ),
             ..Default::default()
         };
-        (FixedCtx { runner: f.clone(), snapshot: Arc::new(Mutex::new(Some(snap))) }, f)
+        (
+            FixedCtx {
+                runner: f.clone(),
+                snapshot: Arc::new(Mutex::new(Some(snap))),
+            },
+            f,
+        )
     }
     fn ok(s: &str) -> RunOutput {
-        RunOutput::Exited { code: 0, stdout: s.into(), stderr: String::new() }
+        RunOutput::Exited {
+            code: 0,
+            stdout: s.into(),
+            stderr: String::new(),
+        }
     }
 
     #[test]
     fn argv_per_tool() {
         let d = Some("docker");
         let a = |i: Invocation| argv_for(&i, d).unwrap();
-        assert_eq!(a(Invocation::Containers), strs(&["docker", "ps", "-a", "--no-trunc", "--format", "{{.Names}}\\t{{.Image}}\\t{{.Status}}"]));
-        assert_eq!(a(Invocation::ContainerInspect { name: "web".into() }), strs(&["docker", "inspect", "--type", "container", "--", "web"]));
-        assert_eq!(a(Invocation::ContainerLogs { name: "web".into(), lines: 50 }), strs(&["docker", "logs", "--tail", "50", "--", "web"]));
-        assert_eq!(a(Invocation::Ping { host: "h".into(), count: 3 }), strs(&["ping", "-c", "3", "-W", "2", "--", "h"]));
-        assert_eq!(a(Invocation::Traceroute { host: "h".into() }), strs(&["traceroute", "-q", "1", "-w", "2", "-m", "30", "h"]));
         assert_eq!(
-            a(Invocation::DnsLookup { name: "x.org".into(), rtype: DnsType::Mx }),
+            a(Invocation::Containers),
+            strs(&["docker", "ps", "-a", "--no-trunc", "--format", "{{.Names}}\\t{{.Image}}\\t{{.Status}}"])
+        );
+        assert_eq!(
+            a(Invocation::ContainerInspect { name: "web".into() }),
+            strs(&["docker", "inspect", "--type", "container", "--", "web"])
+        );
+        assert_eq!(
+            a(Invocation::ContainerLogs { name: "web".into(), lines: 50 }),
+            strs(&["docker", "logs", "--tail", "50", "--", "web"])
+        );
+        assert_eq!(
+            a(Invocation::Ping { host: "h".into(), count: 3 }),
+            strs(&["ping", "-c", "3", "-W", "2", "--", "h"])
+        );
+        assert_eq!(
+            a(Invocation::Traceroute { host: "h".into() }),
+            strs(&["traceroute", "-q", "1", "-w", "2", "-m", "30", "h"])
+        );
+        assert_eq!(
+            a(Invocation::DnsLookup {
+                name: "x.org".into(),
+                rtype: DnsType::Mx
+            }),
             strs(&["dig", "+short", "+time=2", "+tries=1", "-q", "x.org", "-t", "MX"])
         );
         assert_eq!(
-            a(Invocation::DnsLookup { name: "1.2.3.4".into(), rtype: DnsType::Ptr }),
+            a(Invocation::DnsLookup {
+                name: "1.2.3.4".into(),
+                rtype: DnsType::Ptr
+            }),
             strs(&["dig", "+short", "+time=2", "+tries=1", "-x", "1.2.3.4"])
         );
         assert_eq!(
             a(Invocation::HttpCheck { url: "http://h/".into() }),
-            strs(&["curl", "-q", "-sS", "-o", "/dev/null", "--max-time", "10", "--max-redirs", "0", "--proto", "=http,https", "-w", "%{http_code} %{time_total}", "--", "http://h/"])
+            strs(&[
+                "curl",
+                "-q",
+                "-sS",
+                "-o",
+                "/dev/null",
+                "--max-time",
+                "10",
+                "--max-redirs",
+                "0",
+                "--proto",
+                "=http,https",
+                "-w",
+                "%{http_code} %{time_total}",
+                "--",
+                "http://h/"
+            ])
         );
         assert_eq!(argv_for(&Invocation::ShipStatus, d), None);
         assert_eq!(argv_for(&Invocation::Containers, None), None);
@@ -349,11 +419,23 @@ mod tests {
         let (c, _) = ctx(ok(""), None, &[]);
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = l.local_addr().unwrap().port();
-        let o = execute(&Invocation::PortCheck { host: "127.0.0.1".into(), port }, &c);
+        let o = execute(
+            &Invocation::PortCheck {
+                host: "127.0.0.1".into(),
+                port,
+            },
+            &c,
+        );
         assert!(o.content.starts_with("OPEN "), "{}", o.content);
         assert!(o.content.ends_with(" MS"));
         drop(l);
-        let o = execute(&Invocation::PortCheck { host: "127.0.0.1".into(), port }, &c);
+        let o = execute(
+            &Invocation::PortCheck {
+                host: "127.0.0.1".into(),
+                port,
+            },
+            &c,
+        );
         assert_eq!(o.content, "CLOSED");
     }
 
@@ -378,7 +460,11 @@ mod tests {
         *c.snapshot.lock().unwrap() = None;
         let o = execute(&Invocation::ShipStatus, &c);
         assert_eq!((o.content.as_str(), o.is_error, o.argv), ("TELEMETRY NOT YET AVAILABLE", true, None));
-        *c.snapshot.lock().unwrap() = Some(Snapshot { host: "NOSTROMO".into(), failed_units: None, ..Default::default() });
+        *c.snapshot.lock().unwrap() = Some(Snapshot {
+            host: "NOSTROMO".into(),
+            failed_units: None,
+            ..Default::default()
+        });
         let o = execute(&Invocation::ShipStatus, &c);
         assert!(!o.is_error);
         assert!(o.content.contains("HOST NOSTROMO") && o.content.contains("FAILED UNITS N/A"), "{}", o.content);
@@ -388,7 +474,12 @@ mod tests {
     #[test]
     fn ship_status_upper_cases_container_names() {
         let s = Snapshot {
-            containers: Some(vec![Container { id: "x".into(), name: "web".into(), status: "UP".into(), detail: "Up".into() }]),
+            containers: Some(vec![Container {
+                id: "x".into(),
+                name: "web".into(),
+                status: "UP".into(),
+                detail: "Up".into(),
+            }]),
             ..Default::default()
         };
         assert!(format_snapshot(&s).contains("CONTAINERS WEB UP"), "{}", format_snapshot(&s));

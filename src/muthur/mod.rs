@@ -1,20 +1,20 @@
 //! MU/TH/UR: the LLM chat tab.
-pub mod text;
-pub mod reveal;
-#[cfg(feature = "agent")]
-mod turn;
 #[cfg(not(feature = "agent"))]
 mod plain;
+pub mod reveal;
+pub mod text;
+#[cfg(feature = "agent")]
+mod turn;
 pub mod view;
 
+#[cfg(feature = "agent")]
+use crate::agent::{Call, Orphan, Policy, Turn};
 use crate::app::tabs::Tab;
 use crate::chatlog::{Assistant, ChatLog, Lane};
 #[cfg(feature = "agent")]
 use crate::config::AgentSection;
 use crate::config::MuthurSection;
 use crate::input::Key;
-#[cfg(feature = "agent")]
-use crate::agent::{Call, Orphan, Policy, Turn};
 use crate::llm::{ChatRequest, LlmError, StreamEvent};
 use crate::ops::AgentId;
 use crate::ops::audit::SharedAudit;
@@ -36,8 +36,8 @@ use std::sync::Arc;
 #[cfg(feature = "agent")]
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
-use text::{ascii_safe, display_text, Cleaner};
-use view::{put, separator, transcript_lines, Entry};
+use text::{Cleaner, ascii_safe, display_text};
+use view::{Entry, put, separator, transcript_lines};
 
 pub const PERSONA: &str = r#"You are MU/TH/UR 6000, the mainframe computer of the {SHIP}. "The ship" means the server you run on.
 Answer in short, declarative statements, like a 1970s ship computer printing to a terminal.
@@ -78,7 +78,8 @@ Host facts:
 const NOTE_INTERRUPTED: &str = "[INTERRUPTED]";
 const NOTE_TRUNCATED: &str = "[TRANSMISSION TRUNCATED]";
 #[cfg(feature = "agent")]
-const HELP: &str = "/DIRECT  OPEN DIRECT LINK\n/MUTHUR  CLOSE DIRECT LINK\n/PURGE   CLEAR MEMORY BANKS\n/HELP    THIS LIST\n^C       ABORT TRANSMISSION\nPGUP/PGDN SCROLL";
+const HELP: &str =
+    "/DIRECT  OPEN DIRECT LINK\n/MUTHUR  CLOSE DIRECT LINK\n/PURGE   CLEAR MEMORY BANKS\n/HELP    THIS LIST\n^C       ABORT TRANSMISSION\nPGUP/PGDN SCROLL";
 #[cfg(not(feature = "agent"))]
 const HELP: &str = "/PURGE   CLEAR MEMORY BANKS\n/HELP    THIS LIST\n^C       ABORT TRANSMISSION\nPGUP/PGDN SCROLL";
 const STAND_BY: &str = "PROCESSING — STAND BY";
@@ -96,7 +97,10 @@ const TICK: Duration = Duration::from_millis(100);
 /// The configured system prompt (blank counts as unset) or the persona, with
 /// "{SHIP}" and "{OFFICER}" filled in.
 pub fn system_prompt(cfg: &MuthurSection, ship: &str, officer: &str) -> String {
-    cfg.system_prompt().map_or_else(persona, str::to_string).replace("{SHIP}", ship).replace("{OFFICER}", officer)
+    cfg.system_prompt()
+        .map_or_else(persona, str::to_string)
+        .replace("{SHIP}", ship)
+        .replace("{OFFICER}", officer)
 }
 
 #[cfg(feature = "agent")]
@@ -199,13 +203,32 @@ enum State {
     Reviewing,
     #[cfg(feature = "agent")]
     /// Y/N for a call the reviewer answered `ask` (the persona never gets here).
-    Ask { call_id: String, prompt: String, note: String, drawn: bool, armed_at: Option<Instant> },
+    Ask {
+        call_id: String,
+        prompt: String,
+        note: String,
+        drawn: bool,
+        armed_at: Option<Instant>,
+    },
     #[cfg(feature = "agent")]
     /// The operator's password for a root call.
-    Password { call_id: String, prompt: String, secret: Secret, drawn: bool, armed_at: Option<Instant> },
+    Password {
+        call_id: String,
+        prompt: String,
+        secret: Secret,
+        drawn: bool,
+        armed_at: Option<Instant>,
+    },
     #[cfg(feature = "agent")]
     /// The reviewer denied; typing OVERRIDE forces the call.
-    OverridePrompt { call_id: String, prompt: String, note: String, typed: String, drawn: bool, armed_at: Option<Instant> },
+    OverridePrompt {
+        call_id: String,
+        prompt: String,
+        note: String,
+        typed: String,
+        drawn: bool,
+        armed_at: Option<Instant>,
+    },
 }
 
 /// States compare by kind only, so a password is never compared.
@@ -220,9 +243,9 @@ impl State {
     /// The arming fields of a tool prompt.
     fn arming(&mut self) -> Option<(&mut bool, &mut Option<Instant>)> {
         match self {
-            State::Ask { drawn, armed_at, .. }
-            | State::Password { drawn, armed_at, .. }
-            | State::OverridePrompt { drawn, armed_at, .. } => Some((drawn, armed_at)),
+            State::Ask { drawn, armed_at, .. } | State::Password { drawn, armed_at, .. } | State::OverridePrompt { drawn, armed_at, .. } => {
+                Some((drawn, armed_at))
+            }
             _ => None,
         }
     }
@@ -230,9 +253,7 @@ impl State {
     /// A tool prompt that has been on screen for the arming delay.
     fn armed(&self, now: Instant) -> bool {
         match self {
-            State::Ask { armed_at, .. } | State::Password { armed_at, .. } | State::OverridePrompt { armed_at, .. } => {
-                armed_at.is_some_and(|t| now >= t)
-            }
+            State::Ask { armed_at, .. } | State::Password { armed_at, .. } | State::OverridePrompt { armed_at, .. } => armed_at.is_some_and(|t| now >= t),
             _ => false,
         }
     }
@@ -343,7 +364,10 @@ impl MuthurTab {
             #[cfg(feature = "agent")]
             tools: persona_tools,
             #[cfg(feature = "agent")]
-            policy: Policy { deny: None, net_allow: Vec::new() },
+            policy: Policy {
+                deny: None,
+                net_allow: Vec::new(),
+            },
             #[cfg(feature = "agent")]
             tech,
             #[cfg(feature = "agent")]
@@ -680,7 +704,11 @@ impl MuthurTab {
     fn request_parts(&mut self) -> (String, String, Vec<crate::llm::ToolSpec>, bool) {
         self.calls.clear();
         let tech = self.tech_active();
-        let system = if tech { self.tech_system.clone().unwrap_or_default() } else { self.system.clone() };
+        let system = if tech {
+            self.tech_system.clone().unwrap_or_default()
+        } else {
+            self.system.clone()
+        };
         let defs = self.defs();
         (system, defs.json(), defs.specs().to_vec(), tech)
     }
@@ -716,7 +744,11 @@ impl MuthurTab {
             system,
             messages,
             tools: specs,
-            tool_choice: if forced_final { crate::llm::ToolChoice::None } else { crate::llm::ToolChoice::Auto },
+            tool_choice: if forced_final {
+                crate::llm::ToolChoice::None
+            } else {
+                crate::llm::ToolChoice::Auto
+            },
         };
         self.abort = Some((self.deps.spawn)(self.req_id, agent, req));
         self.state = State::Waiting;
@@ -769,9 +801,7 @@ impl MuthurTab {
     #[cfg(feature = "agent")]
     fn pending_block(&self) -> Vec<String> {
         let (call_id, prompt) = match &self.state {
-            State::Ask { call_id, prompt, .. }
-            | State::Password { call_id, prompt, .. }
-            | State::OverridePrompt { call_id, prompt, .. } => (call_id, prompt),
+            State::Ask { call_id, prompt, .. } | State::Password { call_id, prompt, .. } | State::OverridePrompt { call_id, prompt, .. } => (call_id, prompt),
             _ => return Vec::new(),
         };
         let review = self.last_review.as_ref().filter(|(id, _)| id == call_id).map(|(_, r)| r);
@@ -807,9 +837,7 @@ impl MuthurTab {
         };
         match &self.state {
             State::Ask { prompt: cmd, .. } => Some(prompt("CONFIRM", cmd, "Y/N".into())),
-            State::Password { prompt: cmd, secret, .. } => {
-                Some(prompt("CLEARANCE REQUIRED", cmd, format!("PASSWORD: {}", "*".repeat(secret.chars()))))
-            }
+            State::Password { prompt: cmd, secret, .. } => Some(prompt("CLEARANCE REQUIRED", cmd, format!("PASSWORD: {}", "*".repeat(secret.chars())))),
             State::OverridePrompt { note, typed, .. } => {
                 let mut tail = "TYPE OVERRIDE TO FORCE, ESC TO REFUSE".to_string();
                 if !typed.is_empty() {
@@ -1024,7 +1052,11 @@ impl Tab for MuthurTab {
 
         // Status row.
         let (status, reverse) = self.status_text(now, usize::from(w));
-        let style = if reverse { Style::default().add_modifier(Modifier::REVERSED) } else { Style::default() };
+        let style = if reverse {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default()
+        };
         put(buf, x, status_y, w, &status, style);
         if let Some((drawn, armed_at)) = self.state.arming()
             && !self.obscured

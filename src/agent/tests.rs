@@ -17,13 +17,20 @@ fn policy() -> Policy {
         exe: "/home/op/.local/bin/muthur".into(),
         operator: "op".into(),
     };
-    Policy { deny: Some(DenyRules::new(&ctx, &[]).unwrap()), net_allow: vec![] }
+    Policy {
+        deny: Some(DenyRules::new(&ctx, &[]).unwrap()),
+        net_allow: vec![],
+    }
 }
 fn no_policy() -> Policy {
     Policy { deny: None, net_allow: vec![] }
 }
 fn call(id: &str, name: &str, input: Value) -> Call {
-    Call { id: id.into(), name: name.into(), input }
+    Call {
+        id: id.into(),
+        name: name.into(),
+        input,
+    }
 }
 fn run_args(cmd: &str, as_root: bool) -> Value {
     json!({"command": cmd, "reason": "look", "as_root": as_root, "timeout_secs": 0})
@@ -32,19 +39,38 @@ fn run_call(id: &str, cmd: &str, as_root: bool) -> Call {
     call(id, "run", run_args(cmd, as_root))
 }
 fn run_inv(cmd: &str, as_root: bool) -> Invocation {
-    Invocation::Run { command: cmd.into(), reason: "look".into(), as_root, timeout_secs: 30 }
+    Invocation::Run {
+        command: cmd.into(),
+        reason: "look".into(),
+        as_root,
+        timeout_secs: 30,
+    }
 }
 fn ship(id: &str) -> Call {
     call(id, "ship_status", json!({}))
 }
 fn review(verdict: Verdict, risk: Risk, note: &str) -> Review {
-    Review { verdict, risk, note: note.into(), model: "rev".into(), ms: 7, error: None }
+    Review {
+        verdict,
+        risk,
+        note: note.into(),
+        model: "rev".into(),
+        ms: 7,
+        error: None,
+    }
 }
 fn allow() -> Review {
     review(Verdict::Allow, Risk::Low, "ok")
 }
 fn ok(content: &str) -> ToolOutcome {
-    ToolOutcome { content: content.into(), is_error: false, argv: None, exit: None, ms: 12, audit_output: None }
+    ToolOutcome {
+        content: content.into(),
+        is_error: false,
+        argv: None,
+        exit: None,
+        ms: 12,
+        audit_output: None,
+    }
 }
 /// A `run` outcome: model text, full audit text, exit 0, 100 ms.
 fn run_ok(cmd: &str, as_root: bool, content: &str, audit: &str) -> ToolOutcome {
@@ -70,13 +96,19 @@ fn audits(effects: &[Effect]) -> Vec<&AuditEntry> {
     effects.iter().filter_map(|e| if let Effect::Audit(a) = e { Some(a) } else { None }).collect()
 }
 fn notes(effects: &[Effect]) -> Vec<&str> {
-    effects.iter().filter_map(|e| if let Effect::Note(n) = e { Some(n.as_str()) } else { None }).collect()
+    effects
+        .iter()
+        .filter_map(|e| if let Effect::Note(n) = e { Some(n.as_str()) } else { None })
+        .collect()
 }
 fn logged(effects: &[Effect]) -> Vec<&Vec<ToolResult>> {
     effects.iter().filter_map(|e| if let Effect::LogTool(r) = e { Some(r) } else { None }).collect()
 }
 fn reviews(effects: &[Effect]) -> Vec<&ReviewInput> {
-    effects.iter().filter_map(|e| if let Effect::Review { input, .. } = e { Some(input) } else { None }).collect()
+    effects
+        .iter()
+        .filter_map(|e| if let Effect::Review { input, .. } = e { Some(input) } else { None })
+        .collect()
 }
 fn kind(e: &Effect) -> &'static str {
     match e {
@@ -110,7 +142,10 @@ fn reviewed(cmd: &str, as_root: bool, r: Review, online: bool) -> (Turn, Vec<Eff
 #[test]
 fn final_answer_finishes() {
     for (stop, calls) in [(Stop::End, vec![]), (Stop::ToolUse, vec![]), (Stop::MaxTokens, vec![ship("c1")])] {
-        assert_eq!(pturn().on_done(&stop, calls, &persona(), &no_policy(), true), vec![Effect::Finished { truncated: false }]);
+        assert_eq!(
+            pturn().on_done(&stop, calls, &persona(), &no_policy(), true),
+            vec![Effect::Finished { truncated: false }]
+        );
     }
 }
 
@@ -140,11 +175,24 @@ fn matrix_verdict_x_root() {
 #[test]
 fn confirm_yes_no() {
     let (mut t, e) = reviewed("ls", false, review(Verdict::Ask, Risk::Medium, "changes things"), true);
-    assert_eq!(e, vec![Effect::Confirm { call_id: "c1".into(), prompt: "ls".into(), note: "changes things".into() }]);
+    assert_eq!(
+        e,
+        vec![Effect::Confirm {
+            call_id: "c1".into(),
+            prompt: "ls".into(),
+            note: "changes things".into()
+        }]
+    );
     // Answering for another call does nothing.
     assert_eq!(t.on_confirm("c9", true, true), vec![]);
     let e = t.on_confirm("c1", true, true);
-    assert_eq!(e.last(), Some(&Effect::Run { call_id: "c1".into(), invocation: run_inv("ls", false) }));
+    assert_eq!(
+        e.last(),
+        Some(&Effect::Run {
+            call_id: "c1".into(),
+            invocation: run_inv("ls", false)
+        })
+    );
     let e = t.on_tool_done("c1", run_ok("ls", false, "EXIT 0\nx", "x\n"));
     let a = audits(&e);
     assert_eq!(a.len(), 1);
@@ -169,9 +217,21 @@ fn confirm_yes_no() {
 #[test]
 fn password_given_and_esc() {
     let (mut t, e) = reviewed("id", true, allow(), true);
-    assert_eq!(e, vec![Effect::AskPassword { call_id: "c1".into(), prompt: "id".into() }]);
+    assert_eq!(
+        e,
+        vec![Effect::AskPassword {
+            call_id: "c1".into(),
+            prompt: "id".into()
+        }]
+    );
     let e = t.on_password("c1", true, true);
-    assert_eq!(e.last(), Some(&Effect::Run { call_id: "c1".into(), invocation: run_inv("id", true) }));
+    assert_eq!(
+        e.last(),
+        Some(&Effect::Run {
+            call_id: "c1".into(),
+            invocation: run_inv("id", true)
+        })
+    );
     let e = t.on_tool_done("c1", run_ok("id", true, "EXIT 0\nroot", "uid=0\n"));
     let a = audits(&e);
     assert_eq!(a[0].decision, Decision::Confirmed);
@@ -190,9 +250,22 @@ fn password_given_and_esc() {
 #[test]
 fn override_then_password_is_overridden() {
     let (mut t, e) = reviewed("id", true, review(Verdict::Deny, Risk::High, "too risky"), true);
-    assert_eq!(e, vec![Effect::AskOverride { call_id: "c1".into(), prompt: "id".into(), note: "too risky".into() }]);
+    assert_eq!(
+        e,
+        vec![Effect::AskOverride {
+            call_id: "c1".into(),
+            prompt: "id".into(),
+            note: "too risky".into()
+        }]
+    );
     let e = t.on_override("c1", true, true);
-    assert_eq!(e, vec![Effect::AskPassword { call_id: "c1".into(), prompt: "id".into() }]);
+    assert_eq!(
+        e,
+        vec![Effect::AskPassword {
+            call_id: "c1".into(),
+            prompt: "id".into()
+        }]
+    );
     let e = t.on_password("c1", true, true);
     assert_eq!(notes(&e), ["RUN# id  [ROOT, OVERRIDDEN]", "     REVIEW: HIGH -- too risky"]);
     assert!(has(&e, "run"));
@@ -272,7 +345,16 @@ fn sequential_order() {
 fn free_tools_skip_review() {
     let mut t = tturn("status");
     let e = start(&mut t, vec![ship("c1"), run_call("c2", "ls", false)], true);
-    assert_eq!(e, vec![Effect::Note("SHIP STATUS".into()), Effect::Run { call_id: "c1".into(), invocation: Invocation::ShipStatus }]);
+    assert_eq!(
+        e,
+        vec![
+            Effect::Note("SHIP STATUS".into()),
+            Effect::Run {
+                call_id: "c1".into(),
+                invocation: Invocation::ShipStatus
+            }
+        ]
+    );
     let e = t.on_tool_done("c1", ok("UP"));
     let a = audits(&e);
     assert_eq!((a[0].decision, a[0].review.clone()), (Decision::Auto, None));
@@ -288,7 +370,11 @@ fn unknown_target_forced_to_ask() {
     let e = t.on_review("c1", review(Verdict::Allow, Risk::Low, "harmless"), true);
     assert_eq!(
         e,
-        vec![Effect::Confirm { call_id: "c1".into(), prompt: "PING example.com 3".into(), note: "harmless -- UNLISTED TARGET".into() }]
+        vec![Effect::Confirm {
+            call_id: "c1".into(),
+            prompt: "PING example.com 3".into(),
+            note: "harmless -- UNLISTED TARGET".into()
+        }]
     );
     let e = t.on_confirm("c1", true, true);
     assert_eq!(notes(&e), ["PING example.com 3  [ASK: LOW]", "     REVIEW: LOW -- harmless -- UNLISTED TARGET"]);
@@ -296,7 +382,14 @@ fn unknown_target_forced_to_ask() {
     let mut t = tturn("check the site");
     start(&mut t, vec![ping()], true);
     let e = t.on_review("c1", review(Verdict::Deny, Risk::High, "exfil"), true);
-    assert_eq!(e, vec![Effect::AskOverride { call_id: "c1".into(), prompt: "PING example.com 3".into(), note: "exfil".into() }]);
+    assert_eq!(
+        e,
+        vec![Effect::AskOverride {
+            call_id: "c1".into(),
+            prompt: "PING example.com 3".into(),
+            note: "exfil".into()
+        }]
+    );
     // Named by the operator: allowed.
     let mut t = tturn("ping example.com");
     let e = start(&mut t, vec![ping()], true);
@@ -305,7 +398,10 @@ fn unknown_target_forced_to_ask() {
     assert_eq!(e.last().map(kind), Some("run"));
     // Or on the allow list.
     let mut t = tturn("check the site");
-    let p = Policy { net_allow: vec!["example.com".into()], ..policy() };
+    let p = Policy {
+        net_allow: vec!["example.com".into()],
+        ..policy()
+    };
     let e = t.on_done(&Stop::ToolUse, vec![ping()], &tech(), &p, true);
     assert!(!reviews(&e)[0].unknown_target);
 }
@@ -319,7 +415,12 @@ fn reviewer_never_sees_output() {
     let input = reviews(&e)[0].clone();
     assert_eq!(
         input.prior,
-        vec![PriorCall { tool: "run".into(), args: run_args("ls", false), decision: Decision::Auto, exit: Some(json!(0)) }]
+        vec![PriorCall {
+            tool: "run".into(),
+            args: run_args("ls", false),
+            decision: Decision::Auto,
+            exit: Some(json!(0))
+        }]
     );
     assert_eq!(input.operator_message, "look around");
     assert_eq!((input.tool.as_str(), &input.args), ("run", &run_args("df", false)));
@@ -334,7 +435,10 @@ fn prior_spans_rounds_and_rejections() {
     t.on_tool_done("c2", ok("UP"));
     let e = start(&mut t, vec![run_call("c3", "ls", false)], true);
     let p = &reviews(&e)[0].prior;
-    assert_eq!(p.iter().map(|p| (p.tool.as_str(), p.decision)).collect::<Vec<_>>(), [("run", Decision::Rejected), ("ship_status", Decision::Auto)]);
+    assert_eq!(
+        p.iter().map(|p| (p.tool.as_str(), p.decision)).collect::<Vec<_>>(),
+        [("run", Decision::Rejected), ("ship_status", Decision::Auto)]
+    );
 }
 
 #[test]
@@ -404,7 +508,9 @@ fn abort_each_stage() {
     let a = audits(&e);
     assert_eq!((a.len(), a[0].output.as_str(), a[0].argv.clone()), (1, ABORTED, None));
     assert_eq!(notes(&e), ["ABORTED"]);
-    let Some(Effect::Orphan(o)) = e.iter().find(|x| kind(x) == "orphan") else { panic!("{e:?}") };
+    let Some(Effect::Orphan(o)) = e.iter().find(|x| kind(x) == "orphan") else {
+        panic!("{e:?}")
+    };
     assert_eq!(o.call_id, "c1");
     assert_eq!(o.audit(run_ok("ls", false, "EXIT 0", "late")).decision, Decision::Auto);
     assert_eq!(o.audit(run_ok("ls", false, "EXIT 0", "late")).output, "late");
@@ -429,9 +535,14 @@ fn abort_each_stage() {
     assert_eq!(a[0].argv, Some(shell::argv("id", true)));
     assert!(a[0].as_root);
     assert_eq!(notes(&e), ["OUTCOME UNKNOWN"]);
-    let Some(Effect::Orphan(o)) = e.iter().find(|x| kind(x) == "orphan") else { panic!("{e:?}") };
+    let Some(Effect::Orphan(o)) = e.iter().find(|x| kind(x) == "orphan") else {
+        panic!("{e:?}")
+    };
     let late = o.audit(run_ok("id", true, "EXIT 0", "done"));
-    assert_eq!((late.decision, late.as_root, late.argv), (Decision::Confirmed, true, Some(shell::argv("id", true))));
+    assert_eq!(
+        (late.decision, late.as_root, late.argv),
+        (Decision::Confirmed, true, Some(shell::argv("id", true)))
+    );
     assert_eq!(logged(&e)[0][0].content, ABORTED_ISSUED);
     assert_eq!(e.last(), Some(&Effect::Finished { truncated: false }));
 
@@ -440,10 +551,10 @@ fn abort_each_stage() {
     start(&mut t, vec![run_call("c1", "ls", false), run_call("c2", "df", false)], true);
     let e = t.abort();
     let a = audits(&e);
-    assert_eq!(a.iter().map(|a| (a.args["command"].as_str().unwrap(), a.decision)).collect::<Vec<_>>(), [
-        ("ls", Decision::Aborted),
-        ("df", Decision::Aborted)
-    ]);
+    assert_eq!(
+        a.iter().map(|a| (a.args["command"].as_str().unwrap(), a.decision)).collect::<Vec<_>>(),
+        [("ls", Decision::Aborted), ("df", Decision::Aborted)]
+    );
     assert_eq!(notes(&e), ["RUN  ls  [ABORTED]", "RUN  df  [ABORTED]"]);
     assert_eq!(logged(&e).len(), 1);
     assert_eq!(logged(&e)[0].len(), 2);
@@ -468,7 +579,14 @@ fn tech_lines() {
     // A cut-down capture makes the line count a floor.
     let (mut t, _) = reviewed("ls", false, allow(), true);
     let big = format!("a\nb{}c\n", crate::ops::omitted(9000));
-    let o = ToolOutcome { content: "EXIT 0\n…".into(), is_error: false, argv: None, exit: Some(json!(0)), ms: 100, audit_output: Some(big) };
+    let o = ToolOutcome {
+        content: "EXIT 0\n…".into(),
+        is_error: false,
+        argv: None,
+        exit: Some(json!(0)),
+        ms: 100,
+        audit_output: Some(big),
+    };
     assert_eq!(notes(&t.on_tool_done("c1", o)), ["EXIT 0  4+ LINES  0.1 S"]);
 
     // Result words replace the EXIT line.
@@ -480,7 +598,14 @@ fn tech_lines() {
         (ABORTED, "ABORTED"),
     ] {
         let (mut t, _) = reviewed("ls", false, allow(), true);
-        let o = ToolOutcome { content: content.into(), is_error: true, argv: None, exit: Some(json!("timeout")), ms: 5, audit_output: None };
+        let o = ToolOutcome {
+            content: content.into(),
+            is_error: true,
+            argv: None,
+            exit: Some(json!("timeout")),
+            ms: 5,
+            audit_output: None,
+        };
         assert_eq!(notes(&t.on_tool_done("c1", o)), [line]);
     }
 
@@ -501,7 +626,16 @@ fn tech_lines() {
 fn persona_notes_unchanged() {
     let mut t = pturn();
     let e = t.on_done(&Stop::ToolUse, vec![ship("c1")], &persona(), &no_policy(), true);
-    assert_eq!(e, vec![Effect::Note("ACCESSING: SHIP STATUS".into()), Effect::Run { call_id: "c1".into(), invocation: Invocation::ShipStatus }]);
+    assert_eq!(
+        e,
+        vec![
+            Effect::Note("ACCESSING: SHIP STATUS".into()),
+            Effect::Run {
+                call_id: "c1".into(),
+                invocation: Invocation::ShipStatus
+            }
+        ]
+    );
     assert!(t.running());
     let e = t.on_tool_done("c1", ok("UP"));
     assert_eq!(
@@ -535,7 +669,13 @@ fn persona_notes_unchanged() {
 fn duplicate_ids_rejected_after_first() {
     for id in ["c1", ""] {
         let mut t = pturn();
-        let e = t.on_done(&Stop::ToolUse, vec![ship(id), call(id, "containers", json!({}))], &persona(), &no_policy(), true);
+        let e = t.on_done(
+            &Stop::ToolUse,
+            vec![ship(id), call(id, "containers", json!({}))],
+            &persona(),
+            &no_policy(),
+            true,
+        );
         assert_eq!(
             e,
             vec![
@@ -546,13 +686,19 @@ fn duplicate_ids_rejected_after_first() {
                     ..AuditEntry::new("containers", json!({}), Decision::Rejected)
                 }),
                 Effect::Note("ACCESSING: SHIP STATUS".into()),
-                Effect::Run { call_id: id.into(), invocation: Invocation::ShipStatus },
+                Effect::Run {
+                    call_id: id.into(),
+                    invocation: Invocation::ShipStatus
+                },
             ]
         );
         let e = t.on_tool_done(id, ok("UP"));
         assert_eq!(audits(&e)[0].decision, Decision::Auto);
         let r = logged(&e)[0];
-        assert_eq!(r.iter().map(|r| r.content.as_str()).collect::<Vec<_>>(), ["UP", "NOT AUTHORIZED: duplicate call id"]);
+        assert_eq!(
+            r.iter().map(|r| r.content.as_str()).collect::<Vec<_>>(),
+            ["UP", "NOT AUTHORIZED: duplicate call id"]
+        );
         assert_eq!(e.last(), Some(&Effect::Spawn { forced_final: false }));
     }
 }
@@ -601,7 +747,13 @@ fn new_stream_closes_open_round_as_aborted() {
     assert!(matches!(&e[2], Effect::Orphan(o) if o.call_id == "c1"), "{e:?}");
     let r = logged(&e)[0];
     assert_eq!(r.iter().map(|r| r.content.as_str()).collect::<Vec<_>>(), [ABORTED, ABORTED]);
-    assert_eq!(e.last(), Some(&Effect::Run { call_id: "c3".into(), invocation: Invocation::ShipStatus }));
+    assert_eq!(
+        e.last(),
+        Some(&Effect::Run {
+            call_id: "c3".into(),
+            invocation: Invocation::ShipStatus
+        })
+    );
     assert_eq!(t.on_tool_done("c1", ok("late")), vec![]);
     // A final answer over an open round: logged as aborted, then Finished.
     let e = t.on_done(&Stop::End, vec![], &tech(), &policy(), true);
@@ -625,7 +777,11 @@ fn delegate_call(id: &str, task: &str) -> Call {
     call(id, "delegate", json!({"task": task}))
 }
 fn report(lines: &[&str], text: &str, truncated: bool) -> DelegateOutcome {
-    DelegateOutcome::Report { lines: lines.iter().map(|s| s.to_string()).collect(), report: text.into(), truncated }
+    DelegateOutcome::Report {
+        lines: lines.iter().map(|s| s.to_string()).collect(),
+        report: text.into(),
+        truncated,
+    }
 }
 fn delegated(t: &mut Turn) -> Vec<Effect> {
     t.on_done(&Stop::ToolUse, vec![delegate_call("d1", "check nginx")], &persona(), &no_policy(), true)
@@ -635,7 +791,14 @@ fn delegated(t: &mut Turn) -> Vec<Effect> {
 fn delegate_emits_effect_without_note() {
     let mut t = pturn();
     let e = delegated(&mut t);
-    assert_eq!(e, vec![Effect::Delegate { call_id: "d1".into(), task: "check nginx".into(), operator_message: "status".into() }]);
+    assert_eq!(
+        e,
+        vec![Effect::Delegate {
+            call_id: "d1".into(),
+            task: "check nginx".into(),
+            operator_message: "status".into()
+        }]
+    );
     assert_eq!(t.delegating(), Some("d1"));
 }
 
@@ -643,7 +806,10 @@ fn delegate_emits_effect_without_note() {
 fn delegate_result_content() {
     let r = report(&["SCIENCE OFFICER: uptime  [ALLOW]"], "Up 3 days.", false);
     assert_eq!(r.content("SCIENCE OFFICER"), "COMMANDS:\nSCIENCE OFFICER: uptime  [ALLOW]\nREPORT:\nUp 3 days.");
-    assert_eq!(report(&[], "Up 3 days.", true).content("SCIENCE OFFICER"), "COMMANDS:\nNONE\nREPORT (TRUNCATED):\nUp 3 days.");
+    assert_eq!(
+        report(&[], "Up 3 days.", true).content("SCIENCE OFFICER"),
+        "COMMANDS:\nNONE\nREPORT (TRUNCATED):\nUp 3 days."
+    );
     let n = DelegateOutcome::NoResponse { lines: vec![] };
     assert_eq!(n.content("SCIENCE OFFICER"), "COMMANDS:\nNONE\nNO RESPONSE FROM SCIENCE OFFICER");
 }
@@ -704,7 +870,13 @@ fn abort_while_delegating() {
 #[test]
 fn delegate_then_ship_status_sequential() {
     let mut t = pturn();
-    let e = t.on_done(&Stop::ToolUse, vec![delegate_call("d1", "check nginx"), ship("s1")], &persona(), &no_policy(), true);
+    let e = t.on_done(
+        &Stop::ToolUse,
+        vec![delegate_call("d1", "check nginx"), ship("s1")],
+        &persona(),
+        &no_policy(),
+        true,
+    );
     assert_eq!(e.len(), 1);
     assert!(matches!(e[0], Effect::Delegate { .. }));
     let e = t.on_delegate("d1", DelegateOutcome::NoResponse { lines: vec![] }, "X");
@@ -733,7 +905,10 @@ fn delegated_review_input_separates_task() {
     let mut t = dturn();
     let e = start(&mut t, vec![run_call("c1", "ls", false)], true);
     let r = reviews(&e);
-    assert_eq!((r[0].operator_message.as_str(), r[0].delegated_task.as_deref()), ("why is nginx down", Some("check nginx")));
+    assert_eq!(
+        (r[0].operator_message.as_str(), r[0].delegated_task.as_deref()),
+        ("why is nginx down", Some("check nginx"))
+    );
     let mut t = tturn("why is nginx down");
     let e = start(&mut t, vec![run_call("c1", "ls", false)], true);
     assert_eq!(reviews(&e)[0].delegated_task, None);
@@ -753,7 +928,10 @@ fn task_only_host_is_unknown_target() {
 #[test]
 fn condensed_strips_run_prefix() {
     assert_eq!(condensed("SO", "RUN  uptime  [ALLOW]"), "SO: uptime  [ALLOW]");
-    assert_eq!(condensed("SO", "RUN# systemctl restart nginx  [ROOT, ASK: MEDIUM]"), "SO: systemctl restart nginx  [ROOT, ASK: MEDIUM]");
+    assert_eq!(
+        condensed("SO", "RUN# systemctl restart nginx  [ROOT, ASK: MEDIUM]"),
+        "SO: systemctl restart nginx  [ROOT, ASK: MEDIUM]"
+    );
     assert_eq!(condensed("SO", "SHIP STATUS"), "SO: SHIP STATUS");
 }
 
@@ -801,6 +979,8 @@ fn delegated_abort_running_root_no_end_line() {
     assert!(has(&e, "run"), "{e:?}");
     let e = t.abort();
     assert!(notes(&e).is_empty(), "{e:?}");
-    let Some(Effect::Orphan(o)) = e.iter().find(|x| kind(x) == "orphan") else { panic!("{e:?}") };
+    let Some(Effect::Orphan(o)) = e.iter().find(|x| kind(x) == "orphan") else {
+        panic!("{e:?}")
+    };
     assert_eq!(o.audit(run_ok("id", true, "EXIT 0", "late")).delegated_by.as_deref(), Some("d1"));
 }

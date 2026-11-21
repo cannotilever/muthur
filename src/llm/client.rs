@@ -1,5 +1,5 @@
 //! Streaming HTTP client: one ChatRequest in, StreamEvents out.
-use super::{anthropic, openai, sse::SseDecoder, ChatRequest, LlmError, StreamEvent, StreamParser};
+use super::{ChatRequest, LlmError, StreamEvent, StreamParser, anthropic, openai, sse::SseDecoder};
 use crate::config::{MuthurSection, Provider};
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,8 +29,15 @@ impl LlmClient {
 
     pub fn with_idle(cfg: MuthurSection, idle: Duration) -> anyhow::Result<Self> {
         super::install_crypto_provider();
-        let http = reqwest::Client::builder().connect_timeout(CONNECT_TIMEOUT).redirect(reqwest::redirect::Policy::none()).build()?;
-        Ok(Self { http, cfg: Arc::new(cfg), idle })
+        let http = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
+        Ok(Self {
+            http,
+            cfg: Arc::new(cfg),
+            idle,
+        })
     }
 
     /// The model this client sends to (empty when unset).
@@ -122,12 +129,7 @@ impl LlmClient {
         }
     }
 
-    pub fn spawn(
-        self: &Arc<Self>,
-        req_id: u64,
-        req: ChatRequest,
-        tx: UnboundedSender<crate::run::Event>,
-    ) -> tokio::task::JoinHandle<()> {
+    pub fn spawn(self: &Arc<Self>, req_id: u64, req: ChatRequest, tx: UnboundedSender<crate::run::Event>) -> tokio::task::JoinHandle<()> {
         let this = Arc::clone(self);
         tokio::spawn(async move {
             this.stream(req, |ev| {
@@ -160,7 +162,14 @@ mod tests {
     }
 
     fn srv(body: Vec<u8>) -> Srv {
-        Srv { status: "200 OK", body, chunk: 64, delay: Duration::ZERO, stall_after_first: None, extra: String::new() }
+        Srv {
+            status: "200 OK",
+            body,
+            chunk: 64,
+            delay: Duration::ZERO,
+            stall_after_first: None,
+            extra: String::new(),
+        }
     }
 
     /// Serves one connection; returns the base url and the captured request (head + body).
@@ -196,7 +205,10 @@ mod tests {
                 buf.extend_from_slice(&tmp[..n]);
             }
             let _ = ctx.send(buf);
-            let hdr = format!("HTTP/1.1 {}\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n{}\r\n", s.status, s.extra);
+            let hdr = format!(
+                "HTTP/1.1 {}\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n{}\r\n",
+                s.status, s.extra
+            );
             let _ = sock.write_all(hdr.as_bytes()).await;
             for (i, c) in s.body.chunks(s.chunk).enumerate() {
                 let mut out = format!("{:x}\r\n", c.len()).into_bytes();
@@ -205,7 +217,9 @@ mod tests {
                 if sock.write_all(&out).await.is_err() {
                     return;
                 }
-                if i == 0 && let Some(d) = s.stall_after_first {
+                if i == 0
+                    && let Some(d) = s.stall_after_first
+                {
                     tokio::time::sleep(d).await;
                     return;
                 }
@@ -231,7 +245,10 @@ mod tests {
     fn req() -> ChatRequest {
         ChatRequest {
             system: "sys".into(),
-            messages: vec![Message { role: Role::User, content: MessageContent::Text("hi".into()) }],
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("hi".into()),
+            }],
             tools: vec![],
             tool_choice: crate::llm::ToolChoice::Auto,
         }
@@ -244,7 +261,9 @@ mod tests {
     }
 
     fn text(evs: &[StreamEvent]) -> String {
-        evs.iter().filter_map(|e| if let StreamEvent::Text(t) = e { Some(t.as_str()) } else { None }).collect()
+        evs.iter()
+            .filter_map(|e| if let StreamEvent::Text(t) = e { Some(t.as_str()) } else { None })
+            .collect()
     }
 
     #[test]
@@ -287,7 +306,11 @@ mod tests {
     #[tokio::test]
     async fn http_401_is_auth() {
         let body = br#"{"type":"error","error":{"type":"authentication_error","message":"x"}}"#.to_vec();
-        let (url, _) = serve(Srv { status: "401 Unauthorized", ..srv(body) }).await;
+        let (url, _) = serve(Srv {
+            status: "401 Unauthorized",
+            ..srv(body)
+        })
+        .await;
         let c = LlmClient::new(cfg(Provider::Anthropic, &url)).unwrap();
         assert_eq!(collect(&c).await, vec![StreamEvent::Error(LlmError::Auth)]);
     }
@@ -296,7 +319,12 @@ mod tests {
     async fn redirect_is_not_followed() {
         let other = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let loc = format!("Location: http://{}/\r\n", other.local_addr().unwrap());
-        let (url, _) = serve(Srv { status: "302 Found", extra: loc, ..srv(Vec::new()) }).await;
+        let (url, _) = serve(Srv {
+            status: "302 Found",
+            extra: loc,
+            ..srv(Vec::new())
+        })
+        .await;
         let c = LlmClient::new(cfg(Provider::Anthropic, &url)).unwrap();
         assert_eq!(collect(&c).await, vec![StreamEvent::Error(LlmError::Malformed)]);
         assert!(tokio::time::timeout(Duration::from_millis(200), other.accept()).await.is_err());
@@ -313,7 +341,10 @@ mod tests {
 
     #[tokio::test]
     async fn idle_timeout_is_signal_lost() {
-        let s = Srv { stall_after_first: Some(Duration::from_secs(2)), ..srv(fixture("openai_text.sse")) };
+        let s = Srv {
+            stall_after_first: Some(Duration::from_secs(2)),
+            ..srv(fixture("openai_text.sse"))
+        };
         let (url, _) = serve(s).await;
         let c = LlmClient::with_idle(cfg(Provider::Openai, &url), Duration::from_millis(200)).unwrap();
         let t = std::time::Instant::now();
@@ -330,7 +361,11 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_forwards_and_abort_stops() {
-        let s = Srv { chunk: 40, delay: Duration::from_millis(100), ..srv(fixture("openai_text.sse")) };
+        let s = Srv {
+            chunk: 40,
+            delay: Duration::from_millis(100),
+            ..srv(fixture("openai_text.sse"))
+        };
         let (url, _) = serve(s).await;
         let c = Arc::new(LlmClient::new(cfg(Provider::Openai, &url)).unwrap());
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();

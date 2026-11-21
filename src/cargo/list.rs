@@ -27,7 +27,12 @@ pub(super) struct Selection {
 
 impl Selection {
     pub(super) fn new() -> Self {
-        Self { id: None, index: 0, scroll: 0, page: None }
+        Self {
+            id: None,
+            index: 0,
+            scroll: 0,
+            page: None,
+        }
     }
 
     /// After the list changed: find the selected ID again, or keep the row
@@ -134,14 +139,22 @@ pub(super) fn draw_list(
         buf.set_string(inner.x, y, if selected { ">" } else { " " }, Style::new());
         buf.set_string(inner.x + 1, y, cut(&k.name.to_uppercase(), name_w), Style::new());
         let status = status_of(k);
-        let style = if status == "UP" { Style::new() } else { Style::new().add_modifier(Modifier::REVERSED) };
+        let style = if status == "UP" {
+            Style::new()
+        } else {
+            Style::new().add_modifier(Modifier::REVERSED)
+        };
         buf.set_string(status_x, y, cut(&status, status_w), style);
         if selected {
             buf.set_style(Rect::new(inner.x + 1, y, inner.width - 1, 1), Style::new().add_modifier(Modifier::UNDERLINED));
         }
     }
     let (text, reverse) = message;
-    let style = if reverse { Style::new().add_modifier(Modifier::REVERSED) } else { Style::new() };
+    let style = if reverse {
+        Style::new().add_modifier(Modifier::REVERSED)
+    } else {
+        Style::new()
+    };
     let bottom = inner.y + inner.height;
     buf.set_string(inner.x, bottom - 2, cut(text, w), style);
     buf.set_string(inner.x, bottom - 1, cut(hint, w), Style::new());

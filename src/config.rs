@@ -27,7 +27,11 @@ pub struct LinkConfig {
 
 impl Default for LinkConfig {
     fn default() -> Self {
-        Self { device: None, baud: 38400, flow: FlowControl::XonXoff }
+        Self {
+            device: None,
+            baud: 38400,
+            flow: FlowControl::XonXoff,
+        }
     }
 }
 
@@ -57,7 +61,11 @@ pub struct ChromeConfig {
 
 impl Default for ChromeConfig {
     fn default() -> Self {
-        Self { ship_name: None, year_offset: 111, splash: true }
+        Self {
+            ship_name: None,
+            year_offset: 111,
+            splash: true,
+        }
     }
 }
 
@@ -72,7 +80,11 @@ pub struct ShellSection {
 
 impl Default for ShellSection {
     fn default() -> Self {
-        Self { command: "fish".into(), args: Vec::new(), scrollback: 1000 }
+        Self {
+            command: "fish".into(),
+            args: Vec::new(),
+            scrollback: 1000,
+        }
     }
 }
 
@@ -167,15 +179,33 @@ impl MuthurSection {
             v.as_deref().filter(|s| !s.trim().is_empty())
         }
         let mut c = self.clone();
-        if let Some(v) = o.provider { c.provider = v; }
-        if let Some(v) = set(&o.base_url) { c.base_url = Some(v.to_string()); }
-        if let Some(v) = set(&o.model) { c.model = Some(v.to_string()); }
-        if let Some(v) = set(&o.api_key) { c.api_key = Some(v.to_string()); }
-        if let Some(v) = set(&o.effort) { c.effort = v.to_string(); }
-        if let Some(v) = set(&o.cache_ttl) { c.cache_ttl = v.to_string(); }
-        if let Some(v) = o.max_tokens { c.max_tokens = v; }
-        if let Some(v) = o.fallbacks { c.fallbacks = v; }
-        if let Some(v) = o.context_tokens { c.context_tokens = v; }
+        if let Some(v) = o.provider {
+            c.provider = v;
+        }
+        if let Some(v) = set(&o.base_url) {
+            c.base_url = Some(v.to_string());
+        }
+        if let Some(v) = set(&o.model) {
+            c.model = Some(v.to_string());
+        }
+        if let Some(v) = set(&o.api_key) {
+            c.api_key = Some(v.to_string());
+        }
+        if let Some(v) = set(&o.effort) {
+            c.effort = v.to_string();
+        }
+        if let Some(v) = set(&o.cache_ttl) {
+            c.cache_ttl = v.to_string();
+        }
+        if let Some(v) = o.max_tokens {
+            c.max_tokens = v;
+        }
+        if let Some(v) = o.fallbacks {
+            c.fallbacks = v;
+        }
+        if let Some(v) = o.context_tokens {
+            c.context_tokens = v;
+        }
         c.system_prompt = None;
         c.technical = LlmOverrides::default();
         c.reviewer = LlmOverrides::default();
@@ -267,7 +297,11 @@ pub struct ToolsSection {
 
 impl Default for ToolsSection {
     fn default() -> Self {
-        Self { enabled: true, max_rounds: 8, delegate_report: DelegateReport::default() }
+        Self {
+            enabled: true,
+            max_rounds: 8,
+            delegate_report: DelegateReport::default(),
+        }
     }
 }
 
@@ -347,7 +381,9 @@ impl Config {
 /// Startup warnings for the raw config text: removed keys, and sections ignored
 /// because the `agent` feature is not built.
 pub fn warnings(text: &str, agent_built: bool) -> Vec<String> {
-    let Ok(v) = toml::from_str::<toml::Value>(text) else { return Vec::new() };
+    let Ok(v) = toml::from_str::<toml::Value>(text) else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
     let tools = v.get("tools");
     for key in ["services", "elevate", "journal_max_lines"] {
@@ -431,7 +467,10 @@ mod tests {
         assert_eq!(a.label, "SCIENCE OFFICER");
         assert_eq!((a.max_rounds, a.default_timeout_secs, a.max_timeout_secs), (24, 30, 300));
         assert!(a.deny.is_empty() && a.net_allow.is_empty() && a.system_prompt().is_none());
-        let b = AgentSection { system_prompt: Some("  ".into()), ..AgentSection::default() };
+        let b = AgentSection {
+            system_prompt: Some("  ".into()),
+            ..AgentSection::default()
+        };
         assert_eq!(b.system_prompt(), None);
     }
 
@@ -455,8 +494,7 @@ mod tests {
         let r = Config::default().muthur.reviewer_cfg();
         assert_eq!(r.model.as_deref(), Some("claude-haiku-5-5"));
         assert_eq!(r.max_tokens, 512);
-        let c: Config =
-            toml::from_str("[muthur]\nprovider = \"openai\"\nmodel = \"q\"\nbase_url = \"http://h\"\n").unwrap();
+        let c: Config = toml::from_str("[muthur]\nprovider = \"openai\"\nmodel = \"q\"\nbase_url = \"http://h\"\n").unwrap();
         assert_eq!(c.muthur.reviewer_cfg().model.as_deref(), Some("q"));
     }
 
@@ -531,7 +569,14 @@ mod tests {
             0o600,
         );
         let t = load(&p).unwrap().tools;
-        assert_eq!(t, ToolsSection { enabled: false, max_rounds: 3, ..Default::default() });
+        assert_eq!(
+            t,
+            ToolsSection {
+                enabled: false,
+                max_rounds: 3,
+                ..Default::default()
+            }
+        );
     }
 
     #[test]
@@ -616,7 +661,15 @@ mod tests {
         assert_eq!(m.base_url(), Some("https://api.anthropic.com"));
         assert_eq!(m.model(), Some("claude-sonnet-5-5"));
         assert_eq!(
-            (m.max_tokens, m.effort.as_str(), m.fallbacks, m.cache_ttl.as_str(), m.context_tokens, m.reveal_cps, m.uppercase),
+            (
+                m.max_tokens,
+                m.effort.as_str(),
+                m.fallbacks,
+                m.cache_ttl.as_str(),
+                m.context_tokens,
+                m.reveal_cps,
+                m.uppercase
+            ),
             (4096, "low", true, "5m", 200000, 50, true)
         );
         assert_eq!(m.readiness(), Err(LlmError::NoAccessCode));
@@ -624,13 +677,19 @@ mod tests {
 
     #[test]
     fn whitespace_api_key_is_missing() {
-        let m = MuthurSection { api_key: Some(" \t\n".into()), ..Default::default() };
+        let m = MuthurSection {
+            api_key: Some(" \t\n".into()),
+            ..Default::default()
+        };
         assert_eq!(m.readiness(), Err(LlmError::NoAccessCode));
     }
 
     #[test]
     fn muthur_openai_section_parses() {
-        let (_d, p) = write_cfg("[muthur]\nprovider = \"openai\"\nbase_url = \"http://10.0.0.5:8000/\"\nmodel = \"qwen\"\n", 0o600);
+        let (_d, p) = write_cfg(
+            "[muthur]\nprovider = \"openai\"\nbase_url = \"http://10.0.0.5:8000/\"\nmodel = \"qwen\"\n",
+            0o600,
+        );
         let c = load(&p).unwrap();
         assert_eq!(c.muthur.base_url(), Some("http://10.0.0.5:8000"));
         assert_eq!(c.muthur.readiness(), Ok(()));
@@ -638,7 +697,10 @@ mod tests {
 
     #[test]
     fn openai_without_url_is_not_configured() {
-        let m = MuthurSection { provider: Provider::Openai, ..Default::default() };
+        let m = MuthurSection {
+            provider: Provider::Openai,
+            ..Default::default()
+        };
         assert_eq!(m.readiness(), Err(LlmError::NotConfigured));
     }
 
@@ -668,7 +730,10 @@ mod tests {
 
     #[test]
     fn blank_anthropic_model_falls_back_to_default() {
-        let m = MuthurSection { model: Some("".into()), ..Default::default() };
+        let m = MuthurSection {
+            model: Some("".into()),
+            ..Default::default()
+        };
         assert_eq!(m.model(), Some("claude-sonnet-5-5"));
     }
 

@@ -27,16 +27,34 @@ pub fn default_exclude() -> Vec<String> {
     // Network and FUSE filesystems are excluded too: a hung mount would block
     // statvfs and freeze the whole collector.
     [
-        "tmpfs", "devtmpfs", "efivarfs", "overlay", "squashfs", "proc", "sysfs", "cgroup2", "ramfs", "autofs",
-        "fuse", "9p", "ceph", "glusterfs", "nfs", "nfs4", "cifs", "smb3",
+        "tmpfs",
+        "devtmpfs",
+        "efivarfs",
+        "overlay",
+        "squashfs",
+        "proc",
+        "sysfs",
+        "cgroup2",
+        "ramfs",
+        "autofs",
+        "fuse",
+        "9p",
+        "ceph",
+        "glusterfs",
+        "nfs",
+        "nfs4",
+        "cifs",
+        "smb3",
     ]
-        .map(String::from)
-        .to_vec()
+    .map(String::from)
+    .to_vec()
 }
 
 /// `fs` matches an entry exactly or as a subtype (`fuse` excludes `fuse.sshfs`).
 pub fn is_excluded(fs: &str, exclude: &[String]) -> bool {
-    exclude.iter().any(|x| fs == x || fs.strip_prefix(x.as_str()).is_some_and(|rest| rest.starts_with('.')))
+    exclude
+        .iter()
+        .any(|x| fs == x || fs.strip_prefix(x.as_str()).is_some_and(|rest| rest.starts_with('.')))
 }
 
 /// Interfaces to count: physical ones only, so traffic isn't counted again on
@@ -98,8 +116,7 @@ impl LocalSource {
             return;
         }
         self.last_probe = Some(Instant::now());
-        self.failed_units = run_probe("systemctl", &["--failed", "--plain", "--no-legend"], PROBE_TIMEOUT)
-            .map(|o| parse_failed_units(&o));
+        self.failed_units = run_probe("systemctl", &["--failed", "--plain", "--no-legend"], PROBE_TIMEOUT).map(|o| parse_failed_units(&o));
         let found = match self.runtime {
             ContainerRuntime::None => None,
             ContainerRuntime::Docker => containers_from("docker"),
@@ -119,7 +136,10 @@ impl LocalSource {
             .filter(|d| seen.insert(d.name().to_owned()))
             .map(|d| Disk {
                 mount: d.mount_point().to_string_lossy().into_owned(),
-                usage: Usage { used: d.total_space() - d.available_space(), total: d.total_space() },
+                usage: Usage {
+                    used: d.total_space() - d.available_space(),
+                    total: d.total_space(),
+                },
             })
             .collect();
         out.sort_by(|a, b| (a.mount != "/", &a.mount).cmp(&(b.mount != "/", &b.mount)));
@@ -170,7 +190,10 @@ impl MetricsSource for LocalSource {
             .filter(|(name, _)| counted.contains(name.to_string_lossy().as_ref()))
             .fold((0u64, 0u64), |(r, t), (_, d)| (r + d.received(), t + d.transmitted()));
         let net = match secs {
-            Some(s) => NetRate { rx_bps: (rx as f64 / s) as u64, tx_bps: (tx as f64 / s) as u64 },
+            Some(s) => NetRate {
+                rx_bps: (rx as f64 / s) as u64,
+                tx_bps: (tx as f64 / s) as u64,
+            },
             None => NetRate::default(),
         };
         self.refresh_probes();
@@ -182,8 +205,14 @@ impl MetricsSource for LocalSource {
             load: [load.one, load.five, load.fifteen],
             cpu_total: self.sys.global_cpu_usage(),
             cpu_cores: self.sys.cpus().iter().map(|c| c.usage()).collect(),
-            mem: Usage { used: self.sys.used_memory(), total: self.sys.total_memory() },
-            swap: Usage { used: self.sys.used_swap(), total: self.sys.total_swap() },
+            mem: Usage {
+                used: self.sys.used_memory(),
+                total: self.sys.total_memory(),
+            },
+            swap: Usage {
+                used: self.sys.used_swap(),
+                total: self.sys.total_swap(),
+            },
             disks: self.disks(),
             net,
             top: self.top(),
@@ -237,7 +266,11 @@ mod tests {
     fn excluded_filesystems_are_dropped() {
         let mut s = LocalSource::new(ContainerRuntime::None, default_exclude()).unwrap();
         let a = s.snapshot().unwrap();
-        assert!(a.disks.iter().all(|d| !d.mount.starts_with("/proc") && !d.mount.starts_with("/sys")), "{:?}", a.disks);
+        assert!(
+            a.disks.iter().all(|d| !d.mount.starts_with("/proc") && !d.mount.starts_with("/sys")),
+            "{:?}",
+            a.disks
+        );
     }
 
     #[test]
@@ -245,9 +278,7 @@ mod tests {
         // A busy multi-threaded process so threads would crowd the list.
         let busy = std::thread::spawn(|| {
             let t0 = std::time::Instant::now();
-            let workers: Vec<_> = (0..4)
-                .map(|_| std::thread::spawn(move || while t0.elapsed().as_millis() < 600 {}))
-                .collect();
+            let workers: Vec<_> = (0..4).map(|_| std::thread::spawn(move || while t0.elapsed().as_millis() < 600 {})).collect();
             workers.into_iter().for_each(|w| w.join().unwrap());
         });
         let mut s = LocalSource::new(ContainerRuntime::None, default_exclude()).unwrap();

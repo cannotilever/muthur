@@ -95,7 +95,13 @@ pub(super) struct Prompt {
 
 impl Prompt {
     pub(super) fn new(verb: Verb, id: &str, name: &str) -> Self {
-        Self { verb, id: id.into(), name: name.into(), drawn: false, armed_at: None }
+        Self {
+            verb,
+            id: id.into(),
+            name: name.into(),
+            drawn: false,
+            armed_at: None,
+        }
     }
 
     /// `STOP <NAME> (<ID>)? Y/N`, at most `max` wide: a long name is cut in

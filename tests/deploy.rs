@@ -39,8 +39,7 @@ fn sudoers_template_is_valid() {
 #[test]
 fn nft_file_is_valid() {
     let path = file("deploy/nftables/muthur-agent.nft");
-    let Some(o) = run("nft_file_is_valid", Command::new("nft").arg("-c").arg("-f").arg(&path))
-    else {
+    let Some(o) = run("nft_file_is_valid", Command::new("nft").arg("-c").arg("-f").arg(&path)) else {
         return;
     };
     let err = String::from_utf8_lossy(&o.stderr);
@@ -54,10 +53,7 @@ fn nft_file_is_valid() {
 #[test]
 fn sysusers_dry_run() {
     let path = file("deploy/sysusers.d/muthur-agent.conf");
-    let out = run(
-        "sysusers_dry_run",
-        Command::new("systemd-sysusers").arg("--dry-run").arg(&path),
-    );
+    let out = run("sysusers_dry_run", Command::new("systemd-sysusers").arg("--dry-run").arg(&path));
     if let Some(o) = out {
         let err = String::from_utf8_lossy(&o.stderr);
         if !o.status.success() && (err.contains("unrecognized option") || err.contains("unknown option")) {
@@ -73,26 +69,22 @@ fn files_have_expected_lines() {
     let sudoers = read("deploy/sudoers.d/muthur-agent");
     assert!(sudoers.contains("OPERATOR ALL=(muthur-agent) NOPASSWD: ALL"));
     assert!(sudoers.contains("Defaults>muthur-agent !use_pty"));
-    let grants = sudoers
-        .lines()
-        .filter(|l| !l.trim_start().starts_with('#') && l.contains("ALL="))
-        .count();
+    let grants = sudoers.lines().filter(|l| !l.trim_start().starts_with('#') && l.contains("ALL=")).count();
     assert_eq!(grants, 1, "exactly one grant line");
     // The chain's rules, in order. UDP must stay `drop`: the startup probe
     // needs the immediate EPERM, and a rejected UDP send reports success.
     let nft = read("deploy/nftables/muthur-agent.nft");
-    let rules: Vec<&str> = nft
-        .lines()
-        .map(str::trim)
-        .filter(|l| l.starts_with("meta ") || l.starts_with("oif "))
-        .collect();
-    assert_eq!(rules, [
-        "meta skuid \"muthur-agent\" udp dport { 53, 853 } drop",
-        "meta skuid \"muthur-agent\" tcp dport { 53, 853 } reject with tcp reset",
-        "oif \"lo\" accept",
-        "meta skuid \"muthur-agent\" meta l4proto tcp reject with tcp reset",
-        "meta skuid \"muthur-agent\" drop",
-    ]);
+    let rules: Vec<&str> = nft.lines().map(str::trim).filter(|l| l.starts_with("meta ") || l.starts_with("oif ")).collect();
+    assert_eq!(
+        rules,
+        [
+            "meta skuid \"muthur-agent\" udp dport { 53, 853 } drop",
+            "meta skuid \"muthur-agent\" tcp dport { 53, 853 } reject with tcp reset",
+            "oif \"lo\" accept",
+            "meta skuid \"muthur-agent\" meta l4proto tcp reject with tcp reset",
+            "meta skuid \"muthur-agent\" drop",
+        ]
+    );
     let sysusers = read("deploy/sysusers.d/muthur-agent.conf");
     assert!(sysusers.contains("m muthur-agent adm"));
     assert!(sysusers.contains("m muthur-agent systemd-journal"));
@@ -109,7 +101,9 @@ fn makefile_creates_each_drop_in_dir_first() {
     let stmts: Vec<&str> = mk.split(';').map(str::trim).collect();
     let mut seen = 0;
     for (n, st) in stmts.iter().enumerate() {
-        let Some(rest) = st.strip_prefix("sudo install -m ") else { continue };
+        let Some(rest) = st.strip_prefix("sudo install -m ") else {
+            continue;
+        };
         let dest = rest.split_whitespace().nth(2).expect("install -m MODE SRC DEST");
         let dir = &dest[..dest.rfind('/').unwrap()];
         if !dir.ends_with(".d") || dir == "/etc/sudoers.d" {

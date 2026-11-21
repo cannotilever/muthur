@@ -13,7 +13,10 @@ fn now() -> chrono::NaiveDateTime {
 }
 
 fn chrome() -> ChromeView {
-    ChromeView { ship_name: "USCSS TEST".into(), year_offset: 111 }
+    ChromeView {
+        ship_name: "USCSS TEST".into(),
+        year_offset: 111,
+    }
 }
 
 fn draw(app: &mut App) -> Buffer {
@@ -183,7 +186,10 @@ impl Tab for Recorder {
 fn other_keys_go_to_active_tab() {
     let log = Arc::new(Mutex::new(Vec::new()));
     let mut app = App::new(chrome()).with_tab(TabId::Utility, Box::new(Recorder(log.clone())));
-    keys(&mut app, &[Key::Char('a'), Key::F(1), Key::Char('b'), Key::F(2), Key::Ctrl(']'), Key::Char(']')]);
+    keys(
+        &mut app,
+        &[Key::Char('a'), Key::F(1), Key::Char('b'), Key::F(2), Key::Ctrl(']'), Key::Char(']')],
+    );
     assert_eq!(*log.lock().unwrap(), vec![Key::Char('a'), Key::Ctrl(']')]);
 }
 
@@ -208,11 +214,24 @@ use std::time::{Duration, Instant};
 
 fn shell_app(args: &[&str]) -> (App, mpsc::Receiver<PtyEvent>) {
     let (tx, rx) = mpsc::channel();
-    let cfg = ShellConfig { command: "sh".into(), args: args.iter().map(|s| s.to_string()).collect(), scrollback: 100 };
+    let cfg = ShellConfig {
+        command: "sh".into(),
+        args: args.iter().map(|s| s.to_string()).collect(),
+        scrollback: 100,
+    };
     let shell = ShellTab::new(cfg, HintSlot::default(), move |e| {
         let _ = tx.send(e);
     });
-    (App::assemble(chrome(), fake_muthur().0, crate::utility::UtilityTab::new(), crate::cargo::CargoTab::detached(), shell), rx)
+    (
+        App::assemble(
+            chrome(),
+            fake_muthur().0,
+            crate::utility::UtilityTab::new(),
+            crate::cargo::CargoTab::detached(),
+            shell,
+        ),
+        rx,
+    )
 }
 
 fn screen_text(buf: &Buffer) -> String {
@@ -241,7 +260,9 @@ fn typing_reaches_shell() {
         app.handle_key(Key::Char(c));
     }
     app.handle_key(Key::Enter);
-    let s = pump(&mut app, &rx, |s| s.lines().any(|l| l.chars().skip(20).take(59).collect::<String>().trim() == "MU"));
+    let s = pump(&mut app, &rx, |s| {
+        s.lines().any(|l| l.chars().skip(20).take(59).collect::<String>().trim() == "MU")
+    });
     assert!(s.lines().any(|l| l.chars().skip(20).take(59).collect::<String>().trim() == "MU"), "{s}");
 }
 
@@ -325,7 +346,10 @@ pub(crate) fn fake_muthur() -> (crate::muthur::MuthurTab, tempfile::TempDir) {
     use crate::muthur::{MuthurDeps, MuthurTab};
     let dir = tempfile::tempdir().unwrap();
     let log = crate::chatlog::ChatLog::open(dir.path().join("chat.jsonl")).unwrap();
-    let cfg = crate::config::MuthurSection { api_key: Some("sk-test".into()), ..Default::default() };
+    let cfg = crate::config::MuthurSection {
+        api_key: Some("sk-test".into()),
+        ..Default::default()
+    };
     let deps = MuthurDeps {
         spawn: Box::new(|_, _, _| Box::new(|| {})),
         now: Box::new(Instant::now),
@@ -357,7 +381,10 @@ pub(crate) fn fake_tech(cfg: &crate::config::MuthurSection) -> crate::muthur::Ag
         cfg: cfg.technical_cfg(),
         prompt: crate::muthur::tech_prompt(&agent),
         facts: Box::new(|| "HOST: test".into()),
-        policy: crate::agent::Policy { deny: Some(crate::tools::deny::test_rules()), net_allow: Vec::new() },
+        policy: crate::agent::Policy {
+            deny: Some(crate::tools::deny::test_rules()),
+            net_allow: Vec::new(),
+        },
         label: agent.label.clone(),
         max_rounds: agent.max_rounds,
         delegate_report: crate::config::DelegateReport::Relayed,
@@ -375,7 +402,10 @@ fn fake_muthur_clocked() -> (crate::muthur::MuthurTab, tempfile::TempDir, std::r
     use crate::muthur::{MuthurDeps, MuthurTab};
     let dir = tempfile::tempdir().unwrap();
     let log = crate::chatlog::ChatLog::open(dir.path().join("chat.jsonl")).unwrap();
-    let cfg = crate::config::MuthurSection { api_key: Some("sk-test".into()), ..Default::default() };
+    let cfg = crate::config::MuthurSection {
+        api_key: Some("sk-test".into()),
+        ..Default::default()
+    };
     let clock = std::rc::Rc::new(std::cell::Cell::new(Instant::now()));
     let ran: Ran = Default::default();
     let (c, r) = (clock.clone(), ran.clone());
@@ -390,7 +420,12 @@ fn fake_muthur_clocked() -> (crate::muthur::MuthurTab, tempfile::TempDir, std::r
     let tools = crate::tools::ToolDefs::persona(&crate::config::ToolsSection::default());
     let audit = crate::ops::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap();
     let tech = fake_tech(&cfg);
-    (MuthurTab::new(cfg, tools, "USCSS TEST", log, crate::ops::audit::shared(audit), deps, tech), dir, clock, ran)
+    (
+        MuthurTab::new(cfg, tools, "USCSS TEST", log, crate::ops::audit::shared(audit), deps, tech),
+        dir,
+        clock,
+        ran,
+    )
 }
 
 #[cfg(feature = "agent")]
@@ -408,10 +443,31 @@ fn prompt_under_help_overlay_rearms_after_dismissal() {
     }
     keys(&mut app, &[Key::Ctrl(']'), Key::Char('?')]);
     let input = serde_json::json!({"command": "systemctl restart nginx", "reason": "asked", "as_root": false, "timeout_secs": 0});
-    app.on_llm(1, StreamEvent::ToolCall { id: "c1".into(), name: "run".into(), input: input.clone() });
+    app.on_llm(
+        1,
+        StreamEvent::ToolCall {
+            id: "c1".into(),
+            name: "run".into(),
+            input: input.clone(),
+        },
+    );
     let raw = vec![serde_json::json!({"type":"tool_use","id":"c1","name":"run","input":input})];
-    app.on_llm(1, StreamEvent::Done { stop: Stop::ToolUse, model: Some("m".into()), raw: Some(raw) });
-    let ask = Review { verdict: Verdict::Ask, risk: Risk::Medium, note: "restarts a service".into(), model: "r".into(), ms: 1, error: None };
+    app.on_llm(
+        1,
+        StreamEvent::Done {
+            stop: Stop::ToolUse,
+            model: Some("m".into()),
+            raw: Some(raw),
+        },
+    );
+    let ask = Review {
+        verdict: Verdict::Ask,
+        risk: Risk::Medium,
+        note: "restarts a service".into(),
+        model: "r".into(),
+        ms: 1,
+        error: None,
+    };
     app.on_review(1, "c1".into(), ask);
     // The Y/N prompt is raised under the help overlay and rendered there for a while.
     for _ in 0..30 {
@@ -437,14 +493,25 @@ fn activity_marker_for_background_reply() {
     use crate::llm::{Stop, StreamEvent};
     let (m, _dir) = fake_muthur();
     let (shell_tx, _rx) = mpsc::channel();
-    let cfg = ShellConfig { command: "sh".into(), args: vec!["-c".into(), "sleep 2".into()], scrollback: 10 };
+    let cfg = ShellConfig {
+        command: "sh".into(),
+        args: vec!["-c".into(), "sleep 2".into()],
+        scrollback: 10,
+    };
     let shell = ShellTab::new(cfg, HintSlot::default(), move |e| {
         let _ = shell_tx.send(e);
     });
     let mut app = App::assemble(chrome(), m, crate::utility::UtilityTab::new(), crate::cargo::CargoTab::detached(), shell);
     keys(&mut app, &[Key::F(1), Key::Char('H'), Key::Char('I'), Key::Enter, Key::F(2)]);
     app.on_llm(1, StreamEvent::Text("OK".into()));
-    app.on_llm(1, StreamEvent::Done { stop: Stop::End, model: None, raw: None });
+    app.on_llm(
+        1,
+        StreamEvent::Done {
+            stop: Stop::End,
+            model: None,
+            raw: None,
+        },
+    );
     let buf = draw(&mut app);
     let top = chrome::box_top(TabId::Muthur);
     assert_eq!(buf[(chrome::BOX_X + chrome::BOX_W - 2, top + 1)].symbol(), "*");
@@ -455,14 +522,25 @@ fn hidden_reveal_does_not_drive_tick() {
     use crate::llm::{Stop, StreamEvent};
     let (m, _dir) = fake_muthur();
     let shell = ShellTab::new(
-        ShellConfig { command: "sh".into(), args: vec!["-c".into(), "sleep 2".into()], scrollback: 10 },
+        ShellConfig {
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 2".into()],
+            scrollback: 10,
+        },
         HintSlot::default(),
         |_| {},
     );
     let mut app = App::assemble(chrome(), m, crate::utility::UtilityTab::new(), crate::cargo::CargoTab::detached(), shell);
     keys(&mut app, &[Key::F(1), Key::Char('H'), Key::Enter, Key::F(2)]);
     app.on_llm(1, StreamEvent::Text("OK".into()));
-    app.on_llm(1, StreamEvent::Done { stop: Stop::End, model: None, raw: None });
+    app.on_llm(
+        1,
+        StreamEvent::Done {
+            stop: Stop::End,
+            model: None,
+            raw: None,
+        },
+    );
     assert_eq!(app.tick_interval(), Duration::from_secs(1));
     app.handle_key(Key::F(1));
     assert!(app.tick_interval() < Duration::from_secs(1));
@@ -474,7 +552,12 @@ use crate::metrics::Snapshot;
 use crate::splash::{Interface, Splash, SplashInfo};
 
 fn splash_info() -> SplashInfo {
-    SplashInfo { ship_name: "USCSS TEST".into(), year: 2137, link: "38400 BAUD  XON/XOFF".into(), interface: Interface::Online }
+    SplashInfo {
+        ship_name: "USCSS TEST".into(),
+        year: 2137,
+        link: "38400 BAUD  XON/XOFF".into(),
+        interface: Interface::Online,
+    }
 }
 fn fresh_splash() -> Splash {
     Splash::new(splash_info(), Instant::now())
@@ -591,7 +674,10 @@ fn quit_after_splash_quits_on_finish_and_on_skip() {
 fn metrics_reach_splash_and_utility() {
     let st = Arc::new(Mutex::new(SpyState::default()));
     let mut app = spy_app(&st, TabId::Utility).with_splash(Splash::new(splash_info(), Instant::now() - Duration::from_millis(2500)));
-    app.on_metrics(Snapshot { cpu_cores: vec![0.0; 16], ..Default::default() });
+    app.on_metrics(Snapshot {
+        cpu_cores: vec![0.0; 16],
+        ..Default::default()
+    });
     assert_eq!(st.lock().unwrap().metrics, 1);
     let buf = draw(&mut app);
     let all: String = (0..43).map(|y| row(&buf, y)).collect();
@@ -719,7 +805,10 @@ fn break_waits_for_the_line_to_settle() {
     let mut app = App::new(chrome()).with_splash_factory(f);
     let t = Instant::now();
     app.handle_keys_at(vec![BREAK], t);
-    assert!(app.settling() && !app.redraw && !app.splash_active(), "nothing is sent while the terminal is busy");
+    assert!(
+        app.settling() && !app.redraw && !app.splash_active(),
+        "nothing is sent while the terminal is busy"
+    );
     app.poll_settle(t + BREAK_SETTLE - Duration::from_millis(1));
     assert!(app.settling() && !app.redraw);
     app.poll_settle(t + BREAK_SETTLE);
@@ -812,7 +901,10 @@ fn activity_survives_replayed_splash() {
 fn replayed_splash_is_seeded_with_last_snapshot() {
     let (f, _) = counting_factory(Duration::from_millis(2500));
     let mut app = App::new(chrome()).with_splash_factory(f);
-    app.on_metrics(Snapshot { cpu_cores: vec![0.0; 16], ..Default::default() });
+    app.on_metrics(Snapshot {
+        cpu_cores: vec![0.0; 16],
+        ..Default::default()
+    });
     brk(&mut app);
     let all = screen_text(&draw(&mut app));
     assert!(all.contains("16 CORES") && !all.contains("NO DATA"), "{all}");

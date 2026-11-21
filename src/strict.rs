@@ -18,7 +18,13 @@ pub struct StrictWriter<W, D> {
 impl<W: Write, D: Dialect> StrictWriter<W, D> {
     pub fn new(inner: W, dialect: D) -> Self {
         let panic = std::env::var("MUTHUR_STRICT_PANIC").is_ok_and(|v| v == "1");
-        Self { inner, dialect, pending: Vec::new(), violations: Vec::new(), panic }
+        Self {
+            inner,
+            dialect,
+            pending: Vec::new(),
+            violations: Vec::new(),
+            panic,
+        }
     }
 
     fn violation(&mut self, seq: Vec<u8>) {

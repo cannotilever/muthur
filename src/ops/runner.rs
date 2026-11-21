@@ -12,11 +12,7 @@ use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RunOutput {
-    Exited {
-        code: i32,
-        stdout: String,
-        stderr: String,
-    },
+    Exited { code: i32, stdout: String, stderr: String },
     NotFound,
     TimedOut,
     Cancelled,
@@ -44,7 +40,15 @@ pub struct RunSpec<'a> {
 
 impl<'a> RunSpec<'a> {
     pub fn new(argv: &'a [String], timeout: Duration) -> Self {
-        Self { argv, timeout, merged: false, stdin: None, kill: Kill::Now, cancel: None, keep: None }
+        Self {
+            argv,
+            timeout,
+            merged: false,
+            stdin: None,
+            kill: Kill::Now,
+            cancel: None,
+            keep: None,
+        }
     }
 }
 
@@ -55,14 +59,22 @@ pub trait Runner: Send + Sync {
     /// interleaving; `SystemRunner` keeps it by sharing one pipe.
     fn run_merged(&self, argv: &[String], timeout: Duration) -> RunOutput {
         match self.run(argv, timeout) {
-            RunOutput::Exited { code, stdout, stderr } => RunOutput::Exited { code, stdout: stdout + &stderr, stderr: String::new() },
+            RunOutput::Exited { code, stdout, stderr } => RunOutput::Exited {
+                code,
+                stdout: stdout + &stderr,
+                stderr: String::new(),
+            },
             other => other,
         }
     }
 
     /// Full-featured run. The default ignores stdin, kill, cancel and keep.
     fn run_spec(&self, spec: &RunSpec) -> RunOutput {
-        if spec.merged { self.run_merged(spec.argv, spec.timeout) } else { self.run(spec.argv, spec.timeout) }
+        if spec.merged {
+            self.run_merged(spec.argv, spec.timeout)
+        } else {
+            self.run(spec.argv, spec.timeout)
+        }
     }
 }
 
@@ -80,7 +92,12 @@ struct Capture {
 
 impl Capture {
     fn new(keep: Option<usize>) -> Self {
-        Self { keep, head: Vec::new(), tail: VecDeque::new(), total: 0 }
+        Self {
+            keep,
+            head: Vec::new(),
+            tail: VecDeque::new(),
+            total: 0,
+        }
     }
 
     fn push(&mut self, mut data: &[u8]) {
@@ -318,7 +335,11 @@ fn spawn_and_wait(spec: &RunSpec) -> RunOutput {
             // them. Take what arrived rather than waiting out the timeout.
             let end = Instant::now() + AFTER_EXIT;
             let text = |d: &Drain| String::from_utf8_lossy(&d.collect(end)).into_owned();
-            RunOutput::Exited { code: s.code().unwrap_or(-1), stdout: text(&out_rx), stderr: text(&err_rx) }
+            RunOutput::Exited {
+                code: s.code().unwrap_or(-1),
+                stdout: text(&out_rx),
+                stderr: text(&err_rx),
+            }
         }
         None if cancelled => RunOutput::Cancelled,
         None => RunOutput::TimedOut,
@@ -337,7 +358,11 @@ mod tests {
     fn merged_keeps_order() {
         assert_eq!(
             SystemRunner.run_merged(&v(&["sh", "-c", "echo a; echo b >&2; echo c"]), Duration::from_secs(2)),
-            RunOutput::Exited { code: 0, stdout: "a\nb\nc\n".into(), stderr: String::new() }
+            RunOutput::Exited {
+                code: 0,
+                stdout: "a\nb\nc\n".into(),
+                stderr: String::new()
+            }
         );
     }
 
@@ -350,35 +375,26 @@ mod tests {
 
     #[test]
     fn merged_not_found() {
-        assert_eq!(SystemRunner.run_merged(&v(&["definitely-not-a-binary-muthur"]), Duration::from_secs(1)), RunOutput::NotFound);
+        assert_eq!(
+            SystemRunner.run_merged(&v(&["definitely-not-a-binary-muthur"]), Duration::from_secs(1)),
+            RunOutput::NotFound
+        );
     }
 
     #[test]
     fn system_runner_real_commands() {
         let r = SystemRunner;
         assert_eq!(
-            r.run(
-                &v(&["sh", "-c", "echo out; echo err >&2; exit 3"]),
-                Duration::from_secs(2)
-            ),
+            r.run(&v(&["sh", "-c", "echo out; echo err >&2; exit 3"]), Duration::from_secs(2)),
             RunOutput::Exited {
                 code: 3,
                 stdout: "out\n".into(),
                 stderr: "err\n".into()
             }
         );
-        assert_eq!(
-            r.run(
-                &v(&["definitely-not-a-binary-muthur"]),
-                Duration::from_secs(1)
-            ),
-            RunOutput::NotFound
-        );
+        assert_eq!(r.run(&v(&["definitely-not-a-binary-muthur"]), Duration::from_secs(1)), RunOutput::NotFound);
         let t = Instant::now();
-        assert_eq!(
-            r.run(&v(&["sleep", "5"]), Duration::from_millis(200)),
-            RunOutput::TimedOut
-        );
+        assert_eq!(r.run(&v(&["sleep", "5"]), Duration::from_millis(200)), RunOutput::TimedOut);
         assert!(t.elapsed() < Duration::from_secs(1));
     }
 
@@ -393,7 +409,11 @@ mod tests {
     fn locale_is_forced_to_c() {
         assert_eq!(
             SystemRunner.run(&v(&["sh", "-c", "echo $LC_ALL"]), Duration::from_secs(2)),
-            RunOutput::Exited { code: 0, stdout: "C\n".into(), stderr: String::new() }
+            RunOutput::Exited {
+                code: 0,
+                stdout: "C\n".into(),
+                stderr: String::new()
+            }
         );
     }
 
@@ -403,7 +423,14 @@ mod tests {
         let mut s = RunSpec::new(&a, Duration::from_secs(2));
         s.stdin = Some(b"pw\n");
         s.merged = true;
-        assert_eq!(SystemRunner.run_spec(&s), RunOutput::Exited { code: 0, stdout: "got:pw\nend\n".into(), stderr: String::new() });
+        assert_eq!(
+            SystemRunner.run_spec(&s),
+            RunOutput::Exited {
+                code: 0,
+                stdout: "got:pw\nend\n".into(),
+                stderr: String::new()
+            }
+        );
     }
 
     #[test]
@@ -450,7 +477,9 @@ mod tests {
         let mut s = RunSpec::new(&a, Duration::from_secs(10));
         s.merged = true;
         s.keep = Some(65536);
-        let RunOutput::Exited { stdout, .. } = SystemRunner.run_spec(&s) else { panic!() };
+        let RunOutput::Exited { stdout, .. } = SystemRunner.run_spec(&s) else {
+            panic!()
+        };
         assert!(stdout.len() <= 65536 + 64 && stdout.ends_with("END\n") && stdout.contains("BYTES OMITTED"));
     }
 
@@ -481,7 +510,9 @@ mod tests {
     fn child_has_no_controlling_terminal() {
         // /proc/PID/stat fields 6 and 7: session id and tty_nr.
         let a = v(&["sh", "-c", "read -r p c st pp pg sid tty rest < /proc/$$/stat; echo $sid $tty; echo $$"]);
-        let RunOutput::Exited { stdout, .. } = SystemRunner.run(&a, Duration::from_secs(2)) else { panic!() };
+        let RunOutput::Exited { stdout, .. } = SystemRunner.run(&a, Duration::from_secs(2)) else {
+            panic!()
+        };
         let l: Vec<&str> = stdout.lines().collect();
         assert_eq!(l[0], format!("{} 0", l[1]), "child must lead its own session with no tty");
     }
@@ -496,7 +527,14 @@ mod tests {
         s.merged = true;
         s.keep = Some(65536);
         let t = Instant::now();
-        assert_eq!(SystemRunner.run_spec(&s), RunOutput::Exited { code: 0, stdout: "hi\n".into(), stderr: String::new() });
+        assert_eq!(
+            SystemRunner.run_spec(&s),
+            RunOutput::Exited {
+                code: 0,
+                stdout: "hi\n".into(),
+                stderr: String::new()
+            }
+        );
         assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
     }
 

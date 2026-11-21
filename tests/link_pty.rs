@@ -30,7 +30,9 @@ const CHILD_ENV: &str = "MUTHUR_PANIC_CHILD_TTY";
 /// Helper run in a child process by `panic_hook_restores_termios`; a no-op otherwise.
 #[test]
 fn panic_hook_child() {
-    let Ok(tty) = std::env::var(CHILD_ENV) else { return };
+    let Ok(tty) = std::env::var(CHILD_ENV) else {
+        return;
+    };
     let f = std::fs::OpenOptions::new().read(true).write(true).open(tty).unwrap();
     install_panic_hook();
     let _l = Link::from_fd(OwnedFd::from(f), None, FlowControl::XonXoff).unwrap();

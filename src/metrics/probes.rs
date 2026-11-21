@@ -66,7 +66,9 @@ pub fn parse_containers(out: &str) -> Vec<Container> {
     out.lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\t').collect();
-            let [id, name, detail] = f[..] else { return None };
+            let [id, name, detail] = f[..] else {
+                return None;
+            };
             let detail = detail.trim();
             Some(Container {
                 id: id.trim().to_string(),
@@ -94,11 +96,29 @@ mod tests {
     #[test]
     fn parses_containers() {
         let out = "a1b2\tweb\tUp 3 hours\nc3d4\tMyDB\tExited (137) 2 hours ago\ne5\told\tCreated\nshort\tline\n\n";
-        assert_eq!(parse_containers(out), vec![
-            Container { id: "a1b2".into(), name: "web".into(), status: "UP".into(), detail: "Up 3 hours".into() },
-            Container { id: "c3d4".into(), name: "MyDB".into(), status: "EXITED".into(), detail: "Exited (137) 2 hours ago".into() },
-            Container { id: "e5".into(), name: "old".into(), status: "CREATED".into(), detail: "Created".into() },
-        ]);
+        assert_eq!(
+            parse_containers(out),
+            vec![
+                Container {
+                    id: "a1b2".into(),
+                    name: "web".into(),
+                    status: "UP".into(),
+                    detail: "Up 3 hours".into()
+                },
+                Container {
+                    id: "c3d4".into(),
+                    name: "MyDB".into(),
+                    status: "EXITED".into(),
+                    detail: "Exited (137) 2 hours ago".into()
+                },
+                Container {
+                    id: "e5".into(),
+                    name: "old".into(),
+                    status: "CREATED".into(),
+                    detail: "Created".into()
+                },
+            ]
+        );
     }
 
     #[test]
