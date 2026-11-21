@@ -4,6 +4,8 @@ pub mod chrome;
 pub mod tabs;
 
 use crate::cargo::CargoTab;
+use crate::destruct::record::Recorder;
+use crate::destruct::{Destruct, DestructDeps, DestructRequest, Effect, Outcome, SudoRun};
 use crate::input::Key;
 use crate::metrics::Snapshot;
 use crate::muthur::MuthurTab;
@@ -29,6 +31,19 @@ pub const ARMING: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Builds a fresh boot splash, started at the given instant (for Break).
 pub type SplashFactory = Box<dyn Fn(std::time::Instant) -> Splash>;
+
+/// How long the execute command (`systemctl poweroff`/`reboot`) may take.
+const EXECUTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Seqs of App's own sudo commands; the Utility tab numbers its own from 0.
+const EXEC_SEQ_BASE: u64 = 1 << 63;
+
+/// `DestructDeps`, with the timestamp shareable with each run's `Recorder`.
+struct Deps {
+    run: SudoRun,
+    audit: crate::ops::audit::SharedAudit,
+    timestamp: std::rc::Rc<dyn Fn() -> String>,
+}
 
 /// What the title bar shows.
 pub struct ChromeView {
@@ -74,6 +89,17 @@ pub struct App {
     last_key: Option<std::time::Instant>,
     /// The static standby screen, while it is shown.
     standby: Option<Standby>,
+    /// The self-destruct countdown, while it is shown.
+    destruct: Option<Destruct>,
+    /// Audits the running countdown (`None` for a preview).
+    recorder: Option<Recorder>,
+    /// How a real countdown runs its command and audits; `None` = requests are refused.
+    destruct_deps: Option<Deps>,
+    /// The seq of the execute command, until its result arrives.
+    exec_seq: Option<u64>,
+    next_seq: u64,
+    /// `muthur destruct`: quit as soon as the countdown ends.
+    pub quit_after_destruct: bool,
     tabs: [Box<dyn Tab>; TABS],
     activity: [bool; TABS],
     chrome: ChromeView,
@@ -111,6 +137,104 @@ impl App {
         self
     }
 
+    /// Let a tab's armed request start a real countdown.
+    pub fn with_destruct(mut self, deps: DestructDeps) -> Self {
+        self.destruct_deps = Some(Deps {
+            run: deps.run,
+            audit: deps.audit,
+            timestamp: deps.timestamp.into(),
+        });
+        self
+    }
+
+    pub fn destruct_active(&self) -> bool {
+        self.destruct.is_some()
+    }
+
+    /// Take over the screen with `d` (a preview runs without a recorder).
+    pub fn start_destruct(&mut self, d: Destruct) {
+        tracing::info!(kind = d.kind().label(), "destruct: countdown started");
+        self.destruct = Some(d);
+        self.prefix = false;
+        self.overlay = None;
+        self.standby = None;
+        self.redraw = true;
+    }
+
+    /// An armed request from the active tab: start the real countdown.
+    fn begin_destruct(&mut self, req: DestructRequest, now: std::time::Instant) {
+        let Some(deps) = &self.destruct_deps else {
+            tracing::error!("destruct: request dropped (not wired)");
+            return; // `req` drops here, zeroizing the password
+        };
+        self.recorder = Some(Recorder::new(req.kind, req.total.as_secs(), deps.audit.clone(), deps.timestamp.clone()));
+        self.start_destruct(Destruct::new(req, now, quiz_seed()));
+    }
+
+    /// Advance the countdown; called on every loop wake-up.
+    pub fn poll_destruct(&mut self, now: std::time::Instant) {
+        if let Some(e) = self.destruct.as_mut().and_then(|d| d.tick(now)) {
+            self.destruct_effect(e, now);
+        }
+    }
+
+    fn destruct_effect(&mut self, e: Effect, now: std::time::Instant) {
+        match e {
+            Effect::Execute(password) => {
+                let Some(d) = &self.destruct else { return };
+                let argv = execute_argv(d);
+                if let Some(r) = &mut self.recorder {
+                    r.record(Outcome::Executed, Some(argv.clone()), "");
+                }
+                let Some(deps) = &mut self.destruct_deps else { return };
+                let seq = self.next_seq;
+                self.next_seq += 1;
+                self.exec_seq = Some(seq);
+                tracing::warn!(?argv, "destruct: executing");
+                (deps.run)(seq, argv, EXECUTE_TIMEOUT, password);
+            }
+            Effect::Done(o) => {
+                self.end_destruct(o);
+                self.redraw = true;
+                self.last_key = Some(now);
+            }
+        }
+    }
+
+    /// Drop the countdown (zeroizing any password) and audit how it ended.
+    /// Esc, the freeze, a failure acknowledged, or Break.
+    fn end_destruct(&mut self, o: Outcome) {
+        if self.destruct.take().is_none() {
+            return;
+        }
+        tracing::info!(outcome = ?o, "destruct: ended");
+        if let Some(r) = self.recorder.take() {
+            r.finish(o);
+        }
+        self.switch(TabId::Utility);
+        if self.quit_after_destruct {
+            self.quit = true;
+        }
+    }
+
+    /// The result of sudo command `seq`: the execute command's, or the Utility tab's.
+    pub fn on_sudo_done(&mut self, seq: u64, out: crate::ops::runner::RunOutput) {
+        if self.exec_seq != Some(seq) {
+            self.tabs[TabId::Utility.index()].on_sudo_done(seq, out);
+            return;
+        }
+        self.exec_seq = None;
+        let Some(d) = &mut self.destruct else { return };
+        d.on_executed(&out);
+        if let crate::destruct::Phase::Failed(reason) = &d.phase {
+            tracing::error!(%reason, "destruct: execute failed");
+            let argv = execute_argv(d);
+            if let Some(r) = &mut self.recorder {
+                r.record(Outcome::Failed, Some(argv), reason);
+            }
+        }
+    }
+
     pub fn standby_active(&self) -> bool {
         self.standby.is_some()
     }
@@ -123,6 +247,9 @@ impl App {
     /// Enter standby once the countdown has run out. Called on every loop
     /// wake-up; `wall` dates the `STANDBY SINCE` caption.
     pub fn poll_standby(&mut self, now: std::time::Instant, wall: NaiveDateTime) {
+        if self.destruct.is_some() {
+            return;
+        }
         let Some(last) = self.last_key else {
             self.last_key = Some(now);
             return;
@@ -150,6 +277,9 @@ impl App {
 
     /// True once after the splash reached `READY.`.
     pub fn take_bell(&mut self) -> bool {
+        if self.destruct.is_some() {
+            return false;
+        }
         std::mem::take(&mut self.bell)
     }
 
@@ -197,6 +327,9 @@ impl App {
         if self.settling() {
             return std::time::Duration::from_millis(50);
         }
+        if self.destruct.is_some() {
+            return crate::destruct::TICK;
+        }
         if let Some(s) = &self.splash {
             return s.tick_interval();
         }
@@ -242,7 +375,7 @@ impl App {
 
     /// The active tab's cursor, unless something is drawn over it.
     pub fn cursor(&self) -> Option<Position> {
-        if self.overlay.is_some() || self.prefix {
+        if self.overlay.is_some() || self.prefix || self.destruct.is_some() {
             return None;
         }
         self.tabs[self.active.index()].cursor()
@@ -269,6 +402,12 @@ impl App {
             standby_after: None,
             last_key: None,
             standby: None,
+            destruct: None,
+            recorder: None,
+            destruct_deps: None,
+            exec_seq: None,
+            next_seq: EXEC_SEQ_BASE,
+            quit_after_destruct: false,
             tabs,
             activity: [false; TABS],
             chrome,
@@ -310,7 +449,12 @@ impl App {
             return;
         }
         for k in keys {
-            self.handle_key(k);
+            self.handle_key_at(k, now);
+        }
+        if self.destruct.is_none()
+            && let Some(req) = self.tabs[self.active.index()].take_destruct()
+        {
+            self.begin_destruct(req, now);
         }
     }
 
@@ -331,6 +475,9 @@ impl App {
     /// Break: the terminal was power-cycled or needs a reset. Leave passthrough
     /// and any prefix/overlay now; re-initialise once the line settles.
     fn on_break(&mut self, now: std::time::Instant) {
+        if let Some(o) = self.destruct.as_ref().map(Destruct::outcome_so_far) {
+            self.end_destruct(o);
+        }
         self.prefix = false;
         self.overlay = None;
         if self.standby.take().is_some() {
@@ -362,12 +509,23 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: Key) {
+        self.handle_key_at(key, std::time::Instant::now());
+    }
+
+    fn handle_key_at(&mut self, key: Key, now: std::time::Instant) {
         if key == BREAK || self.settle_until.is_some() || self.standby.is_some() {
-            self.handle_keys(vec![key]);
+            self.handle_keys_at(vec![key], now);
             return;
         }
         if self.splash.is_some() {
             self.end_splash();
+            return;
+        }
+        // The countdown owns the keyboard: no folders, no prefix.
+        if let Some(d) = &mut self.destruct {
+            if let Some(e) = d.key(&key, now) {
+                self.destruct_effect(e, now);
+            }
             return;
         }
         if self.overlay.take().is_some() {
@@ -419,6 +577,9 @@ impl App {
 
     /// DECDHL rows for the next frame (only the splash and standby use them).
     pub fn line_attrs(&self, area: ratatui::layout::Rect) -> Vec<(u16, crate::dialect::LineAttr)> {
+        if let Some(d) = &self.destruct {
+            return d.line_attrs(area);
+        }
         if let Some(s) = &self.standby {
             return s.line_attrs(area);
         }
@@ -427,8 +588,8 @@ impl App {
 
     pub fn render(&mut self, frame: &mut Frame, now: NaiveDateTime) {
         let area = frame.area();
-        if let Some(sb) = &self.standby {
-            // Collect activity so the markers show on wake; draw nothing that changes.
+        if self.destruct.is_some() || self.standby.is_some() {
+            // Collect activity so the markers show afterwards.
             let active = self.active.index();
             for (i, tab) in self.tabs.iter_mut().enumerate() {
                 tab.set_obscured(true);
@@ -436,6 +597,13 @@ impl App {
                     self.activity[i] = true;
                 }
             }
+        }
+        if let Some(d) = &self.destruct {
+            d.render(std::time::Instant::now(), area, frame.buffer_mut());
+            return;
+        }
+        if let Some(sb) = &self.standby {
+            // Draw nothing that changes.
             sb.render(area, frame.buffer_mut());
             return;
         }
@@ -487,6 +655,19 @@ impl App {
             frame.set_cursor_position(p);
         }
     }
+}
+
+/// The execute command for `d`'s kind.
+fn execute_argv(d: &Destruct) -> Vec<String> {
+    crate::destruct::sudo_argv(&["systemctl", d.kind().verb()])
+}
+
+/// Seeds the arithmetic step: `Instant` has no readable value, the wall clock does.
+fn quiz_seed() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() ^ u64::from(d.subsec_nanos()) << 32)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

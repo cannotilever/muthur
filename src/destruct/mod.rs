@@ -2,6 +2,7 @@
 //! ticks and keys and carries out the returned `Effect`s.
 
 pub mod quiz;
+pub mod record;
 pub mod screen;
 
 use std::time::{Duration, Instant};
@@ -37,7 +38,8 @@ impl Kind {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Outcome {
     Aborted,
     Frozen,
@@ -48,6 +50,22 @@ pub enum Outcome {
 pub enum Effect {
     Execute(Secret),
     Done(Outcome),
+}
+
+/// Runs `argv` under sudo: (seq, argv, timeout, password for stdin). The
+/// closure owns the password and drops (zeroizes) it once written.
+pub type SudoRun = Box<dyn FnMut(u64, Vec<String>, Duration, Secret)>;
+
+/// What `App` needs to run a real countdown.
+pub struct DestructDeps {
+    pub run: SudoRun,
+    pub audit: crate::ops::audit::SharedAudit,
+    pub timestamp: Box<dyn Fn() -> String>,
+}
+
+/// `sudo -S -k -p "" <cmd>`: the password comes on stdin, never cached.
+pub fn sudo_argv(cmd: &[&str]) -> Vec<String> {
+    ["sudo", "-S", "-k", "-p", ""].iter().chain(cmd).map(|s| s.to_string()).collect()
 }
 
 pub struct DestructRequest {

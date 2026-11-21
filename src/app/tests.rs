@@ -1155,3 +1155,277 @@ fn standby_ignores_the_hidden_tabs_cadence() {
     app.poll_standby(t0 + D, now());
     assert_eq!(app.tick_interval(), Duration::from_secs(1), "nothing animates on the standby screen");
 }
+
+// ---- Self-destruct countdown ----
+
+use crate::destruct::{DestructDeps, DestructRequest, Kind};
+use crate::ops::runner::RunOutput;
+use crate::secret::Secret;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+#[derive(Default)]
+struct ArmerState {
+    request: Option<DestructRequest>,
+    sudo_done: Vec<u64>,
+}
+
+/// A Utility stand-in: the first key it receives arms a countdown.
+struct Armer(Rc<RefCell<ArmerState>>, Option<Duration>);
+impl Tab for Armer {
+    fn render(&mut self, _area: Rect, _buf: &mut Buffer) {}
+    fn handle_key(&mut self, _key: &Key) {
+        if let Some(total) = self.1.take() {
+            let mut password = Secret::new();
+            password.push('p');
+            password.push('w');
+            self.0.borrow_mut().request = Some(DestructRequest {
+                kind: Kind::Shutdown,
+                total,
+                password,
+            });
+        }
+    }
+    fn take_destruct(&mut self) -> Option<DestructRequest> {
+        self.0.borrow_mut().request.take()
+    }
+    fn on_sudo_done(&mut self, seq: u64, _out: RunOutput) {
+        self.0.borrow_mut().sudo_done.push(seq);
+    }
+}
+
+type Calls = Rc<RefCell<Vec<(u64, Vec<String>, String)>>>;
+
+struct Rig {
+    app: App,
+    t0: Instant,
+    calls: Calls,
+    armer: Rc<RefCell<ArmerState>>,
+    dir: tempfile::TempDir,
+}
+
+impl Rig {
+    fn audit(&self) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(self.dir.path().join("audit.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+    fn exits(&self) -> Vec<String> {
+        self.audit().iter().map(|e| e["exit"].as_str().unwrap().to_string()).collect()
+    }
+    fn strip(&mut self) -> String {
+        row(&draw(&mut self.app), 42)
+    }
+}
+
+/// An app whose Utility tab arms a `secs`-second countdown on the first key,
+/// armed (by a key batch at the returned `t0`) unless `arm` is false.
+fn destruct_rig(secs: u64, standby: Option<Duration>, arm: bool) -> Rig {
+    let dir = tempfile::tempdir().unwrap();
+    let audit = crate::ops::audit::shared(crate::ops::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap());
+    let calls: Calls = Rc::default();
+    let c = calls.clone();
+    let deps = DestructDeps {
+        run: Box::new(move |seq, argv, _timeout, pw: Secret| c.borrow_mut().push((seq, argv, pw.expose().to_string()))),
+        audit,
+        timestamp: Box::new(|| "2026-11-20T00:00:00Z".into()),
+    };
+    let armer = Rc::new(RefCell::new(ArmerState::default()));
+    let mut app = App::new(chrome())
+        .with_tab(TabId::Utility, Box::new(Armer(armer.clone(), Some(Duration::from_secs(secs)))))
+        .with_destruct(deps);
+    if let Some(s) = standby {
+        app = app.with_standby(s);
+    }
+    let t0 = Instant::now();
+    if arm {
+        app.handle_keys_at(vec![Key::Enter], t0);
+    }
+    Rig { app, t0, calls, armer, dir }
+}
+
+#[test]
+fn request_takes_over_screen() {
+    let mut r = destruct_rig(60, None, false);
+    r.app.redraw = false;
+    r.app.handle_keys_at(vec![Key::Enter], r.t0);
+    assert!(r.app.destruct_active() && r.app.redraw);
+    assert!(row(&draw(&mut r.app), 0).contains("EMERGENCY DESTRUCT SYSTEM"));
+    assert_eq!(r.app.tick_interval(), crate::destruct::TICK);
+    assert!(r.app.cursor().is_none());
+}
+
+#[test]
+fn fkeys_and_prefix_locked_out() {
+    let mut r = destruct_rig(60, None, true);
+    r.app.handle_keys_at(vec![Key::F(1), Key::Ctrl(']'), Key::Char('f')], r.t0);
+    assert_eq!(r.app.active, TabId::Utility);
+    let s = r.strip();
+    assert!(!s.starts_with("PREFIX:"), "{s}");
+    assert!(s.trim_end().ends_with('f'), "{s}");
+    assert!(row(&draw(&mut r.app), 0).contains("EMERGENCY DESTRUCT SYSTEM"), "not fullscreened away");
+}
+
+#[test]
+fn standby_never_starts_during_countdown() {
+    let mut r = destruct_rig(600, Some(S), true);
+    r.app.poll_standby(r.t0 + Duration::from_secs(5), now());
+    assert!(!r.app.standby_active());
+    let esc = r.t0 + Duration::from_secs(6);
+    r.app.handle_keys_at(vec![Key::Esc], esc);
+    assert!(!r.app.destruct_active());
+    r.app.poll_standby(esc + S - Duration::from_millis(1), now());
+    assert!(!r.app.standby_active());
+    r.app.poll_standby(esc + S, now());
+    assert!(r.app.standby_active());
+}
+
+#[test]
+fn no_bell_during_countdown() {
+    let mut r = destruct_rig(60, None, true);
+    r.app.bell = true;
+    assert!(!r.app.take_bell());
+}
+
+#[test]
+fn zero_runs_systemctl_with_password() {
+    let mut r = destruct_rig(10, None, true);
+    r.app.poll_destruct(r.t0 + Duration::from_secs(5));
+    assert!(r.calls.borrow().is_empty());
+    r.app.poll_destruct(r.t0 + Duration::from_secs(10));
+    r.app.poll_destruct(r.t0 + Duration::from_secs(11));
+    let calls = r.calls.borrow().clone();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].1, ["sudo", "-S", "-k", "-p", "", "systemctl", "poweroff"]);
+    assert_eq!(calls[0].2, "pw");
+    let audit = r.audit();
+    assert_eq!(r.exits(), ["executed"]);
+    assert_eq!(audit[0]["tool"], "destruct_shutdown");
+    assert_eq!(audit[0]["args"]["seconds"], 10);
+    assert_eq!(audit[0]["as_root"], true);
+    assert_eq!(audit[0]["decision"], "confirmed");
+    assert_eq!(audit[0]["argv"][6], "poweroff");
+    let raw = std::fs::read_to_string(r.dir.path().join("audit.jsonl")).unwrap();
+    assert!(!raw.contains("pw"), "{raw}");
+    assert!(r.app.destruct_active(), "holds on 00000 while the host goes down");
+}
+
+#[test]
+fn failed_execute_shows_reason_and_records() {
+    let mut r = destruct_rig(10, None, true);
+    r.app.poll_destruct(r.t0 + Duration::from_secs(10));
+    let seq = r.calls.borrow()[0].0;
+    r.app.on_sudo_done(
+        seq,
+        RunOutput::Exited {
+            code: 1,
+            stdout: String::new(),
+            stderr: "sudo: 1 incorrect password attempt\n".into(),
+        },
+    );
+    let s = r.strip();
+    assert!(s.contains("UNABLE TO COMPLY -- SUDO: 1 INCORRECT PASSWORD ATTEMPT"), "{s}");
+    assert!(r.armer.borrow().sudo_done.is_empty());
+    r.app.active = TabId::Cargo;
+    r.app.handle_keys_at(vec![Key::Char('x')], r.t0 + Duration::from_secs(12));
+    assert!(!r.app.destruct_active() && r.app.redraw);
+    assert_eq!(r.app.active, TabId::Utility);
+    assert_eq!(r.exits(), ["executed", "failed"]);
+    let audit = r.audit();
+    assert_eq!(audit[1]["decision"], "confirmed");
+    assert_eq!(audit[1]["output"], "SUDO: 1 INCORRECT PASSWORD ATTEMPT");
+}
+
+#[test]
+fn esc_records_aborted() {
+    let mut r = destruct_rig(60, None, true);
+    r.app.redraw = false;
+    r.app.handle_keys_at(vec![Key::Esc], r.t0 + S);
+    assert!(!r.app.destruct_active() && r.app.redraw);
+    assert_eq!(r.exits(), ["aborted"]);
+    assert_eq!(r.audit()[0]["decision"], "aborted");
+    let rows = all_rows(&draw(&mut r.app));
+    assert!(rows.iter().all(|l| !l.contains("ABORT")), "{rows:#?}");
+    assert!(rows[0].contains("USCSS TEST"));
+    drop(std::mem::replace(&mut r.app, App::new(chrome())));
+    assert_eq!(r.exits(), ["aborted"], "nothing more on drop");
+}
+
+#[test]
+fn break_while_frozen_records_frozen() {
+    let mut r = destruct_rig(10, None, true);
+    let t = r.t0 + S;
+    r.app.handle_keys_at(vec![Key::Char('x'), Key::Enter], t);
+    r.app.poll_destruct(r.t0 + Duration::from_millis(9950));
+    let brk_at = r.t0 + Duration::from_secs(11);
+    r.app.handle_keys_at(vec![BREAK], brk_at);
+    assert!(!r.app.destruct_active() && r.app.settling());
+    assert_eq!(r.exits(), ["frozen"]);
+    r.app.poll_settle(brk_at + BREAK_SETTLE);
+    assert!(r.app.redraw);
+    assert!(row(&draw(&mut r.app), 0).contains("USCSS TEST"));
+    assert!(r.calls.borrow().is_empty());
+}
+
+#[test]
+fn drop_mid_countdown_records_aborted() {
+    let r = destruct_rig(60, None, true);
+    let Rig { app, dir, .. } = r;
+    drop(app);
+    let raw = std::fs::read_to_string(dir.path().join("audit.jsonl")).unwrap();
+    assert_eq!(raw.lines().count(), 1, "{raw}");
+    assert!(raw.contains("\"exit\":\"aborted\""), "{raw}");
+}
+
+#[test]
+fn other_sudo_results_go_to_utility() {
+    let mut r = destruct_rig(60, None, false);
+    r.app.on_sudo_done(
+        7,
+        RunOutput::Exited {
+            code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+        },
+    );
+    assert_eq!(r.armer.borrow().sudo_done, [7]);
+}
+
+#[test]
+fn request_without_deps_is_dropped() {
+    let armer = Rc::new(RefCell::new(ArmerState::default()));
+    let mut app = App::new(chrome()).with_tab(TabId::Utility, Box::new(Armer(armer.clone(), Some(Duration::from_secs(60)))));
+    app.handle_keys_at(vec![Key::Enter], Instant::now());
+    assert!(!app.destruct_active());
+    assert!(armer.borrow().request.is_none(), "taken and dropped");
+}
+
+#[test]
+fn quit_after_destruct_quits_on_done() {
+    let mut r = destruct_rig(60, None, true);
+    r.app.quit_after_destruct = true;
+    r.app.handle_keys_at(vec![Key::Esc], r.t0 + S);
+    assert!(r.app.quit);
+}
+
+#[test]
+fn preview_has_no_recorder() {
+    let mut r = destruct_rig(60, None, false);
+    r.app
+        .start_destruct(crate::destruct::Destruct::preview(Kind::Reboot, Duration::from_secs(10), r.t0, 1));
+    assert!(r.app.destruct_active());
+    r.app.poll_destruct(r.t0 + Duration::from_secs(11));
+    r.app.handle_keys_at(vec![Key::Esc], r.t0 + Duration::from_secs(12));
+    assert!(!r.app.destruct_active());
+    assert!(r.audit().is_empty() && r.calls.borrow().is_empty());
+}
+
+#[test]
+fn quit_after_destruct_quits_on_break() {
+    let mut r = destruct_rig(60, None, true);
+    r.app.quit_after_destruct = true;
+    r.app.handle_keys_at(vec![BREAK], r.t0 + S);
+    assert!(r.app.quit && !r.app.destruct_active());
+}

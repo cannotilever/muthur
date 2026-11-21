@@ -88,6 +88,12 @@ pub trait Tab {
     fn tick_interval(&self) -> Option<Duration> {
         None
     }
+    /// An armed self-destruct, taken once (Utility only); polled after each key batch.
+    fn take_destruct(&mut self) -> Option<crate::destruct::DestructRequest> {
+        None
+    }
+    /// The result of sudo command `_seq` (Utility only).
+    fn on_sudo_done(&mut self, _seq: u64, _out: crate::ops::runner::RunOutput) {}
 }
 
 /// Stand-in until a tab's milestone lands.
