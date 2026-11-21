@@ -1135,3 +1135,23 @@ fn break_restarts_countdown() {
     app.poll_standby(after + D, now());
     assert!(app.standby_active(), "the countdown runs from the re-init");
 }
+
+/// Wants a fast redraw cadence (a reply animation).
+struct Animating;
+impl Tab for Animating {
+    fn render(&mut self, _area: Rect, _buf: &mut Buffer) {}
+    fn handle_key(&mut self, _key: &Key) {}
+    fn tick_interval(&self) -> Option<Duration> {
+        Some(Duration::from_millis(100))
+    }
+}
+
+#[test]
+fn standby_ignores_the_hidden_tabs_cadence() {
+    let mut app = App::new(chrome()).with_standby(D).with_tab(TabId::Utility, Box::new(Animating));
+    let t0 = Instant::now();
+    app.poll_standby(t0, now());
+    assert_eq!(app.tick_interval(), Duration::from_millis(100));
+    app.poll_standby(t0 + D, now());
+    assert_eq!(app.tick_interval(), Duration::from_secs(1), "nothing animates on the standby screen");
+}

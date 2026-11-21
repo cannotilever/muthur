@@ -993,10 +993,7 @@ fn push_reply(transcript: &mut Vec<Entry>, reply: Option<(String, String)>, uppe
 
 impl Tab for MuthurTab {
     fn awaiting_operator(&self) -> bool {
-        #[cfg(feature = "agent")]
-        return self.state.prompting();
-        #[cfg(not(feature = "agent"))]
-        false
+        self.state.prompting()
     }
 
     fn render(&mut self, area: Rect, buf: &mut Buffer) {

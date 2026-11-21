@@ -200,6 +200,10 @@ impl App {
         if let Some(s) = &self.splash {
             return s.tick_interval();
         }
+        // Nothing animates on the standby screen; the tabs behind it are hidden.
+        if self.standby.is_some() {
+            return std::time::Duration::from_secs(1);
+        }
         // Hidden tabs only advance when rendered, so their animation must not
         // drive the cadence; the 1 s tick still lights their activity marker.
         self.tabs[self.active.index()].tick_interval().unwrap_or(std::time::Duration::from_secs(1))

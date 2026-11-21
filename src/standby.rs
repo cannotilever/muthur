@@ -15,27 +15,33 @@ const CAPTION_ROWS: usize = 4;
 /// Fixed once built: every render is the same frame, so it costs no bytes.
 pub struct Standby {
     since: String,
+    logo: Logo,
 }
 
 impl Standby {
     /// `since` is the formatted date standby began.
     pub fn new(since: String) -> Standby {
-        Standby { since }
+        Self::with_logo(since, Logo::shipped().clone())
+    }
+
+    /// As `new`, with this logo (as `Splash::with_logo`).
+    pub fn with_logo(since: String, logo: Logo) -> Standby {
+        Standby { since, logo }
     }
 
     /// The logo's first screen row: logo and caption centred as one block.
-    fn top(area: Rect) -> i32 {
-        let h = Logo::shipped().height() + CAPTION_ROWS;
+    fn top(&self, area: Rect) -> i32 {
+        let h = self.logo.height() + CAPTION_ROWS;
         (usize::from(area.height).saturating_sub(h) / 2) as i32
     }
 
     pub fn line_attrs(&self, area: Rect) -> Vec<(u16, LineAttr)> {
-        logo::line_attrs(Logo::shipped(), area, Self::top(area))
+        logo::line_attrs(&self.logo, area, self.top(area))
     }
 
     pub fn render(&self, area: Rect, buf: &mut Buffer) {
-        let l = Logo::shipped();
-        let top = Self::top(area);
+        let l = &self.logo;
+        let top = self.top(area);
         logo::draw(l, area, top, buf);
         let since = format!("STANDBY SINCE {}", self.since);
         let y0 = top + l.height() as i32 + 1;
@@ -99,6 +105,17 @@ mod tests {
         assert_eq!((buf[(6, 13)].symbol(), buf[(6, 14)].symbol()), ("W", "W"));
         assert_eq!(row(&buf, 24).trim(), "BUILDING BETTER WORLDS");
         assert!(row(&buf, 25).trim().is_empty());
+    }
+
+    #[test]
+    fn layout_follows_the_given_logo() {
+        let mut buf = Buffer::empty(area());
+        let sb = Standby::with_logo("X".into(), Logo::parse("A\n"));
+        sb.render(area(), &mut buf);
+        // One logo row + four caption rows, centred: logo on 19, caption on 21-23.
+        assert_eq!(row(&buf, 19).trim(), "A");
+        assert_eq!(row(&buf, 22).trim(), "STANDBY SINCE X");
+        assert!(sb.line_attrs(area()).is_empty());
     }
 
     #[test]

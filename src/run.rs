@@ -841,6 +841,56 @@ mod tests {
         assert_eq!(out.matches('\x07').count(), 1, "muthur splash still rings before exiting");
     }
 
+    /// MU/TH/UR stand-in that reports a tool prompt while its flag is set.
+    struct Prompter(std::sync::Arc<std::sync::atomic::AtomicBool>);
+    impl crate::app::Tab for Prompter {
+        fn render(&mut self, _area: ratatui::layout::Rect, _buf: &mut ratatui::buffer::Buffer) {}
+        fn handle_key(&mut self, _key: &Key) {}
+        fn awaiting_operator(&self) -> bool {
+            self.0.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[tokio::test]
+    async fn standby_is_silent_then_a_prompt_wakes_it_with_one_bell() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let flag = std::sync::Arc::new(AtomicBool::new(false));
+        let (app, mut t) = setup();
+        let mut app = app
+            .with_standby(Duration::from_millis(50))
+            .with_tab(crate::app::TabId::Muthur, Box::new(Prompter(flag.clone())));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let drive = async move {
+            // Past the timeout: the next wake-up enters standby.
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            tx.send(Event::Tick).unwrap();
+            // Asleep: these wake-ups must write nothing.
+            for _ in 0..5 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                tx.send(Event::Tick).unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            flag.store(true, Ordering::SeqCst);
+            tx.send(Event::Tick).unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            tx.send(Event::Keys(vec![Key::Ctrl(']'), Key::Char('q')])).unwrap();
+        };
+        let mut pty = no_pty();
+        let (r, _) = tokio::join!(event_loop(&mut app, &mut t, &mut rx, &mut pty, || 0, now), drive);
+        r.unwrap();
+        let out = String::from_utf8(t.backend().writer().clone()).unwrap();
+        // Where each full clear (dialect reset prefix + ED 2) begins.
+        let clears: Vec<usize> = out.match_indices("\x1b[0m\x0f\x1b(B\x1b[?1l\x1b>\x1b[r\x1b[2J").map(|(i, _)| i).collect();
+        assert_eq!(clears.len(), 3, "initial clear, standby entry, prompt wake");
+        // The caption's last word: the backend sends the gaps as cursor moves.
+        let caption = out.rfind("KEY").expect("standby drawn");
+        assert!(out.contains("INTERFACE") && caption > clears[1] && caption < clears[2], "{out:?}");
+        let asleep = &out[caption + "KEY".len()..clears[2]];
+        assert_eq!(asleep, "", "wrote while asleep");
+        assert_eq!(out.matches('\x07').count(), 1, "one bell for the prompt");
+        assert!(out.rfind('\x07').unwrap() > clears[2], "the bell rings after the wake");
+    }
+
     #[tokio::test]
     async fn quit_key_ends_loop_and_redraw_clears() {
         let (mut app, mut t) = setup();
