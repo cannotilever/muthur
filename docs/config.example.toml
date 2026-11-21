@@ -47,6 +47,9 @@ scrollback = 1000
 [utility]
 # Refresh interval (minimum 1).
 interval_secs = 2
+# Starting length of the self-destruct countdown (S / B on the Utility tab),
+# in seconds, 10–5999. Adjusted with the arrows before arming.
+destruct_seconds = 60
 # "auto" (docker, then podman) | "docker" | "podman" | "none"
 containers = "auto"
 # Filesystem types left out of the DISKS panel. Network and FUSE filesystems

@@ -42,6 +42,15 @@ impl Secret {
         self.0.zeroize();
     }
 
+    /// A separate zeroizing copy, so two owners can each wipe their own.
+    pub fn duplicate(&self) -> Secret {
+        let mut d = Secret(Zeroizing::new(String::with_capacity(
+            self.0.capacity().max(INITIAL_CAP),
+        )));
+        d.0.push_str(&self.0);
+        d
+    }
+
     pub fn expose(&self) -> &str {
         &self.0
     }
@@ -111,6 +120,18 @@ mod tests {
             s.push('x');
         }
         assert_eq!(s.chars(), 300);
+    }
+
+    #[test]
+    fn duplicate_is_independent() {
+        let mut s = Secret::new();
+        for c in "abc".chars() {
+            s.push(c);
+        }
+        let d = s.duplicate();
+        s.clear();
+        assert_eq!(d.expose(), "abc");
+        assert!(s.is_empty());
     }
 
     #[test]

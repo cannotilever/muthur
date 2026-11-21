@@ -98,6 +98,8 @@ pub struct UtilitySection {
     pub containers: crate::metrics::local::ContainerRuntime,
     /// Filesystem types left out of the DISKS panel.
     pub exclude_fs: Vec<String>,
+    /// Default self-destruct countdown in seconds (10–5999).
+    pub destruct_seconds: u32,
 }
 
 impl Default for UtilitySection {
@@ -106,6 +108,7 @@ impl Default for UtilitySection {
             interval_secs: 2,
             containers: crate::metrics::local::ContainerRuntime::Auto,
             exclude_fs: crate::metrics::local::default_exclude(),
+            destruct_seconds: 60,
         }
     }
 }
@@ -362,6 +365,12 @@ pub struct Config {
 
 impl Config {
     pub fn validate(&self) -> anyhow::Result<()> {
+        if !(10..=5999).contains(&self.utility.destruct_seconds) {
+            bail!(
+                "[utility] destruct_seconds must be 10..=5999 (got {})",
+                self.utility.destruct_seconds
+            );
+        }
         // Without the agent build `[agent]` is ignored, so it cannot be wrong.
         if !cfg!(feature = "agent") {
             return Ok(());
@@ -531,6 +540,25 @@ mod tests {
             assert_eq!(c.validate().is_err(), cfg!(feature = "agent"), "{d} {m}");
         }
         assert!(Config::default().validate().is_ok());
+    }
+
+    #[test]
+    fn destruct_seconds_defaults_to_sixty() {
+        let c: Config = toml::from_str("").unwrap();
+        assert_eq!(c.utility.destruct_seconds, 60);
+    }
+
+    #[test]
+    fn destruct_seconds_out_of_range_rejected() {
+        for (v, ok) in [(9, false), (6000, false), (10, true), (5999, true)] {
+            let mut c = Config::default();
+            c.utility.destruct_seconds = v;
+            let r = c.validate();
+            assert_eq!(r.is_ok(), ok, "{v}");
+            if let Err(e) = r {
+                assert!(e.to_string().contains("destruct_seconds"));
+            }
+        }
     }
 
     #[test]

@@ -17,7 +17,7 @@ chrono = "0.4"
 unicode-width = "0.2"
 deunicode = "1"
 vt100 = "0.18"
-zeroize = { version = "1", optional = true }
+zeroize = "1"
 sysinfo = "0.40"
 tracing = "0.1"
 tracing-subscriber = "0.3"
@@ -28,7 +28,7 @@ serde_json = "1"
 
 [features]
 default = ["agent"]
-agent = ["dep:regex", "dep:zeroize"]
+agent = ["dep:regex"]
 
 [dev-dependencies]
 tempfile = "3"

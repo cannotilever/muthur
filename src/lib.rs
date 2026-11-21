@@ -16,7 +16,6 @@ pub mod ops;
 pub mod review;
 pub mod run;
 pub mod scroll;
-#[cfg(feature = "agent")]
 pub mod secret;
 pub mod shell;
 pub mod splash;
