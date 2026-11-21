@@ -1,8 +1,9 @@
-HOST   ?= omicron
-# ARCH is x86_64 or aarch64. aarch64 needs cargo-zigbuild:
+# HOST (deploy only) has no default: make HOST=myhost deploy.
+HOST   ?=
+# ARCH is x86_64 or aarch64; build and install default to this machine's
+# `uname -m`, deploy to the remote one's. Cross-building needs cargo-zigbuild:
 #   make BUILD=zigbuild ARCH=aarch64 build
-# `deploy` defaults ARCH to the remote `uname -m` when not given.
-ARCH   ?= x86_64
+ARCH   ?= $(shell uname -m)
 BUILD  ?= build
 # AGENT=0 builds without the technical agent and passes --no-agent to install.sh.
 AGENT  ?= 1
@@ -11,9 +12,15 @@ FEATURES := $(if $(filter 0,$(AGENT)),--no-default-features,)
 INSTALL_ARGS ?=
 ALL_ARGS := $(INSTALL_ARGS) $(if $(filter 0,$(AGENT)),--no-agent,)
 
-ifeq ($(MAKECMDGOALS),deploy)
+ifneq ($(filter deploy,$(MAKECMDGOALS)),)
+ifeq ($(strip $(HOST)),)
+$(error set HOST=<ssh host> for deploy, e.g. make HOST=myhost deploy)
+endif
 ifneq ($(origin ARCH),command line)
 ARCH := $(shell ssh $(HOST) uname -m)
+ifeq ($(strip $(ARCH)),)
+$(error cannot read the architecture of $(HOST) over ssh; check the host or pass ARCH=x86_64 or ARCH=aarch64)
+endif
 endif
 endif
 

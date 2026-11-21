@@ -1,5 +1,5 @@
 #!/bin/sh
-# shellcheck disable=SC2031,SC2013,SC2329,SC2016,SC2032,SC2033 # tests run in subshells on purpose; test names have no spaces
+# shellcheck disable=SC2030,SC2031,SC2013,SC2329,SC2016,SC2032,SC2033 # tests run in subshells on purpose; test names have no spaces
 # Plain-sh test harness for install.sh. Run: sh tests/install/run.sh
 set -u
 HERE=$(cd -P "$(dirname "$0")" && pwd)
@@ -37,9 +37,11 @@ dies() {
 
 setup() {
 	T=$(mktemp -d)
-	HOME=$T/home ROOT=$T/root
-	mkdir -p "$HOME" "$ROOT"
-	export HOME ROOT
+	# install.sh reads MUTHUR_TEST_ROOT, never ROOT or YES from the environment.
+	unset XDG_CONFIG_HOME ZDOTDIR ROOT YES MUTHUR_TEST_YES MUTHUR_TEST_SYSTEMD_RUN
+	HOME=$T/home MUTHUR_TEST_ROOT=$T/root
+	mkdir -p "$HOME" "$MUTHUR_TEST_ROOT"
+	export HOME MUTHUR_TEST_ROOT
 	PATH=$HERE/stubs:$PATH
 	STUBLOG=$T/stub.log; : > "$STUBLOG"
 	export PATH STUBLOG MUTHUR_INSTALL_LIB=1 MUTHUR_INSTALL_SRC="$REPO/install.sh"
@@ -246,13 +248,13 @@ t_system_migrates_wy60() {
 	step_system >/dev/null
 	chk rule-gone test ! -e "$ROOT/etc/udev/rules.d/99-wy60.rules"
 	chk dir-gone test ! -e "$ROOT/etc/systemd/system/serial-getty@wy60.service.d"
-	_s=$(grep -n '^systemctl stop serial-getty@wy60' "$STUBLOG" | head -1 | cut -d: -f1)
+	_s=$(grep -n '^systemctl disable --now serial-getty@wy60' "$STUBLOG" | head -1 | cut -d: -f1)
 	_r=$(grep -n '^sudo rm .*wy60' "$STUBLOG" | head -1 | cut -d: -f1)
 	chk order test -n "$_s" -a -n "$_r" -a "$_s" -lt "$_r"
 }
 t_system_disables_ttyusb0() {
 	sys_env; step_system >/dev/null
-	chk disabled grep -q '^systemctl disable.*serial-getty@ttyUSB0' "$STUBLOG"
+	chk disabled grep -q '^systemctl disable --now serial-getty@ttyUSB0$' "$STUBLOG"
 	: > "$STUBLOG"; STUB_SYSTEMCTL_IS_ENABLED_RC=1; export STUB_SYSTEMCTL_IS_ENABLED_RC
 	step_system >/dev/null
 	if grep -q 'systemctl disable' "$STUBLOG"; then echo "  disabled anyway" >&2; exit 1; fi
@@ -634,17 +636,14 @@ t_config_abort_leaves_nothing() {
 	printf '2\nhttp://h\n' | sh -c '. "$MUTHUR_INSTALL_SRC"; step_config' >/dev/null 2>&1 && exit 1
 	[ ! -e "$CFG" ] || { echo "  config left behind" >&2; exit 1; }
 	eq "" "$(ls -A "$HOME/.config/muthur")" no-temp
-	printf '1\n' | sh -c '. "$MUTHUR_INSTALL_SRC"; step_config' >/dev/null 2>&1 && exit 1
-	[ ! -e "$CFG" ] || exit 1
-	eq "" "$(ls -A "$HOME/.config/muthur")" no-temp2
 }
 t_no_system_skips_agent() {
 	bin_env
 	parse_args --no-system
 	eq 0 "$OPT_AGENT" agent-off
-	OPT_SYSTEM=0 OPT_AGENT=0 preflight 2>/dev/null
+	OPT_SYSTEM=0 OPT_AGENT=0 OPT_SHELL=bash preflight 2>/dev/null || exit 1
 	: > "$STUBLOG"
-	( MUTHUR_INSTALL_LIB= ; cd "$T" && unset MUTHUR_INSTALL_LIB && sh "$REPO/install.sh" --no-system --yes --bin "$T/none" ) >/dev/null 2>&1
+	( MUTHUR_INSTALL_LIB= ; cd "$T" && unset MUTHUR_INSTALL_LIB && sh "$REPO/install.sh" --no-system --yes --shell bash --bin "$T/none" ) >/dev/null 2>&1
 	! grep -q 'sysusers\|visudo\|nft' "$STUBLOG" || exit 1
 	eq "" "$(ls -A "$ROOT")" nothing-in-root
 }
@@ -673,7 +672,7 @@ t_uninstall() {
 	eq "" "$(find "$ROOT/etc" -iname '*muthur*' 2>/dev/null)" etc-files
 	[ ! -e "$ROOT/etc/systemd/system/serial-getty@ttyMUTHUR.service.d" ] || exit 1
 	! grep -rq '>>> muthur >>>' "$HOME" || exit 1
-	[ ! -e "$FISH_HOOK" ] || exit 1
+	[ ! -e "$(fish_hook)" ] || exit 1
 	[ ! -e "$HOME/.local/bin/muthur-login" ] || exit 1
 	[ ! -e "$HOME/.local/bin/muthur" ] || exit 1
 	[ -f "$CFG" ] || exit 1
@@ -691,6 +690,121 @@ t_verify_reports() {
 	grep -q 'not plugged in' "$T/out" || exit 1
 	STUB_SYSTEMCTL_RC=3 step_verify >"$T/out" 2>&1; eq 0 $? rc
 	grep 'serial-getty@ttyMUTHUR' "$T/out" | grep -q inactive || exit 1
+}
+t_config_anthropic_empty_key() {
+	cfg_env
+	printf '1\n\n' | step_config >"$T/out" 2>&1 || { cat "$T/out" >&2; exit 1; }
+	chk example cmp "$CFG" "$REPO/docs/config.example.toml"
+	eq 600 "$(stat -c %a "$CFG")" mode
+	grep -q "api_key in $CFG" "$T/out" || { cat "$T/out" >&2; exit 1; }
+	eq config.toml "$(ls -A "$HOME/.config/muthur")" no-temp
+}
+t_env_root_yes_ignored() {
+	# sourced as a library: a stray ROOT/YES in the environment is not read
+	_v=$(ROOT=/x YES=1 MUTHUR_TEST_ROOT='' sh -c '. "$MUTHUR_INSTALL_SRC"; printf "%s|%s" "$ROOT" "$YES"')
+	eq "|0" "$_v" lib-env
+	_v=$(MUTHUR_TEST_YES=1 sh -c '. "$MUTHUR_INSTALL_SRC"; printf "%s" "$YES"')
+	eq 1 "$_v" test-yes
+	# a real run: ROOT/YES exported, MUTHUR_INSTALL_LIB unset
+	fake_bin x "$T/b1"
+	_rc=0
+	( unset MUTHUR_INSTALL_LIB MUTHUR_ASSUME_TTY; ROOT=$T/evil YES=1 MUTHUR_TEST_YES=1 MUTHUR_TEST_SYSTEMD_RUN=$T; export ROOT YES MUTHUR_TEST_YES MUTHUR_TEST_SYSTEMD_RUN
+		sh "$REPO/install.sh" --no-agent --shell bash --vid 0403 --pid 6001 --serial S --bin "$T/b1" ) </dev/null >"$T/out" 2>&1 || _rc=$?
+	eq 1 "$_rc" "real run must stop at the config question (YES ignored)"
+	grep -q 'no terminal' "$T/out" || { cat "$T/out" >&2; exit 1; }
+	chk rule-in-test-root test -f "$ROOT/$RULE"
+	chk no-evil test ! -e "$T/evil"
+}
+t_agent_nft_sysconfig() {
+	sys_env; YES=1; STUB_SYSTEMCTL_IS_ENABLED_RC=1; export STUB_SYSTEMCTL_IS_ENABLED_RC
+	mkdir -p "$ROOT/etc/sysconfig"; printf 'flush ruleset\n' > "$ROOT/etc/sysconfig/nftables.conf"
+	step_agent >/dev/null 2>&1; step_agent >/dev/null 2>&1
+	eq 1 "$(grep -c '^include "/etc/nftables.d/\*.nft"$' "$ROOT/etc/sysconfig/nftables.conf")" once
+	chk no-etc-conf test ! -e "$ROOT/etc/nftables.conf"
+	chk enabled grep -q '^systemctl enable nftables' "$STUBLOG"
+}
+t_agent_nft_prefers_etc_conf() {
+	sys_env; YES=1
+	mkdir -p "$ROOT/etc/sysconfig"; : > "$ROOT/etc/sysconfig/nftables.conf"; : > "$ROOT/etc/nftables.conf"
+	step_agent >/dev/null 2>&1
+	chk etc grep -q '^include' "$ROOT/etc/nftables.conf"
+	eq "" "$(cat "$ROOT/etc/sysconfig/nftables.conf")" sysconfig-untouched
+}
+t_agent_nft_no_conf() {
+	sys_env; YES=1; STUB_SYSTEMCTL_IS_ENABLED_RC=1; export STUB_SYSTEMCTL_IS_ENABLED_RC
+	step_agent >/dev/null 2>"$T/err"
+	grep -q '/etc/nftables.conf' "$T/err" || { cat "$T/err" >&2; exit 1; }
+	grep -q '/etc/sysconfig/nftables.conf' "$T/err" || exit 1
+	! grep -q 'systemctl enable' "$STUBLOG" || { echo "  offered enable" >&2; exit 1; }
+	chk no-conf test ! -e "$ROOT/etc/nftables.conf" -a ! -e "$ROOT/etc/sysconfig"
+}
+t_agent_nft_comment_mention() {
+	sys_env; YES=1
+	mkdir -p "$ROOT/etc"; printf '# rules also live in /etc/nftables.d/\nflush ruleset\n' > "$ROOT/etc/nftables.conf"
+	step_agent >/dev/null 2>&1
+	eq 1 "$(grep -c '^include "/etc/nftables.d/\*.nft"$' "$ROOT/etc/nftables.conf")" added
+	printf '  include  "/etc/nftables.d/other.nft"\n' > "$ROOT/etc/nftables.conf"
+	step_agent >/dev/null 2>&1
+	eq 1 "$(grep -c 'include' "$ROOT/etc/nftables.conf")" indented-counts
+}
+t_preflight_unsupported_shell() {
+	SYSTEMD_RUN=$T
+	STUB_PASSWD='tester:x:1000:1000::/home/t:/bin/dash'; export STUB_PASSWD
+	dies 'bash, zsh, fish' preflight
+	OPT_UNINSTALL=1 preflight || exit 1
+	OPT_UNINSTALL=0 OPT_SHELL=zsh preflight || exit 1
+	eq zsh "$LOGIN_SHELL" stored
+}
+t_unsupported_shell_installs_nothing() {
+	STUB_PASSWD='tester:x:1000:1000::/home/t:/bin/dash'; export STUB_PASSWD
+	fake_bin x "$T/b1"
+	_rc=0
+	( unset MUTHUR_INSTALL_LIB; MUTHUR_TEST_SYSTEMD_RUN=$T; export MUTHUR_TEST_SYSTEMD_RUN
+		sh "$REPO/install.sh" --yes --no-system --bin "$T/b1" ) >/dev/null 2>&1 || _rc=$?
+	eq 1 "$_rc" rc
+	chk no-binary test ! -e "$HOME/.local/bin/muthur"
+}
+t_parse_args_baud() {
+	parse_args --baud 9600; eq 9600 "$OPT_BAUD" ok
+	dies --baud parse_args --baud 96x0
+	dies --baud parse_args --baud ''
+	dies --baud parse_args --baud '9600 -o x'
+}
+t_uninstall_without_agent() {
+	cfg_env; sys_env; YES=1
+	step_system >/dev/null 2>&1
+	uninstall >"$T/out" 2>&1 || { cat "$T/out" >&2; exit 1; }
+	! grep -q 'nft delete' "$STUBLOG" || { echo "  nft ran" >&2; exit 1; }
+	! grep -q userdel "$T/out" || { echo "  userdel hint" >&2; exit 1; }
+	: > "$STUBLOG"
+	OPT_AGENT=0; step_agent >/dev/null 2>&1; uninstall >"$T/out" 2>&1
+	! grep -q 'nft delete' "$STUBLOG" || exit 1
+	! grep -q userdel "$T/out" || exit 1
+}
+t_no_system_needs_no_udevadm() {
+	SYSTEMD_RUN=$T; OPT_SHELL=bash
+	find_tool() { [ "$1" != udevadm ] && command -v "$1"; }
+	OPT_SYSTEM=0 OPT_AGENT=0 OPT_UNINSTALL=1 preflight || { echo "  uninstall needed udevadm" >&2; exit 1; }
+	OPT_SYSTEM=0 OPT_AGENT=0 OPT_UNINSTALL=0 preflight || { echo "  install needed udevadm" >&2; exit 1; }
+	OPT_SYSTEM=1 OPT_AGENT=0
+	dies udevadm preflight
+}
+t_xdg_config_home() {
+	cfg_env; XDG_CONFIG_HOME=$T/xdg; export XDG_CONFIG_HOME
+	install_hook fish >/dev/null 2>&1
+	chk fish-xdg test -f "$T/xdg/fish/conf.d/muthur.fish"
+	chk fish-not-home test ! -e "$HOME/.config/fish"
+	YES=1; step_config >/dev/null 2>&1
+	chk cfg-xdg test -f "$T/xdg/muthur/config.toml"
+	fake_bin x "$T/b1"; OPT_BIN=$T/b1; step_binary >/dev/null 2>&1
+	step_verify >"$T/out" 2>&1
+	grep -q 'login hook: yes' "$T/out" || exit 1
+	grep -q "$T/xdg/muthur/config.toml" "$T/out" || exit 1
+	uninstall >"$T/out" 2>&1
+	chk fish-gone test ! -e "$T/xdg/fish/conf.d/muthur.fish"
+	chk cfg-kept test -f "$T/xdg/muthur/config.toml"
+	grep -q "$T/xdg/muthur/config.toml" "$T/out" || exit 1
+	XDG_CONFIG_HOME=relative; eq "$HOME/.config/fish/conf.d/muthur.fish" "$(fish_hook)" relative-ignored
 }
 t_help_exits_zero() {
 	( cd / && unset MUTHUR_INSTALL_LIB && sh "$REPO/install.sh" --help ) | grep -q '^Usage:' || exit 1

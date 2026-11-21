@@ -1,14 +1,19 @@
 #!/bin/sh
 # MUTHUR installer: udev rule, serial getty, login launcher, agent user.
 # Run as your normal user; it uses sudo only where it must.
-# shellcheck disable=SC2034 # OPT_*, SCRIPT_DIR are used by the step functions in later tasks
 set -eu
 
-ROOT=${ROOT:-}
-SYSTEMD_RUN=${SYSTEMD_RUN:-/run/systemd/system}
+# Test hooks only: MUTHUR_TEST_ROOT prefixes every system path and
+# MUTHUR_TEST_SYSTEMD_RUN replaces the systemd check. A ROOT or YES in the
+# environment is never read; YES comes from --yes (or, when sourced as a
+# library by the tests, from MUTHUR_TEST_YES).
+ROOT=${MUTHUR_TEST_ROOT:-}
+SYSTEMD_RUN=${MUTHUR_TEST_SYSTEMD_RUN:-/run/systemd/system}
 # MUTHUR_INSTALL_SRC lets tests that source this file name the real path.
 SCRIPT_DIR=$(cd -P "$(dirname "${MUTHUR_INSTALL_SRC:-$0}")" && pwd)
-YES=${YES:-0}
+YES=0
+[ -z "${MUTHUR_INSTALL_LIB:-}" ] || YES=${MUTHUR_TEST_YES:-0}
+LOGIN_SHELL=
 
 OPT_SHELL=
 OPT_VID=
@@ -100,7 +105,10 @@ parse_args() {
 			--pid) OPT_PID=$2 ;;
 			--serial) OPT_SERIAL=$2 ;;
 			--port) OPT_PORT=$2 ;;
-			--baud) OPT_BAUD=$2 ;;
+			--baud)
+				case $2 in "" | *[!0-9]*) die "--baud must be a number (digits only), got '$2'" ;; esac
+				OPT_BAUD=$2
+				;;
 			--bin) OPT_BIN=$2 ;;
 			esac
 			shift
@@ -123,9 +131,10 @@ find_tool() {
 
 preflight() {
 	[ "$(id -u)" != 0 ] || die "run as your normal user, not as root (sudo is used where needed)"
-	[ -d "$SYSTEMD_RUN" ] || die "systemd is required; see docs for the manual-install steps"
+	[ -d "$SYSTEMD_RUN" ] || die "systemd is required; see docs/deploy.md#manual-install"
 	case $(uname -m) in x86_64 | aarch64) ;; *) die "unsupported architecture $(uname -m) (x86_64 and aarch64 only)" ;; esac
-	_need="sudo udevadm"
+	_need=sudo
+	[ "$OPT_SYSTEM" = 0 ] || _need="$_need udevadm"
 	if [ "$OPT_UNINSTALL" != 1 ]; then
 		[ "$OPT_SYSTEM" = 0 ] || _need="$_need agetty"
 		[ "$OPT_AGENT" = 0 ] || _need="$_need nft bash visudo"
@@ -133,6 +142,8 @@ preflight() {
 	for _t in $_need; do
 		find_tool "$_t" >/dev/null || die "missing required tool: $_t"
 	done
+	# Fail before anything is installed if the login shell has no hook.
+	if [ "$OPT_UNINSTALL" != 1 ]; then LOGIN_SHELL=$(login_shell) || exit 1; fi
 }
 
 # render TEMPLATE OUT K=V...: substitute @K@ with V; leftovers are an error.
@@ -394,12 +405,12 @@ step_system() {
 	_old_dir=$ROOT/etc/systemd/system/serial-getty@wy60.service.d
 	if [ -e "$_old_rule" ] || [ -e "$_old_dir" ]; then
 		say "migrating the old wy60 names"
-		sudo systemctl stop serial-getty@wy60 || true
+		sudo systemctl disable --now serial-getty@wy60 || true
 		sudo rm -f "$_old_rule"
 		sudo rm -rf "$_old_dir"
 	fi
 	if sudo systemctl is-enabled --quiet serial-getty@ttyUSB0 2>/dev/null; then
-		sudo systemctl disable serial-getty@ttyUSB0
+		sudo systemctl disable --now serial-getty@ttyUSB0
 	fi
 	sys_install 644 "$STAGE/rule" "$ROOT/etc/udev/rules.d/99-ttyMUTHUR.rules"
 	sys_install 644 "$STAGE/drop" "$ROOT/etc/systemd/system/serial-getty@ttyMUTHUR.service.d/override.conf"
@@ -431,23 +442,31 @@ step_agent() {
 	sys_install 644 "$SCRIPT_DIR/deploy/nftables/muthur-agent.nft" "$ROOT/etc/nftables.d/muthur-agent.nft"
 	stage_done
 	sudo nft -f "$ROOT/etc/nftables.d/muthur-agent.nft"
-	_conf=$ROOT/etc/nftables.conf
-	if [ -f "$_conf" ]; then
+	# nftables.service loads /etc/nftables.conf (Arch, Debian) or
+	# /etc/sysconfig/nftables.conf (Fedora); without either, no persistence.
+	_cname=
+	for _c in /etc/nftables.conf /etc/sysconfig/nftables.conf; do
+		if [ -f "$ROOT$_c" ]; then _cname=$_c; break; fi
+	done
+	if [ -z "$_cname" ]; then
+		warn "neither /etc/nftables.conf nor /etc/sysconfig/nftables.conf exists: the muthur-agent rules are loaded now but not at boot (see docs/deploy.md, The agent account)"
+	else
+		_conf=$ROOT$_cname
 		_rc=0
-		sudo grep -q 'nftables.d' "$_conf" || _rc=$?
+		sudo grep -Eq '^[[:space:]]*include[[:space:]]+"/etc/nftables\.d/' "$_conf" || _rc=$?
 		case $_rc in
 		0) ;;
 		1)
-			if confirm "Add an include for /etc/nftables.d/ to /etc/nftables.conf?"; then
+			if confirm "Add an include for /etc/nftables.d/ to $_cname?"; then
 				{ [ -z "$(sudo tail -c 1 "$_conf")" ] || echo; echo 'include "/etc/nftables.d/*.nft"'; } | sudo tee -a "$_conf" >/dev/null
 			fi
 			;;
 		*) die "cannot read $_conf" ;;
 		esac
-	fi
-	if ! systemctl is-enabled --quiet nftables 2>/dev/null; then
-		if confirm "Enable nftables.service so the rules load at boot?"; then
-			sudo systemctl enable nftables
+		if ! systemctl is-enabled --quiet nftables 2>/dev/null; then
+			if confirm "Enable nftables.service so the rules load at boot?"; then
+				sudo systemctl enable nftables
+			fi
 		fi
 	fi
 	if grep -Eq '^hosts:.*resolve' "$ROOT/etc/nsswitch.conf" 2>/dev/null; then
@@ -525,12 +544,20 @@ bash_login_file() {
 
 zsh_login_file() { printf '%s\n' "${ZDOTDIR:-$HOME}/.zprofile"; }
 
-FISH_HOOK=$HOME/.config/fish/conf.d/muthur.fish
+# xdg_config: $XDG_CONFIG_HOME when absolute (as fish and MUTHUR read it), else ~/.config.
+xdg_config() {
+	case ${XDG_CONFIG_HOME:-} in
+	/*) printf '%s\n' "$XDG_CONFIG_HOME" ;;
+	*) printf '%s\n' "$HOME/.config" ;;
+	esac
+}
+fish_hook() { printf '%s\n' "$(xdg_config)/fish/conf.d/muthur.fish"; }
+config_file() { printf '%s\n' "$(xdg_config)/muthur/config.toml"; }
 
 # install_hook SHELL
 install_hook() {
 	case $1 in
-	fish) atomic_write "$FISH_HOOK" < "$SCRIPT_DIR/deploy/login/muthur.fish" || exit 1 ;;
+	fish) atomic_write "$(fish_hook)" < "$SCRIPT_DIR/deploy/login/muthur.fish" || exit 1 ;;
 	bash)
 		_hf=$(bash_login_file) || exit 1
 		if [ ! -e "$_hf" ]; then
@@ -556,12 +583,13 @@ remove_hooks() {
 	_zr=$(resolve_link "$(zsh_login_file)")
 	if [ "$_keep" = zsh ] && [ "$_zr" != "$(resolve_link "$HOME/.zprofile")" ]; then block_remove "$HOME/.zprofile"; fi
 	if [ "$_keep" != zsh ]; then block_remove "$HOME/.zprofile"; fi
-	[ "$_keep" = fish ] || rm -f "$FISH_HOOK"
+	[ "$_keep" = fish ] || rm -f "$(fish_hook)"
 }
 
 step_hook() {
 	say "login hook"
-	_sh=$(login_shell) || exit 1
+	_sh=$LOGIN_SHELL
+	[ -n "$_sh" ] || _sh=$(login_shell) || exit 1
 	remove_hooks "$_sh"
 	install_hook "$_sh"
 }
@@ -657,8 +685,8 @@ find_example_config() {
 
 step_config() {
 	say "first-run config"
-	_cdir=$HOME/.config/muthur
-	_cfg=$_cdir/config.toml
+	_cfg=$(config_file)
+	_cdir=$(dirname "$_cfg")
 	if [ -e "$_cfg" ]; then
 		say "config exists, left untouched: $_cfg"
 		return 0
@@ -676,7 +704,7 @@ step_config() {
 		say "wrote the example config to $_cfg; edit it: set api_key (anthropic), or provider, base_url, model and api_key (openai)"
 		return 0
 	fi
-	_pc=
+	_pc="" _nokey=0
 	_tries=0
 	while [ "$_tries" -lt 5 ]; do
 		_tries=$((_tries + 1))
@@ -686,9 +714,8 @@ step_config() {
 	[ -n "$_pc" ] || die "no provider chosen"
 	case $_pc in
 	1)
-		ask_secret "Anthropic API key (input hidden)"
-		[ -n "$SECRET" ] || die "an API key is required for Anthropic"
-		set_toml_key "$_new" api_key "$SECRET"
+		ask_secret "Anthropic API key (input hidden; empty to set it later)"
+		if [ -n "$SECRET" ]; then set_toml_key "$_new" api_key "$SECRET"; else _nokey=1; fi
 		;;
 	2)
 		_curl=$(ask_value "base_url (e.g. http://10.0.0.5:8000/v1)") || exit 1
@@ -703,6 +730,7 @@ step_config() {
 	SECRET=
 	mv "$_new" "$_cfg" || die "cannot write $_cfg"
 	say "wrote $_cfg (mode 600)"
+	[ "$_nokey" = 0 ] || say "no API key given: edit api_key in $_cfg before logging in"
 }
 
 step_verify() {
@@ -720,7 +748,7 @@ step_verify() {
 		fi
 	fi
 	_hk=no
-	[ ! -e "$FISH_HOOK" ] || _hk=yes
+	[ ! -e "$(fish_hook)" ] || _hk=yes
 	for _f in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile" "$(zsh_login_file)" "$HOME/.zprofile"; do
 		if block_present "$_f"; then _hk=yes; fi
 	done
@@ -730,7 +758,7 @@ step_verify() {
 	else
 		echo "  muthur --version: failed to run $HOME/.local/bin/muthur"
 	fi
-	echo "Next: plug in the adapter, check the config in ~/.config/muthur/config.toml, then log in on the terminal."
+	echo "Next: check the config in $(config_file), then log in on the terminal (replug the adapter if no login appears)."
 	return 0
 }
 
@@ -750,13 +778,15 @@ uninstall() {
 		sudo systemctl daemon-reload
 		sudo udevadm control --reload
 	fi
+	_had_agent=0
+	[ "$OPT_AGENT" = 0 ] || [ ! -e "$ROOT/etc/sysusers.d/muthur-agent.conf" ] || _had_agent=1
 	if [ "$OPT_AGENT" = 1 ]; then
 		sudo rm -f "$ROOT/etc/sysusers.d/muthur-agent.conf" "$ROOT/etc/tmpfiles.d/muthur-agent.conf" \
 			"$ROOT/etc/sudoers.d/muthur-agent" "$ROOT/etc/nftables.d/muthur-agent.nft"
-		sudo nft delete table inet muthur_agent || true
+		[ "$_had_agent" = 0 ] || sudo nft delete table inet muthur_agent || true
 	fi
-	echo "Left in place: ~/.config/muthur/config.toml, logs, and the include line in /etc/nftables.conf."
-	[ "$OPT_AGENT" = 0 ] || echo "To remove the agent account: sudo userdel muthur-agent"
+	echo "Left in place: $(config_file), logs, and any nftables.d include line in /etc/nftables.conf or /etc/sysconfig/nftables.conf."
+	[ "$_had_agent" = 0 ] || echo "To remove the agent account: sudo userdel muthur-agent"
 }
 
 main() {

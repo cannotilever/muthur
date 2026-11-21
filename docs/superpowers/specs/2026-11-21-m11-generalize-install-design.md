@@ -143,9 +143,10 @@ runs as the operator and calls `sudo` for system steps. Every step prints
 4. **System files** (skipped with `--no-system`).
    - Render and install the udev rule and the getty drop-in.
    - Migrate: if `/etc/udev/rules.d/99-wy60.rules` or
-     `/etc/systemd/system/serial-getty@wy60.service.d` exists, stop
-     `serial-getty@wy60`, then remove both. Disable
-     `serial-getty@ttyUSB0` if it is enabled (as the Makefile does today).
+     `/etc/systemd/system/serial-getty@wy60.service.d` exists,
+     `systemctl disable --now serial-getty@wy60` (failure ignored), then
+     remove both. `systemctl disable --now serial-getty@ttyUSB0` if it is
+     enabled (as the Makefile did).
    - `systemctl daemon-reload`, `udevadm control --reload`,
      `udevadm trigger --subsystem-match=tty --action=add`.
 5. **Agent account** (skipped with `--no-agent` or `--no-system`).
@@ -155,14 +156,18 @@ runs as the operator and calls `sudo` for system steps. Every step prints
    - Render sudoers with `$(id -un)`, check it with `visudo -cf`, and install
      it with mode 440.
    - Install `/etc/nftables.d/muthur-agent.nft` and load it with `nft -f`.
-   - If `/etc/nftables.conf` doesn't already include `/etc/nftables.d/`,
-     offer to append `include "/etc/nftables.d/*.nft"` (default yes). If
-     `nftables.service` isn't enabled, offer to enable it (default yes).
+   - The nftables config is `/etc/nftables.conf` if it exists, else
+     `/etc/sysconfig/nftables.conf` (Fedora) if it exists. If it has no
+     `include "/etc/nftables.d/…` line, offer to append
+     `include "/etc/nftables.d/*.nft"` (default yes). If `nftables.service`
+     isn't enabled, offer to enable it (default yes). If neither file exists,
+     warn naming both and skip the include and the enable offer.
    - Warn if `resolve` appears in the `hosts:` line of `/etc/nsswitch.conf`.
 6. **Login hook.**
    - Shell: `--shell`, else the basename of the passwd shell from `getent`.
-     An unsupported shell aborts, listing the supported ones.
-   - fish: install `~/.config/fish/conf.d/muthur.fish`.
+     It is resolved in preflight, so an unsupported shell aborts, listing the
+     supported ones, before anything is installed.
+   - fish: install `${XDG_CONFIG_HOME:-~/.config}/fish/conf.d/muthur.fish`.
    - bash: write the marker block into the first of `~/.bash_profile`,
      `~/.bash_login` or `~/.profile` that exists. If none exists, create
      `~/.bash_profile` with
@@ -172,10 +177,12 @@ runs as the operator and calls `sudo` for system steps. Every step prints
    - Writing a block replaces any existing block in that file and leaves the
      rest of the file byte-identical. Hooks for the other shells are removed
      (the fish conf.d file, and blocks in the other files).
-7. **Config.** If `~/.config/muthur/config.toml` doesn't exist and not
+7. **Config.** If `${XDG_CONFIG_HOME:-~/.config}/muthur/config.toml` doesn't exist and not
    `--yes`: install the example with mode 600 in a mode-700 directory. Ask
    "Anthropic or OpenAI-compatible?" For Anthropic, read the key with echo
-   off (`stty -echo`) and write `api_key`. For OpenAI-compatible, ask for
+   off (`stty -echo`) and write `api_key`; an empty key keeps the example's
+   placeholder, writes the config anyway and prints a hint to edit `api_key`.
+   For OpenAI-compatible, ask for
    `base_url` and `model`, set `provider = "openai"`, and optionally ask for
    a key (an empty answer deletes the placeholder `api_key` line). Values are written by
    `sed` on the first `provider`, `base_url`, `model` and `api_key` lines of
@@ -189,17 +196,22 @@ runs as the operator and calls `sudo` for system steps. Every step prints
    the next steps.
 
 `--uninstall` undoes steps 2 (the binary only after a prompt; `muthur-login`
-always) and 4–6. It reloads systemd, udev and nft (`nft delete table inet
-muthur_agent`). It prints the `sudo userdel muthur-agent` command rather than
-running it. Config and logs are kept.
+always) and 4–6. It reloads systemd and udev. When the agent was installed
+(its sysusers file exists) and neither `--no-agent` nor `--no-system` is
+given, it runs `nft delete table inet muthur_agent` and prints the
+`sudo userdel muthur-agent` command rather than running it. Config and logs
+are kept. Run it, like a migration, from ssh or another console: stopping the
+getty hangs up a session on the serial terminal.
 
 All logic lives in functions. `main "$@"` runs only when
 `MUTHUR_INSTALL_LIB` is unset, so the tests can source the script.
 
 ### Makefile
 
-- `ARCH ?= x86_64`; `TARGET := $(ARCH)-unknown-linux-musl`. In `deploy`,
-  `ARCH` defaults to the remote `uname -m`. `.cargo/config.toml` gains the
+- `ARCH ?= $(shell uname -m)` (the local machine); `TARGET := $(ARCH)-unknown-linux-musl`.
+  When `deploy` is a goal, `ARCH` (unless given on the command line) is the
+  remote `uname -m`, and an empty probe is an error. `HOST` has no default;
+  `deploy` without it is an error. `.cargo/config.toml` gains the
   aarch64 musl target with static CRT. aarch64 builds are documented with
   `cargo-zigbuild` (`make BUILD=zigbuild ARCH=aarch64 build`); `BUILD` defaults
   to `build`.

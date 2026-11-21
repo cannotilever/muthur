@@ -7,7 +7,9 @@
 - A Linux host with systemd, x86_64 or aarch64.
 - `sudo`, `udevadm` and `agetty` (from util-linux).
 - For the agent account: `nft`, `bash` and `visudo`. Skip it with `--no-agent`.
-- The USB serial adapter plugged in, and a `muthur` binary (see Building in the README).
+- The USB serial adapter plugged in while the script runs (it reads the adapter's ids from udev), unless you name it with `--vid`, `--pid` and `--serial` or `--port`.
+- A `muthur` binary (see Building in the README).
+- Run it from ssh or a desktop terminal, not from the serial terminal itself: the script may stop a serial getty (the old `wy60` one, `serial-getty@ttyUSB0`), which hangs up a session on it.
 
 ## Quick start
 
@@ -23,17 +25,19 @@ Or from the source tree, which builds first:
 make install
 ```
 
-From a dev machine, build, upload and run the installer over ssh:
+`make install` builds for this machine's `uname -m`, so on an aarch64 host it builds an aarch64 binary natively (after `rustup target add aarch64-unknown-linux-musl`).
+
+From a dev machine, build, upload and run the installer over ssh (`HOST` has no default):
 
 ```sh
-make HOST=omicron deploy
+make HOST=myhost deploy
 ```
 
-`ARCH` defaults to the remote `uname -m`. An aarch64 build needs cargo-zigbuild: `make BUILD=zigbuild ARCH=aarch64 build`. `INSTALL_ARGS="--yes --shell fish"` passes flags through to `install.sh`.
+`ARCH` defaults to the remote `uname -m`; `make` stops if it cannot read it, and `ARCH=x86_64` or `ARCH=aarch64` skips the probe. Building for an aarch64 host from an x86_64 machine needs cargo-zigbuild: `make BUILD=zigbuild HOST=myhost deploy`. `INSTALL_ARGS="--yes --shell fish"` passes flags through to `install.sh`.
 
-The script asks before it acts: which adapter, which LLM provider and its API key. It can be run again; it rewrites its own files in place. An existing config is never touched. An empty Anthropic key stops the config step without writing a config. `--yes` accepts defaults and asks nothing, and copies the example config for you to edit by hand (set `api_key`, or `provider`, `base_url`, `model` and `api_key` for an OpenAI-compatible server).
+The script asks before it acts: which adapter, which LLM provider and its API key. It can be run again; it rewrites its own files in place. An existing config is never touched. With an empty Anthropic key it still writes the example config, with the placeholder `api_key`, and tells you to edit it. `--yes` accepts defaults and asks nothing, and copies the example config for you to edit by hand (set `api_key`, or `provider`, `base_url`, `model` and `api_key` for an OpenAI-compatible server). An unsupported login shell stops the script before it installs anything; pass `--shell`.
 
-Afterwards, plug in the adapter (or replug it) and log in on the terminal. The last step prints what it found: whether `/dev/ttyMUTHUR` exists, whether the getty is active, the hook file and `muthur --version`.
+Then log in on the terminal; if no login prompt appears, replug the adapter. The last step prints what it found: whether `/dev/ttyMUTHUR` exists, whether the getty is active, the hook file and `muthur --version`.
 
 On a WY-60, turn the screen saver on in its setup menu: MUTHUR's standby screen (`[chrome] standby_minutes`, default 10) only stops output so the terminal can blank; with the terminal's saver off the standby logo stays lit.
 
@@ -48,7 +52,7 @@ To tune the boot logo, edit `assets/wy-logo.txt` and run `muthur splash` on the 
 | `--vid V --pid P` | USB vendor and product id (four hex digits) of the adapter. Needs `--serial` or `--port`. |
 | `--serial S` | The adapter's USB serial number. |
 | `--port ID_PATH` | Match by udev `ID_PATH` instead, for an adapter with no serial number. Moving it to another port breaks the match. |
-| `--baud N` | Serial speed (default 38400). |
+| `--baud N` | Serial speed, digits only (default 38400). |
 | `--no-agent` | Skip the agent user, sudoers and nftables setup. |
 | `--no-system` | Skip the udev rule, serial getty and agent setup (implies `--no-agent`). |
 | `--bin PATH` | Install this `muthur` binary. |
@@ -66,19 +70,19 @@ As your user:
 - The login hook, for your shell:
   - bash: a marked block in the first of `~/.bash_profile`, `~/.bash_login`, `~/.profile` that exists (`~/.bash_profile` is created if none does, and sources `~/.profile` and `~/.bashrc`).
   - zsh: a marked block in `${ZDOTDIR:-$HOME}/.zprofile`.
-  - fish: `~/.config/fish/conf.d/muthur.fish`.
+  - fish: `${XDG_CONFIG_HOME:-~/.config}/fish/conf.d/muthur.fish`.
 
   The hook sets and exports `MUTHUR_LOGIN` in the login shell, so MUTHUR starts at most once per login. Hooks for other shells are removed on a re-run.
-- `~/.config/muthur/config.toml`, mode 600, on first run.
+- `${XDG_CONFIG_HOME:-~/.config}/muthur/config.toml`, mode 600, on first run.
 
 As root (skipped by `--no-system`):
 
 - `/etc/udev/rules.d/99-ttyMUTHUR.rules`: matches the adapter by `ENV{ID_SERIAL_SHORT}` (or `ENV{ID_PATH}` with `--port`), creates `/dev/ttyMUTHUR` and starts the getty through `SYSTEMD_WANTS`.
 - `/etc/systemd/system/serial-getty@ttyMUTHUR.service.d/override.conf`: agetty at the chosen baud, `TERM=vt100`.
 
-udev starts the getty when the adapter appears and stops it when it goes, so replugging brings the login back and boot never waits for an absent adapter. The getty is not enabled as a unit. If `serial-getty@ttyUSB0` was enabled, the script disables it.
+udev starts the getty when the adapter appears and stops it when it goes, so replugging brings the login back and boot never waits for an absent adapter. The getty is not enabled as a unit. If `serial-getty@ttyUSB0` was enabled, the script disables and stops it.
 
-As root, for the agent (skipped by `--no-agent`): `/etc/sysusers.d/muthur-agent.conf`, `/etc/tmpfiles.d/muthur-agent.conf`, `/etc/sudoers.d/muthur-agent` and `/etc/nftables.d/muthur-agent.nft`. See The agent account below.
+As root, for the agent (skipped by `--no-agent` and by `--no-system`): `/etc/sysusers.d/muthur-agent.conf`, `/etc/tmpfiles.d/muthur-agent.conf`, `/etc/sudoers.d/muthur-agent` and `/etc/nftables.d/muthur-agent.nft`. See The agent account below.
 
 MUTHUR sets the serial tty's rows and columns from `[terminal]` in the config at startup (only on a real serial tty). `[shell] command` defaults to your login shell, else `$SHELL`, else `/bin/sh`.
 
@@ -86,7 +90,7 @@ To roll back the binary: `cd ~/.local/bin && mv muthur.old muthur`.
 
 ## Migrating from wy60
 
-Earlier versions used `/dev/wy60`, `99-wy60.rules` and `serial-getty@wy60`. Run `install.sh` again: it stops the old getty, removes the old rule and drop-in, and installs the new names. The old fish snippet in `conf.d/muthur.fish` is replaced by the new hook.
+Earlier versions used `/dev/wy60`, `99-wy60.rules` and `serial-getty@wy60`. Run `install.sh` again, from ssh or another console (stopping the old getty hangs up a session on the serial terminal): it stops and disables the old getty, removes the old rule and drop-in, and installs the new names. `--no-system` skips this migration. The old fish snippet in `conf.d/muthur.fish` is removed whatever your shell, and the new hook is installed for your shell.
 
 ## Uninstalling
 
@@ -94,7 +98,9 @@ Earlier versions used `/dev/wy60`, `99-wy60.rules` and `serial-getty@wy60`. Run 
 ./install.sh --uninstall
 ```
 
-This removes the login hooks and `muthur-login`; asks before removing `muthur` and `muthur.old`; removes the udev rule and getty drop-in (unless `--no-system`); and removes the agent files and the `muthur_agent` nft table (unless `--no-agent`). It keeps the config, the logs, the `muthur-agent` user (remove it with `sudo userdel muthur-agent`) and the include line in `/etc/nftables.conf`.
+Run it from ssh or another console, not the serial terminal: stopping the getty hangs up that session.
+
+This removes the login hooks and `muthur-login`; asks before removing `muthur` and `muthur.old`; stops the getty and removes the udev rule and drop-in (unless `--no-system`); and removes the agent files and, if the agent was installed, the `muthur_agent` nft table (unless `--no-agent` or `--no-system`). It keeps the config, the logs, the `muthur-agent` user (remove it with `sudo userdel muthur-agent`) and the include line in the nftables config.
 
 ## Recovering from a getty restart loop
 
@@ -110,13 +116,13 @@ Stopping alone is not enough: udev starts the getty again on the next replug or 
 
 ## The agent account
 
-`install.sh` also sets up the technical agent's account (skip it with `--no-agent`, or build without the agent with `make AGENT=0 deploy`, which also passes `--no-agent`). It installs, from `deploy/`:
+`install.sh` also sets up the technical agent's account (skip it with `--no-agent`; `--no-system` skips it too; or build without the agent with `make AGENT=0 HOST=myhost deploy`, which also passes `--no-agent`). It installs, from `deploy/`:
 
 - `sysusers.d` and `tmpfiles.d`: the `muthur-agent` system user (groups `adm`, `systemd-journal`; no sudo rights, not in `docker` or `wheel`) and its home `/var/lib/muthur-agent`.
 - `sudoers.d/muthur-agent`: lets the deploying user run commands as `muthur-agent` without a password. `OPERATOR` is replaced with that user, and `visudo -cf` checks the result before it goes to `/etc/sudoers.d/`.
 - `nftables/muthur-agent.nft`: blocks all non-loopback egress from `muthur-agent`, and its DNS (ports 53 and 853) to loopback resolvers as well. TCP is rejected with a reset, so connects fail at once with "Connection refused"; everything else is dropped, which fails at once with "Operation not permitted". Installed as `/etc/nftables.d/muthur-agent.nft`.
 
-The nft file is loaded at install time. To keep it across reboots, `install.sh` offers to add this line to `/etc/nftables.conf` and to enable `nftables.service`; or do it by hand:
+The nft file is loaded at install time. To keep it across reboots, `install.sh` offers to add this line to the file `nftables.service` loads, `/etc/nftables.conf` (Arch, Debian) or else `/etc/sysconfig/nftables.conf` (Fedora), and to enable `nftables.service`. If neither file exists it warns and leaves boot loading to you; add the line by hand:
 
 ```
 include "/etc/nftables.d/*.nft"

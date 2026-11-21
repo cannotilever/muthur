@@ -103,9 +103,9 @@ Measured key sequences and capabilities are in [docs/hardware.md](docs/hardware.
 Requires a recent stable Rust toolchain (edition 2024).
 
 ```sh
-rustup target add x86_64-unknown-linux-musl
-make build            # static musl release binary
-make BUILD=zigbuild ARCH=aarch64 build   # aarch64 (needs cargo-zigbuild)
+rustup target add x86_64-unknown-linux-musl   # or aarch64-unknown-linux-musl
+make build            # static musl release binary for this machine (uname -m)
+make BUILD=zigbuild ARCH=aarch64 build   # cross-build for aarch64 (needs cargo-zigbuild)
 make AGENT=0 build    # without the technical agent / LLM tools
 make check            # clippy + tests, with and without the agent feature
 ```
