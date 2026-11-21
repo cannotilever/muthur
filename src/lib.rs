@@ -20,6 +20,7 @@ pub mod scroll;
 pub mod secret;
 pub mod shell;
 pub mod splash;
+pub mod standby;
 pub mod strict;
 pub mod testcard;
 #[cfg(feature = "agent")]
