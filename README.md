@@ -144,8 +144,8 @@ another OpenAI-compatible server. Logs go to `~/.local/state/muthur/`.
 
 ## Deploying
 
-The production layout is: udev creates `/dev/muthur-tty`,
-`serial-getty@muthur-tty` logs in, and a hook in your login shell's profile
+The production layout is: udev creates `/dev/ttyMUTHUR`,
+`serial-getty@ttyMUTHUR` logs in, and a hook in your login shell's profile
 (bash, zsh or fish) runs `muthur`. If MUTHUR exits, you land in your login
 shell.
 

@@ -33,7 +33,7 @@ make HOST=omicron deploy
 
 The script asks before it acts: which adapter, which LLM provider and its API key. It can be run again; it rewrites its own files in place. An existing config is never touched. An empty Anthropic key stops the config step without writing a config. `--yes` accepts defaults and asks nothing, and copies the example config for you to edit by hand (set `api_key`, or `provider`, `base_url`, `model` and `api_key` for an OpenAI-compatible server).
 
-Afterwards, plug in the adapter (or replug it) and log in on the terminal. The last step prints what it found: whether `/dev/muthur-tty` exists, whether the getty is active, the hook file and `muthur --version`.
+Afterwards, plug in the adapter (or replug it) and log in on the terminal. The last step prints what it found: whether `/dev/ttyMUTHUR` exists, whether the getty is active, the hook file and `muthur --version`.
 
 On a WY-60, turn the screen saver on in its setup menu: MUTHUR's standby screen (`[chrome] standby_minutes`, default 10) only stops output so the terminal can blank; with the terminal's saver off the standby logo stays lit.
 
@@ -62,7 +62,7 @@ Without `--vid`, `--pid` and `--serial`/`--port`, the script lists the USB seria
 As your user:
 
 - `~/.local/bin/muthur`, with the previous one kept as `muthur.old`.
-- `~/.local/bin/muthur-login`: the launcher. It runs only when the tty is `/dev/muthur-tty`, sets erase and flow control, and runs `muthur` (not `exec`, so quitting MUTHUR returns you to your shell).
+- `~/.local/bin/muthur-login`: the launcher. It runs only when the tty is `/dev/ttyMUTHUR`, sets erase and flow control, and runs `muthur` (not `exec`, so quitting MUTHUR returns you to your shell).
 - The login hook, for your shell:
   - bash: a marked block in the first of `~/.bash_profile`, `~/.bash_login`, `~/.profile` that exists (`~/.bash_profile` is created if none does, and sources `~/.profile` and `~/.bashrc`).
   - zsh: a marked block in `${ZDOTDIR:-$HOME}/.zprofile`.
@@ -73,8 +73,8 @@ As your user:
 
 As root (skipped by `--no-system`):
 
-- `/etc/udev/rules.d/99-muthur-tty.rules`: matches the adapter by `ENV{ID_SERIAL_SHORT}` (or `ENV{ID_PATH}` with `--port`), creates `/dev/muthur-tty` and starts the getty through `SYSTEMD_WANTS`.
-- `/etc/systemd/system/serial-getty@muthur-tty.service.d/override.conf`: agetty at the chosen baud, `TERM=vt100`.
+- `/etc/udev/rules.d/99-ttyMUTHUR.rules`: matches the adapter by `ENV{ID_SERIAL_SHORT}` (or `ENV{ID_PATH}` with `--port`), creates `/dev/ttyMUTHUR` and starts the getty through `SYSTEMD_WANTS`.
+- `/etc/systemd/system/serial-getty@ttyMUTHUR.service.d/override.conf`: agetty at the chosen baud, `TERM=vt100`.
 
 udev starts the getty when the adapter appears and stops it when it goes, so replugging brings the login back and boot never waits for an absent adapter. The getty is not enabled as a unit. If `serial-getty@ttyUSB0` was enabled, the script disables it.
 
@@ -101,8 +101,8 @@ This removes the login hooks and `muthur-login`; asks before removing `muthur` a
 From another session (ssh):
 
 ```sh
-sudo systemctl stop serial-getty@muthur-tty
-sudo mv /etc/udev/rules.d/99-muthur-tty.rules /root/99-muthur-tty.rules.off
+sudo systemctl stop serial-getty@ttyMUTHUR
+sudo mv /etc/udev/rules.d/99-ttyMUTHUR.rules /root/99-ttyMUTHUR.rules.off
 sudo udevadm control --reload
 ```
 
@@ -139,7 +139,7 @@ At startup MUTHUR probes the account and the isolation, each step limited to 5 s
 
 ## Manual install
 
-On a host without systemd, install the binary and `deploy/login/muthur-login` yourself, run a getty on the serial port at the right speed (38400, `TERM=vt100`), and start `muthur-login` from the login profile of the account (`~/.profile`, `~/.zprofile` or `conf.d`), for example the line in `deploy/login/hook.sh`. `muthur-login` checks the tty against `/dev/muthur-tty`; set `MUTHUR_TTY` to your device path, and `MUTHUR_BIN` if the binary lives elsewhere. The config is `install -Dm600 docs/config.example.toml ~/.config/muthur/config.toml`.
+On a host without systemd, install the binary and `deploy/login/muthur-login` yourself, run a getty on the serial port at the right speed (38400, `TERM=vt100`), and start `muthur-login` from the login profile of the account (`~/.profile`, `~/.zprofile` or `conf.d`), for example the line in `deploy/login/hook.sh`. `muthur-login` checks the tty against `/dev/ttyMUTHUR`; set `MUTHUR_TTY` to your device path, and `MUTHUR_BIN` if the binary lives elsewhere. The config is `install -Dm600 docs/config.example.toml ~/.config/muthur/config.toml`.
 
 ## Checks before a release
 

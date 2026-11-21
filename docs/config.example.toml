@@ -10,8 +10,8 @@
 
 # ── Serial link ──────────────────────────────────────────────────────────────
 [link]
-# Serial device. Leave unset to use stdio (when launched by agetty on /dev/muthur-tty).
-# device = "/dev/muthur-tty"
+# Serial device. Leave unset to use stdio (when launched by agetty on /dev/ttyMUTHUR).
+# device = "/dev/ttyMUTHUR"
 baud = 38400
 # "xon-xoff" | "rts-cts" | "none". RTS/CTS does not work with the null-modem
 # cabling, so keep XON/XOFF.

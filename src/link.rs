@@ -293,7 +293,7 @@ mod tests {
     fn pseudo_tty_names() {
         use std::path::Path;
         assert!(is_pseudo_tty(Path::new("/dev/pts/3")));
-        for n in ["/dev/ttyUSB0", "/dev/ttyS0", "/dev/muthur-tty"] {
+        for n in ["/dev/ttyUSB0", "/dev/ttyS0", "/dev/ttyMUTHUR"] {
             assert!(!is_pseudo_tty(Path::new(n)), "{n}");
         }
     }

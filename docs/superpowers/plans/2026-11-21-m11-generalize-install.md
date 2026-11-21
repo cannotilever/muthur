@@ -12,7 +12,8 @@
 
 ## Global Constraints
 
-- Device name `/dev/muthur-tty`; unit `serial-getty@muthur-tty.service`; rule `/etc/udev/rules.d/99-muthur-tty.rules`; drop-in `/etc/systemd/system/serial-getty@muthur-tty.service.d/override.conf`.
+- Device name `/dev/ttyMUTHUR`; unit `serial-getty@ttyMUTHUR.service`; rule `/etc/udev/rules.d/99-ttyMUTHUR.rules`; drop-in `/etc/systemd/system/serial-getty@ttyMUTHUR.service.d/override.conf`.
+  - Note: M11's final review renamed `muthur-tty` to `ttyMUTHUR`; a dash in a systemd instance name unescapes to `/`, so `serial-getty@muthur-tty` bound to `/dev/muthur/tty` and never started. Later references to `muthur-tty` in this plan mean `ttyMUTHUR`.
 - Old names migrated and removed: `/etc/udev/rules.d/99-wy60.rules`, `/etc/systemd/system/serial-getty@wy60.service.d/`; `serial-getty@ttyUSB0` disabled if enabled.
 - Marker lines, exactly: `# >>> muthur >>>` and `# <<< muthur <<<`.
 - Placeholders `@NAME@` (uppercase, `[A-Z_]+`); a rendered file containing `@[A-Z_]+@` is an error.

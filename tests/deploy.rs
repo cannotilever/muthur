@@ -114,9 +114,9 @@ fn files_have_expected_lines() {
 #[test]
 fn udev_template_renders() {
     let m = r#"ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", ATTRS{serial}=="X""#;
-    let text = render("deploy/udev/99-muthur-tty.rules.in", &[("MATCH", m)]);
+    let text = render("deploy/udev/99-ttyMUTHUR.rules.in", &[("MATCH", m)]);
     assert_eq!(text.lines().count(), 1);
-    assert!(text.contains(r#"SYMLINK+="muthur-tty""#));
+    assert!(text.contains(r#"SYMLINK+="ttyMUTHUR""#));
     let tmp = std::env::temp_dir().join(format!("muthur-udev-{}.rules", std::process::id()));
     std::fs::write(&tmp, &text).unwrap();
     let out = run("udev_template_renders", Command::new("udevadm").arg("verify").arg(&tmp));
@@ -134,8 +134,37 @@ fn udev_template_renders() {
 #[test]
 fn dropin_template_renders() {
     let text = render(
-        "deploy/systemd/serial-getty@muthur-tty.service.d/override.conf.in",
+        "deploy/systemd/serial-getty@ttyMUTHUR.service.d/override.conf.in",
         &[("AGETTY", "/sbin/agetty"), ("BAUD", "38400")],
     );
     assert!(text.contains(r"ExecStart=-/sbin/agetty -o '-p -- \\u' 38400 %I vt100"));
+}
+
+/// The getty instance named in the udev rule must unescape to the symlink's
+/// name: a dash would unescape to "/" and bind the unit to a device that never
+/// appears (`serial-getty@a-b` waits on `/dev/a/b`).
+#[test]
+fn getty_instance_matches_symlink() {
+    let text = read("deploy/udev/99-ttyMUTHUR.rules.in");
+    let field = |key: &str| -> String {
+        let start = text.find(key).unwrap_or_else(|| panic!("no {key} in the udev rule")) + key.len();
+        let rest = &text[start..];
+        rest[..rest.find('"').unwrap()].to_string()
+    };
+    let link = field("SYMLINK+=\"");
+    let unit = field("ENV{SYSTEMD_WANTS}+=\"");
+    let instance = unit
+        .strip_prefix("serial-getty@")
+        .and_then(|u| u.strip_suffix(".service"))
+        .unwrap_or_else(|| panic!("unexpected unit {unit}"));
+    assert_eq!(instance, link, "instance and symlink differ");
+    assert!(
+        file("deploy/systemd").join(format!("serial-getty@{instance}.service.d")).is_dir(),
+        "drop-in dir for {instance} missing"
+    );
+    let Some(o) = run("getty_instance_matches_symlink", Command::new("systemd-escape").arg("-u").arg(instance)) else {
+        return;
+    };
+    assert!(o.status.success(), "systemd-escape: {}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(String::from_utf8_lossy(&o.stdout).trim_end(), link, "systemd-escape -u {instance}");
 }

@@ -387,8 +387,8 @@ step_system() {
 	[ -n "${ADAPTER_MATCH:-}" ] || die "no adapter match; run step_adapter first"
 	_agetty=$(find_agetty) || exit 1
 	stage_new
-	render "$SCRIPT_DIR/deploy/udev/99-muthur-tty.rules.in" "$STAGE/rule" MATCH="$ADAPTER_MATCH"
-	render "$SCRIPT_DIR/deploy/systemd/serial-getty@muthur-tty.service.d/override.conf.in" "$STAGE/drop" \
+	render "$SCRIPT_DIR/deploy/udev/99-ttyMUTHUR.rules.in" "$STAGE/rule" MATCH="$ADAPTER_MATCH"
+	render "$SCRIPT_DIR/deploy/systemd/serial-getty@ttyMUTHUR.service.d/override.conf.in" "$STAGE/drop" \
 		AGETTY="$_agetty" BAUD="${OPT_BAUD:-38400}"
 	_old_rule=$ROOT/etc/udev/rules.d/99-wy60.rules
 	_old_dir=$ROOT/etc/systemd/system/serial-getty@wy60.service.d
@@ -401,8 +401,8 @@ step_system() {
 	if sudo systemctl is-enabled --quiet serial-getty@ttyUSB0 2>/dev/null; then
 		sudo systemctl disable serial-getty@ttyUSB0
 	fi
-	sys_install 644 "$STAGE/rule" "$ROOT/etc/udev/rules.d/99-muthur-tty.rules"
-	sys_install 644 "$STAGE/drop" "$ROOT/etc/systemd/system/serial-getty@muthur-tty.service.d/override.conf"
+	sys_install 644 "$STAGE/rule" "$ROOT/etc/udev/rules.d/99-ttyMUTHUR.rules"
+	sys_install 644 "$STAGE/drop" "$ROOT/etc/systemd/system/serial-getty@ttyMUTHUR.service.d/override.conf"
 	stage_done
 	sudo systemctl daemon-reload
 	sudo udevadm control --reload
@@ -708,15 +708,15 @@ step_config() {
 step_verify() {
 	say "verify"
 	if [ "$OPT_SYSTEM" = 1 ]; then
-		if [ -e "$ROOT/dev/muthur-tty" ]; then
-			echo "  /dev/muthur-tty: present"
+		if [ -e "$ROOT/dev/ttyMUTHUR" ]; then
+			echo "  /dev/ttyMUTHUR: present"
 		else
-			echo "  /dev/muthur-tty: adapter not plugged in (or the rule has not matched yet)"
+			echo "  /dev/ttyMUTHUR: adapter not plugged in (or the rule has not matched yet)"
 		fi
-		if systemctl is-active --quiet serial-getty@muthur-tty 2>/dev/null; then
-			echo "  serial-getty@muthur-tty: active"
+		if systemctl is-active --quiet serial-getty@ttyMUTHUR 2>/dev/null; then
+			echo "  serial-getty@ttyMUTHUR: active"
 		else
-			echo "  serial-getty@muthur-tty: inactive (starts when the adapter is plugged in)"
+			echo "  serial-getty@ttyMUTHUR: inactive (starts when the adapter is plugged in)"
 		fi
 	fi
 	_hk=no
@@ -744,9 +744,9 @@ uninstall() {
 		fi
 	fi
 	if [ "$OPT_SYSTEM" = 1 ]; then
-		sudo systemctl stop serial-getty@muthur-tty || true
-		sudo rm -f "$ROOT/etc/udev/rules.d/99-muthur-tty.rules"
-		sudo rm -rf "$ROOT/etc/systemd/system/serial-getty@muthur-tty.service.d"
+		sudo systemctl stop serial-getty@ttyMUTHUR || true
+		sudo rm -f "$ROOT/etc/udev/rules.d/99-ttyMUTHUR.rules"
+		sudo rm -rf "$ROOT/etc/systemd/system/serial-getty@ttyMUTHUR.service.d"
 		sudo systemctl daemon-reload
 		sudo udevadm control --reload
 	fi

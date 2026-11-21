@@ -111,12 +111,12 @@ t_block_new_file_mode() {
 	eq 644 "$(stat -c %a "$T/sub/dir/f")" mode
 }
 t_render_ok() {
-	render "$REPO/deploy/udev/99-muthur-tty.rules.in" "$T/out" MATCH='ENV{ID_VENDOR_ID}=="1"'
+	render "$REPO/deploy/udev/99-ttyMUTHUR.rules.in" "$T/out" MATCH='ENV{ID_VENDOR_ID}=="1"'
 	if grep -Eq '@[A-Z_]+@' "$T/out"; then echo "  leftover @" >&2; return 1; fi
 	chk match grep -q 'ID_VENDOR_ID' "$T/out"
 }
 t_render_leftover() {
-	dies MATCH render "$REPO/deploy/udev/99-muthur-tty.rules.in" "$T/out"
+	dies MATCH render "$REPO/deploy/udev/99-ttyMUTHUR.rules.in" "$T/out"
 }
 t_preflight_root() {
 	STUB_UID=0; export STUB_UID
@@ -226,8 +226,8 @@ sys_env() {
 	mkdir -p "$ROOT/usr/sbin"; : > "$ROOT/usr/sbin/nologin"
 	ADAPTER_MATCH='ATTRS{idVendor}=="0403"'
 }
-RULE=etc/udev/rules.d/99-muthur-tty.rules
-DROP=etc/systemd/system/serial-getty@muthur-tty.service.d/override.conf
+RULE=etc/udev/rules.d/99-ttyMUTHUR.rules
+DROP=etc/systemd/system/serial-getty@ttyMUTHUR.service.d/override.conf
 t_system_installs() {
 	sys_env; step_system >/dev/null
 	chk rule test -f "$ROOT/$RULE"
@@ -671,7 +671,7 @@ t_uninstall() {
 	mkdir -p "$(dirname "$CFG")"; printf 'mine = 1\n' > "$CFG"
 	YES=1; uninstall >"$T/out" 2>&1 || { cat "$T/out" >&2; exit 1; }
 	eq "" "$(find "$ROOT/etc" -iname '*muthur*' 2>/dev/null)" etc-files
-	[ ! -e "$ROOT/etc/systemd/system/serial-getty@muthur-tty.service.d" ] || exit 1
+	[ ! -e "$ROOT/etc/systemd/system/serial-getty@ttyMUTHUR.service.d" ] || exit 1
 	! grep -rq '>>> muthur >>>' "$HOME" || exit 1
 	[ ! -e "$FISH_HOOK" ] || exit 1
 	[ ! -e "$HOME/.local/bin/muthur-login" ] || exit 1
@@ -690,7 +690,7 @@ t_verify_reports() {
 	step_verify >"$T/out" 2>&1; eq 0 $? rc
 	grep -q 'not plugged in' "$T/out" || exit 1
 	STUB_SYSTEMCTL_RC=3 step_verify >"$T/out" 2>&1; eq 0 $? rc
-	grep 'serial-getty@muthur-tty' "$T/out" | grep -q inactive || exit 1
+	grep 'serial-getty@ttyMUTHUR' "$T/out" | grep -q inactive || exit 1
 }
 t_help_exits_zero() {
 	( cd / && unset MUTHUR_INSTALL_LIB && sh "$REPO/install.sh" --help ) | grep -q '^Usage:' || exit 1

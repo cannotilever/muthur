@@ -31,7 +31,7 @@ install is safe, and uninstalling is clean.
 | Installer shape | One POSIX `install.sh` that runs on the target host. `make deploy` copies it over with the binary and `deploy/`, then runs it over `ssh -t`. Local and remote installs share one code path. |
 | Login hook | A shared POSIX launcher `~/.local/bin/muthur-login`, plus a one-line hook per shell: fish uses `conf.d/muthur.fish`; bash and zsh get a marked block (`# >>> muthur >>>` … `# <<< muthur <<<`) in their login file. |
 | Adapter | Detected with `udevadm`, confirmed by the operator, or given by flags. Matched by VID, PID and serial; if there is no serial, by the port's `ID_PATH` (`ENV{ID_PATH}==`), with a warning. |
-| Device name | `/dev/muthur-tty` and `serial-getty@muthur-tty`, replacing `wy60`. The installer migrates the old names. |
+| Device name | `/dev/ttyMUTHUR` and `serial-getty@ttyMUTHUR`, replacing `wy60`. The installer migrates the old names. (Renamed from `muthur-tty` in M11's final review: a dash in a systemd instance name unescapes to `/`, so `serial-getty@muthur-tty` waited on `/dev/muthur/tty`, which never appears.) |
 | Supported hosts | systemd Linux on x86_64 and aarch64. Non-systemd hosts get a documented manual path only. Alpine references are removed. |
 | First run | If no config exists: copy the example with mode 600 and ask one question (Anthropic key, or OpenAI-compatible `base_url` and `model`). An existing config is never touched. |
 | Binary location | Per-user `~/.local/bin/muthur`, keeping `muthur.old`. |
@@ -46,8 +46,8 @@ deploy/
   login/muthur-login                          NEW  launcher: tty check, stty, run muthur
   login/muthur.fish                           MOVED from deploy/fish/; calls muthur-login
   login/hook.sh                               NEW  bash/zsh marker block body
-  udev/99-muthur-tty.rules.in                 NEW  template; replaces 99-wy60.rules
-  systemd/serial-getty@muthur-tty.service.d/override.conf.in
+  udev/99-ttyMUTHUR.rules.in                 NEW  template; replaces 99-wy60.rules
+  systemd/serial-getty@ttyMUTHUR.service.d/override.conf.in
                                               NEW  template; replaces the wy60 drop-in
   sysusers.d/muthur-agent.conf.in             CHANGED  nologin path templated
   sudoers.d/muthur-agent                      unchanged (OPERATOR placeholder)
@@ -55,7 +55,7 @@ deploy/
 Makefile                                      CHANGED  ARCH=; deploy runs install.sh
 tests/install/run.sh                          NEW  POSIX shell tests for install.sh
 src/config.rs                                 CHANGED  shell default = login shell
-src/tools/deny.rs                             CHANGED  muthur-tty patterns added
+src/tools/deny.rs                             CHANGED  ttyMUTHUR patterns added
 src/link.rs                                   CHANGED  set TIOCSWINSZ on stdio tty
 src/main.rs                                   CHANGED  clap `version` (for --version)
 ```
@@ -64,13 +64,13 @@ src/main.rs                                   CHANGED  clap `version` (for --ver
 
 Placeholders use the form `@NAME@` and are filled by `sed` in `install.sh`:
 
-- `99-muthur-tty.rules.in`: `@MATCH@` is either
+- `99-ttyMUTHUR.rules.in`: `@MATCH@` is either
   `ATTRS{idVendor}=="V", ATTRS{idProduct}=="P", ENV{ID_SERIAL_SHORT}=="S"` (udev
   sanitises the serial, so the property, not the raw sysfs attribute, is matched) or
   `ATTRS{idVendor}=="V", ATTRS{idProduct}=="P"` plus `ENV{ID_PATH}=="<id_path>"` (a property of the tty
   device itself, so no parent walk is needed).
-  The rest is the current rule with `SYMLINK+="muthur-tty"` and
-  `ENV{SYSTEMD_WANTS}+="serial-getty@muthur-tty.service"`.
+  The rest is the current rule with `SYMLINK+="ttyMUTHUR"` and
+  `ENV{SYSTEMD_WANTS}+="serial-getty@ttyMUTHUR.service"`.
 - `override.conf.in`: `@AGETTY@` (from `command -v agetty`, then
   `/sbin/agetty`, then `/usr/bin/agetty`) and `@BAUD@` (default 38400).
 - `muthur-agent.conf.in`: `@NOLOGIN@`, the first of `/usr/sbin/nologin`,
@@ -81,7 +81,7 @@ directory and runs the existing checks on the result.
 
 ### `muthur-login`
 
-POSIX sh. If the login tty is not `realpath /dev/muthur-tty`, it returns
+POSIX sh. If the login tty is not `realpath /dev/ttyMUTHUR`, it returns
 immediately. Otherwise it runs `stty erase ^H ixon ixoff` and then
 `~/.local/bin/muthur`, without `exec`, so the operator lands in their shell
 when MUTHUR exits. The hooks invoke it only for interactive login shells:
@@ -108,8 +108,8 @@ example comments it out.
 
 ### Deny rules
 
-The lockout patterns add `serial-getty@muthur-tty`, `99-muthur-tty\.rules` and
-`/dev/muthur-tty`. The `wy60` patterns stay, since they cost nothing and guard
+The lockout patterns add `serial-getty@ttyMUTHUR`, `99-ttyMUTHUR\.rules` and
+`/dev/ttyMUTHUR`. The `wy60` patterns stay, since they cost nothing and guard
 hosts that haven't migrated.
 
 ## `install.sh` flow
@@ -182,9 +182,9 @@ runs as the operator and calls `sudo` for system steps. Every step prints
    the example's `[muthur]` section, which are live (uncommented) lines; input
    is escaped for `sed` and rejected if it contains a newline or `"`. With
    `--yes`, copy the example only and print what to edit.
-8. **Verify and summarise.** Check for `/dev/muthur-tty` (missing means a
+8. **Verify and summarise.** Check for `/dev/ttyMUTHUR` (missing means a
    warning that the adapter isn't plugged in), `systemctl is-active
-   serial-getty@muthur-tty`, the hook being present, and
+   serial-getty@ttyMUTHUR`, the hook being present, and
    `~/.local/bin/muthur --version` running. Print one line per check plus
    the next steps.
 
@@ -247,7 +247,7 @@ All logic lives in functions. `main "$@"` runs only when
 Rust:
 
 - Shell default: passwd shell, then `$SHELL`, then `/bin/sh`.
-- Deny rules: `muthur-tty` lockout cases next to the existing `wy60` ones.
+- Deny rules: `ttyMUTHUR` lockout cases next to the existing `wy60` ones.
 - Window size: the startup routine sets `cols × rows` from `[terminal]` on a
   non-pty tty, and leaves a pseudo-terminal (`/dev/pts/`) alone.
 
@@ -267,7 +267,7 @@ Manual (the operator):
 - `README.md`: Deploying and Building updated (aarch64 added), the Alpine
   references removed, and Features says "your login shell" rather than fish.
 - `docs/config.example.toml`: `[shell] command` commented out with the new
-  default, `device` comment updated to `/dev/muthur-tty`, `[terminal]` notes
+  default, `device` comment updated to `/dev/ttyMUTHUR`, `[terminal]` notes
   that MUTHUR sets the tty size.
 - `docs/ARCHITECTURE.md`: references updated only.
 

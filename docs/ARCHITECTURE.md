@@ -35,11 +35,11 @@ Consequences:
 ## Deployment & process model
 
 ```
-udev rule ─► /dev/muthur-tty (stable symlink to the USB serial adapter)
-serial-getty@muthur-tty (38400, XON/XOFF, TERM=vt100)
+udev rule ─► /dev/ttyMUTHUR (stable symlink to the USB serial adapter)
+serial-getty@ttyMUTHUR (38400, XON/XOFF, TERM=vt100)
   └─ login
       └─ login shell (bash, zsh or fish; hook sets MUTHUR_LOGIN, runs
-         `muthur-login`, which checks the tty is /dev/muthur-tty and runs `muthur`, NOT exec)
+         `muthur-login`, which checks the tty is /dev/ttyMUTHUR and runs `muthur`, NOT exec)
           └─ muthur
               └─ login shell (Shell tab, on a PTY, TERM=vt100)
 ```
