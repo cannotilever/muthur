@@ -4,11 +4,13 @@
 //! Panels are stacked top to bottom; the last in a column takes what is left;
 //! a panel that doesn't fit at its minimum height is dropped, never squashed.
 
+pub mod arm;
 pub mod widgets;
 
 use crate::app::Tab;
 use crate::input::Key;
 use crate::metrics::{History, Snapshot, human_bytes, human_rate, human_uptime};
+pub use arm::UtilityDeps;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -44,6 +46,7 @@ pub struct UtilityTab {
     net: History,
     last_failed: usize,
     activity: bool,
+    arm: arm::Arm,
 }
 
 impl Default for UtilityTab {
@@ -65,7 +68,16 @@ fn aligned_details(usages: &[crate::metrics::Usage]) -> Vec<String> {
 
 impl UtilityTab {
     pub fn new() -> Self {
+        Self::build(None)
+    }
+
+    pub fn with_destruct(deps: UtilityDeps) -> Self {
+        Self::build(Some(deps))
+    }
+
+    fn build(deps: Option<UtilityDeps>) -> Self {
         Self {
+            arm: arm::Arm::new(deps),
             snap: None,
             offline: None,
             cpu: History::new(HISTORY),
@@ -232,6 +244,53 @@ impl UtilityTab {
 
 impl Tab for UtilityTab {
     fn render(&mut self, area: Rect, buf: &mut Buffer) {
+        self.draw_body(area, buf);
+        if let Some(text) = self.arm.strip()
+            && area.height > 0
+        {
+            let y = area.y + area.height - 1;
+            let w = area.width as usize;
+            let line: String = format!("{text:<w$}").chars().take(w).collect();
+            buf.set_string(area.x, y, line, reverse());
+            self.arm.drawn();
+        }
+    }
+
+    fn handle_key(&mut self, key: &Key) {
+        self.arm.key(key);
+    }
+
+    fn set_obscured(&mut self, obscured: bool) {
+        self.arm.set_obscured(obscured);
+    }
+
+    fn tick_interval(&self) -> Option<std::time::Duration> {
+        self.arm.tick_interval()
+    }
+
+    fn take_destruct(&mut self) -> Option<crate::destruct::DestructRequest> {
+        self.arm.take()
+    }
+
+    fn on_sudo_done(&mut self, seq: u64, out: crate::ops::runner::RunOutput) {
+        self.arm.sudo_done(seq, out);
+    }
+
+    fn on_metrics(&mut self, s: &Snapshot) {
+        self.on_snapshot(s.clone());
+    }
+
+    fn on_metrics_offline(&mut self, why: &str) {
+        self.on_offline(why);
+    }
+
+    fn take_activity(&mut self) -> bool {
+        std::mem::take(&mut self.activity)
+    }
+}
+
+impl UtilityTab {
+    fn draw_body(&self, area: Rect, buf: &mut Buffer) {
         let message = match (&self.offline, &self.snap) {
             (Some(why), _) => Some(vec![Line::from("TELEMETRY OFFLINE"), Line::from(why.clone())]),
             (None, None) => Some(vec![Line::from("AWAITING TELEMETRY")]),
@@ -265,20 +324,6 @@ impl Tab for UtilityTab {
             ];
             self.draw_column(&all, s, area, buf);
         }
-    }
-
-    fn handle_key(&mut self, _key: &Key) {}
-
-    fn on_metrics(&mut self, s: &Snapshot) {
-        self.on_snapshot(s.clone());
-    }
-
-    fn on_metrics_offline(&mut self, why: &str) {
-        self.on_offline(why);
-    }
-
-    fn take_activity(&mut self) -> bool {
-        std::mem::take(&mut self.activity)
     }
 }
 
