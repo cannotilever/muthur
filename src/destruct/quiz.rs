@@ -117,6 +117,8 @@ impl Quiz {
     }
 
     fn submit(&mut self, answer: &str, now: Instant) {
+        // A right answer must not leave the last retort over the next question.
+        self.retort = None;
         match self.step {
             1 => {
                 if answer.eq_ignore_ascii_case("abort") {
@@ -352,5 +354,17 @@ mod tests {
     fn zero_seed_works() {
         let q = Quiz::new(0);
         assert_ne!(q.problem, (0, 0, 0));
+    }
+
+    #[test]
+    fn right_answer_clears_old_retort() {
+        let t0 = Instant::now();
+        let mut q = Quiz::new(1);
+        type_answer(&mut q, "no", t0);
+        type_answer(&mut q, "abort", t0 + Duration::from_millis(500));
+        assert_eq!(q.question(t0 + Duration::from_millis(500)), "CONFIRM: TYPE troba");
+        type_answer(&mut q, "TROBA", t0);
+        type_answer(&mut q, "troba", t0);
+        assert!(q.question(t0).starts_with("SOLVE:"), "{}", q.question(t0));
     }
 }
