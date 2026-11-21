@@ -9,11 +9,7 @@ use crate::input::Key;
 const RETORT: Duration = Duration::from_millis(1500);
 const MAX_INPUT: usize = 30;
 const FALLBACK_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
-const SPECIAL_ORDER: [&str; 3] = [
-    "CREW EXPENDABLE.",
-    "PRIORITY ONE.",
-    "ALL OTHER CONSIDERATIONS SECONDARY.",
-];
+const SPECIAL_ORDER: [&str; 3] = ["CREW EXPENDABLE.", "PRIORITY ONE.", "ALL OTHER CONSIDERATIONS SECONDARY."];
 
 pub struct Quiz {
     rng: u64,
@@ -176,9 +172,7 @@ fn swallow_right(answer: &str) -> bool {
     if lower.contains("african") || lower.contains("european") {
         return true;
     }
-    lower
-        .split(|c: char| !c.is_ascii_digit())
-        .any(|t| t == "24" || t == "11")
+    lower.split(|c: char| !c.is_ascii_digit()).any(|t| t == "24" || t == "11")
 }
 
 #[cfg(test)]
@@ -196,11 +190,7 @@ mod tests {
         let text = q.question(now);
         let t: Vec<&str> = text.split_whitespace().collect();
         assert_eq!(t[0], "SOLVE:", "{text}");
-        (
-            t[1].parse().unwrap(),
-            t[3].parse().unwrap(),
-            t[5].parse().unwrap(),
-        )
+        (t[1].parse().unwrap(), t[3].parse().unwrap(), t[5].parse().unwrap())
     }
 
     /// A fresh quiz driven to step `n` with right answers (time far apart so
@@ -251,10 +241,7 @@ mod tests {
         let mut q = at_step(2);
         type_answer(&mut q, "TROBA", t0);
         assert_eq!(q.question(t0), "LOWERCASE.");
-        assert_eq!(
-            q.question(t0 + Duration::from_millis(1500)),
-            "CONFIRM: TYPE troba"
-        );
+        assert_eq!(q.question(t0 + Duration::from_millis(1500)), "CONFIRM: TYPE troba");
         assert_eq!(q.step(), 2);
         type_answer(&mut q, "xyz", t0);
         assert_eq!(q.question(t0), "INCORRECT.");
@@ -284,10 +271,7 @@ mod tests {
             assert!(type_answer(&mut q, ans, t0));
             assert_eq!(q.step(), 5, "{ans}");
             assert_eq!(q.question(t0), "HUH? I... I DON'T KNOW THAT.");
-            assert_eq!(
-                q.question(t0 + RETORT),
-                "ENTER SPECIAL ORDER 937 AUTHORIZATION:"
-            );
+            assert_eq!(q.question(t0 + RETORT), "ENTER SPECIAL ORDER 937 AUTHORIZATION:");
         }
         for ans in ["240", "fast"] {
             let mut q = at_step(4);

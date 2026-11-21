@@ -14,7 +14,11 @@ fn mk(total: u64) -> (Destruct, Instant) {
     for c in "pw".chars() {
         pw.push(c);
     }
-    let req = DestructRequest { kind: Kind::Shutdown, total: Duration::from_secs(total), password: pw };
+    let req = DestructRequest {
+        kind: Kind::Shutdown,
+        total: Duration::from_secs(total),
+        password: pw,
+    };
     (Destruct::new(req, t0, 7), t0)
 }
 

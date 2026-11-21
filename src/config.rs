@@ -366,10 +366,7 @@ pub struct Config {
 impl Config {
     pub fn validate(&self) -> anyhow::Result<()> {
         if !(10..=5999).contains(&self.utility.destruct_seconds) {
-            bail!(
-                "[utility] destruct_seconds must be 10..=5999 (got {})",
-                self.utility.destruct_seconds
-            );
+            bail!("[utility] destruct_seconds must be 10..=5999 (got {})", self.utility.destruct_seconds);
         }
         // Without the agent build `[agent]` is ignored, so it cannot be wrong.
         if !cfg!(feature = "agent") {

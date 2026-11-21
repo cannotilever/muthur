@@ -59,7 +59,9 @@ pub struct DestructRequest {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) enum Phase {
     Running,
-    Frozen { since: Instant },
+    Frozen {
+        since: Instant,
+    },
     Executing,
     Failed(String),
     /// Preview only: the clock reached zero and nothing was executed.
@@ -150,9 +152,7 @@ impl Destruct {
                 }
                 None
             }
-            Phase::Frozen { since } if now >= since + FREEZE_HOLD => {
-                Some(Effect::Done(Outcome::Frozen))
-            }
+            Phase::Frozen { since } if now >= since + FREEZE_HOLD => Some(Effect::Done(Outcome::Frozen)),
             _ => None,
         }
     }

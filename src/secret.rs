@@ -44,9 +44,7 @@ impl Secret {
 
     /// A separate zeroizing copy, so two owners can each wipe their own.
     pub fn duplicate(&self) -> Secret {
-        let mut d = Secret(Zeroizing::new(String::with_capacity(
-            self.0.capacity().max(INITIAL_CAP),
-        )));
+        let mut d = Secret(Zeroizing::new(String::with_capacity(self.0.capacity().max(INITIAL_CAP))));
         d.0.push_str(&self.0);
         d
     }
