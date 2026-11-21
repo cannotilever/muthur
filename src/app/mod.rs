@@ -162,6 +162,12 @@ impl App {
         self.destruct.is_some()
     }
 
+    /// The final `00000` frame is up and the host is (about to be) going down:
+    /// the screen must be left as it is.
+    pub fn destruct_committed(&self) -> bool {
+        self.destruct.as_ref().is_some_and(Destruct::committed)
+    }
+
     /// Take over the screen with `d` (a preview runs without a recorder).
     pub fn start_destruct(&mut self, d: Destruct) {
         tracing::info!(kind = d.kind().label(), "destruct: screen up");

@@ -1008,6 +1008,9 @@ fn destruct_frozen() {
 fn destruct_failed() {
     let (mut d, t0) = destruct_for_golden();
     let zero = t0 + secs(70.0);
+    // The final 00000 frame is committed and drawn before the command runs.
+    assert!(d.tick(zero - secs(0.05)).is_none());
+    d.rendered(zero - secs(0.04));
     assert!(matches!(d.tick(zero), Some(muthur::destruct::Effect::Execute(_))));
     d.on_executed(&muthur::ops::runner::RunOutput::Exited {
         code: 1,
@@ -1023,7 +1026,7 @@ fn destruct_steps_fit_the_wire_budget() {
     let (d, t0) = destruct_for_golden();
     let mut t = destruct_terminal();
     let mut sizes = Vec::new();
-    for at in [0.0, 1.6, 3.1, 4.6, 5.1, 5.6, 6.1] {
+    for at in [0.0, 1.6, 3.1, 4.6, 6.1, 6.6, 7.1] {
         sizes.push((at, destruct_frame(&mut t, &d, t0 + secs(at))));
     }
     println!("destruct frame bytes: {sizes:?}");

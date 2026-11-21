@@ -15,6 +15,9 @@ use quiz::Quiz;
 
 pub const TICK: Duration = Duration::from_millis(100);
 const FREEZE_HOLD: Duration = Duration::from_millis(5500);
+/// At zero the command waits for the final frame to be drawn, but no longer
+/// than this (a stalled or switched-off terminal never stops it).
+const FINAL_GRACE: Duration = Duration::from_secs(2);
 /// How long `CLEARANCE DENIED` shows before the screen gives up.
 const DENIED_HOLD: Duration = Duration::from_secs(2);
 
@@ -120,6 +123,11 @@ pub(crate) enum Phase {
     Frozen {
         since: Instant,
     },
+    /// The last tenth with no answer: the screen shows `00000` and stops
+    /// changing; the command runs at zero once this frame has been drawn.
+    Final {
+        drawn: bool,
+    },
     Executing,
     Failed(String),
     /// Preview only: the clock reached zero and nothing was executed.
@@ -130,6 +138,9 @@ pub struct Destruct {
     pub(crate) kind: Kind,
     /// When the countdown started; `None` until clearance is passed.
     pub(crate) started: Option<Instant>,
+    /// When the screen stopped changing (freeze or final frame): the X holds
+    /// its phase from this instant.
+    pub(crate) held_at: Option<Instant>,
     pub(crate) total: Duration,
     pub(crate) phase: Phase,
     pub(crate) quiz: Quiz,
@@ -144,6 +155,7 @@ impl Destruct {
         Destruct {
             kind: req.kind,
             started: None,
+            held_at: None,
             total: req.total,
             phase: Phase::Clearance {
                 input: Secret::new(),
@@ -161,6 +173,7 @@ impl Destruct {
         Destruct {
             kind,
             started: Some(started),
+            held_at: None,
             total,
             phase: Phase::Running,
             quiz: Quiz::new(seed),
@@ -208,6 +221,9 @@ impl Destruct {
     /// Called after each render: arms the password field once it has been
     /// drawn twice (the first frame may not have reached the screen).
     pub fn rendered(&mut self, now: Instant) {
+        if let Phase::Final { drawn } = &mut self.phase {
+            *drawn = true;
+        }
         if let Phase::Clearance { drawn, armed_at, .. } = &mut self.phase {
             if !*drawn {
                 *drawn = true;
@@ -234,10 +250,15 @@ impl Destruct {
         // Otherwise `input` drops here, zeroized.
     }
 
+    /// Past the point of no return on screen: the final frame or the command.
+    pub fn committed(&self) -> bool {
+        matches!(self.phase, Phase::Final { .. } | Phase::Executing)
+    }
+
     pub fn outcome_so_far(&self) -> Outcome {
         match self.phase {
             Phase::Clearance { .. } | Phase::Verifying { .. } | Phase::Denied { .. } => Outcome::Cancelled,
-            Phase::Running | Phase::Zero => Outcome::Aborted,
+            Phase::Running | Phase::Final { .. } | Phase::Zero => Outcome::Aborted,
             Phase::Frozen { .. } => Outcome::Frozen,
             Phase::Executing => Outcome::Executed,
             Phase::Failed(_) => Outcome::Failed,
@@ -247,18 +268,27 @@ impl Destruct {
     pub fn tick(&mut self, now: Instant) -> Option<Effect> {
         match self.phase {
             Phase::Running => {
-                let rem = self.remaining(now);
-                if rem <= TICK && self.answered {
-                    self.phase = Phase::Frozen { since: now };
-                } else if rem.is_zero() && !self.answered {
-                    if self.preview {
-                        self.phase = Phase::Zero;
-                    } else {
-                        self.phase = Phase::Executing;
-                        return self.password.take().map(Effect::Execute);
-                    }
+                if self.remaining(now) > TICK {
+                    return None;
                 }
-                None
+                self.held_at = Some(now);
+                self.phase = if self.answered {
+                    Phase::Frozen { since: now }
+                } else if self.preview {
+                    Phase::Zero
+                } else {
+                    Phase::Final { drawn: false }
+                };
+                // A late tick may already be at zero.
+                self.tick(now)
+            }
+            Phase::Final { drawn } => {
+                let zero = self.zero_at().unwrap_or(now);
+                if now < zero || (!drawn && now < zero + FINAL_GRACE) {
+                    return None;
+                }
+                self.phase = Phase::Executing;
+                self.password.take().map(Effect::Execute)
             }
             Phase::Frozen { since } if now >= since + FREEZE_HOLD => Some(Effect::Done(Outcome::Frozen)),
             Phase::Denied { since } if now >= since + DENIED_HOLD => Some(Effect::Done(Outcome::Cancelled)),
@@ -302,6 +332,7 @@ impl Destruct {
             Phase::Frozen { .. } => (*key == Key::Esc).then_some(Effect::Done(Outcome::Frozen)),
             Phase::Failed(_) => Some(Effect::Done(Outcome::Failed)),
             Phase::Zero => Some(Effect::Done(Outcome::Aborted)),
+            Phase::Final { .. } => (*key == Key::Esc).then_some(Effect::Done(Outcome::Aborted)),
             Phase::Executing => None,
         }
     }

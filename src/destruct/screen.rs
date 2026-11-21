@@ -47,7 +47,7 @@ const FIELD_STARS: usize = PANEL_INNER as usize - FIELD_LABEL.len() - 1;
 const CLEARANCE_HINT: &str = "ENTER CONFIRM  ESC CANCEL";
 /// The frozen strip turns to `SELF-DESTRUCT ABORTED` after this.
 const ABORTED_AFTER: Duration = Duration::from_millis(1500);
-const CYCLE_MS: u128 = 6000;
+const CYCLE_MS: u128 = 7000;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum XPhase {
@@ -61,15 +61,16 @@ pub enum XPhase {
     Blank,
 }
 
-/// The X's phase `elapsed` after arming: a 6 s cycle. The narrowing steps are
-/// slow (1.5 s each) so the link has room for typing and the clock.
+/// The X's phase `elapsed` after the countdown started: a 7 s cycle. The
+/// narrowing steps and the single-line glow each hold 1.5 s (slow, so the link
+/// has room for typing and the clock); the dim and blank fades are short.
 pub fn x_phase(elapsed: Duration) -> XPhase {
     match elapsed.as_millis() % CYCLE_MS {
         0..1500 => XPhase::Gap(6),
         1500..3000 => XPhase::Gap(4),
         3000..4500 => XPhase::Gap(2),
-        4500..5000 => XPhase::Glow,
-        5000..5500 => XPhase::Dim,
+        4500..6000 => XPhase::Glow,
+        6000..6500 => XPhase::Dim,
         _ => XPhase::Blank,
     }
 }
@@ -183,8 +184,7 @@ impl Destruct {
     /// When the X stops moving: the freeze, or the clock reaching zero.
     fn x_clock(&self, now: Instant) -> Instant {
         match self.phase {
-            Phase::Frozen { since } => since,
-            Phase::Executing | Phase::Failed(_) | Phase::Zero => self.zero_at().unwrap_or(now),
+            Phase::Frozen { .. } | Phase::Final { .. } | Phase::Executing | Phase::Failed(_) | Phase::Zero => self.held_at.or(self.zero_at()).unwrap_or(now),
             _ => now,
         }
     }
@@ -303,7 +303,7 @@ impl Destruct {
             Phase::Frozen { since } if now >= *since + ABORTED_AFTER => ("SELF-DESTRUCT ABORTED".into(), ""),
             Phase::Frozen { .. } => (self.quiz.question(now), self.quiz.input()),
             Phase::Failed(reason) => (format!("UNABLE TO COMPLY -- {reason}"), ""),
-            Phase::Executing | Phase::Zero => (self.quiz.question(now), ""),
+            Phase::Final { .. } | Phase::Executing | Phase::Zero => (self.quiz.question(now), ""),
         };
         let left: String = left.chars().take(room).collect();
         put_str(buf, area, i32::from(STRIP_FIRST), y, &left, rev);
@@ -472,13 +472,14 @@ mod tests {
 
     #[test]
     fn x_phase_cycle() {
-        let got: Vec<XPhase> = [0.0, 1.6, 3.1, 4.6, 5.1, 5.6, 6.0].into_iter().map(|t| x_phase(s(t))).collect();
+        let got: Vec<XPhase> = [0.0, 1.6, 3.1, 4.6, 5.9, 6.1, 6.6, 7.0].into_iter().map(|t| x_phase(s(t))).collect();
         assert_eq!(
             got,
             [
                 XPhase::Gap(6),
                 XPhase::Gap(4),
                 XPhase::Gap(2),
+                XPhase::Glow,
                 XPhase::Glow,
                 XPhase::Dim,
                 XPhase::Blank,
@@ -526,9 +527,9 @@ mod tests {
         let (d, t0) = mk(70);
         let glow = x_cells(&draw(&d, t0 + s(4.6)));
         assert!(glow.iter().any(|&(_, _, m)| m.contains(Modifier::BOLD)), "{glow:?}");
-        let dim = x_cells(&draw(&d, t0 + s(5.1)));
+        let dim = x_cells(&draw(&d, t0 + s(6.1)));
         assert!(!dim.is_empty() && dim.iter().all(|&(_, _, m)| m.contains(Modifier::DIM)), "{dim:?}");
-        let blank = x_cells(&draw(&d, t0 + s(5.6)));
+        let blank = x_cells(&draw(&d, t0 + s(6.6)));
         assert!(blank.is_empty(), "{blank:?}");
     }
 }

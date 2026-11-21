@@ -119,11 +119,16 @@ the countdown already in force (F1–F4, prefix, standby, bell).
   the prompt row shows `SELF-DESTRUCT ABORTED`; 4 s after that the Utility tab
   returns. Any key during the freeze is ignored except Esc, which returns at
   once. Audit outcome `frozen`.
-- **Execute:** if no answer has been submitted, the tick at zero shows `00000`
-  and runs `sudo -S systemctl poweroff` (or `reboot`) with the password on
-  stdin (30 s timeout); the password is zeroized once it is written. The screen
-  holds on `00000` while the host goes down; keys are ignored. Audit outcome
-  `executed`.
+- **Execute:** if no answer has been submitted, the first tick with ≤ 100 ms
+  left commits: the counter shows `00000`, the X holds its phase, the
+  questionnaire stops taking input (Esc and Break still abort), and nothing on
+  screen changes any more. At zero, once that final frame has been drawn (or
+  2 s after zero if the terminal is stalled), `sudo -S systemctl poweroff` (or
+  `reboot`) runs with the password on stdin (30 s timeout). The screen holds on
+  `00000` while the host goes down; keys are ignored, and if MUTHUR is stopped
+  meanwhile it leaves the screen as it is instead of clearing it. (Added after
+  hardware testing: redraws still in flight when the host went down left the
+  screen half drawn.) Audit outcome `executed`.
 - **Failure:** if that command fails or times out, the prompt row shows
   `UNABLE TO COMPLY -- <reason>` (reason cut to fit). Any key returns to the
   Utility tab. Audit outcome `failed`.
@@ -171,26 +176,27 @@ row 41/42    the questionnaire strip (reverse video)
 ### Animation
 
 The phase is a pure function of time since the countdown started (the
-verified password); there is no X during clearance. The cycle is 6 s (the
+verified password); there is no X during clearance. The cycle is 7 s (the
 narrowing steps were tripled from 0.5 s after hardware testing: at 0.5 s the
-redraws crowded out typed answers and the clock on the 38400-baud line):
+redraws crowded out typed answers and the clock on the 38400-baud line; the
+single-line glow then holds as long as a narrowing step):
 
 | Time in cycle | X |
 |---|---|
 | 0.0–1.5 s | arms wide apart (gap about 6 columns), normal |
 | 1.5–3.0 s | gap about 4 |
 | 3.0–4.5 s | gap about 2 |
-| 4.5–5.0 s | merged into single lines, **bold** (the glow) |
-| 5.0–5.5 s | single lines, dim |
-| 5.5–6.0 s | blank (empty octagon) |
+| 4.5–6.0 s | merged into single lines, **bold** (the glow) |
+| 6.0–6.5 s | single lines, dim |
+| 6.5–7.0 s | blank (empty octagon) |
 
 Both the phase and the counter come from the clock, never from a frame count,
 so a slowed line (XON/XOFF) skips frames without the clock drifting.
 
 **Byte budget** (38400 baud, about 3.8 KB/s): a convergence step is about
 1.2 KB, a bold, dim or blank change about 0.7 KB, reappearing wide about
-1.4 KB, the tenths digit about 30 B ten times a second. Over the 6 s cycle
-that averages about 1.3 KB/s, with short bursts around the glow. A golden
+1.4 KB, the tenths digit about 30 B ten times a second. Over the 7 s cycle
+that averages about 1.1 KB/s, with short bursts around the glow. A golden
 test holds the largest single step under a fixed budget.
 
 ## The abort questionnaire
@@ -219,7 +225,7 @@ Backspace edits, Ctrl-C clears the answer.
 - **`src/destruct/`** (always built):
   - `mod.rs` — `Destruct { kind, started, total, quiz, answered, phase, password }`
     with `phase: Clearance { input, drawn, armed_at } | Verifying { input } |
-    Denied { since } | Running | Frozen { since } | Executing | Failed(String)`.
+    Denied { since } | Running | Frozen { since } | Final { drawn } | Executing | Failed(String)`.
     `tick(now) -> Option<Effect>`, `key(&Key, now) -> Option<Effect>`,
     `rendered(now)` (arms the field) and `on_verified(&RunOutput, now)`;
     `Effect::Verify` (App runs `sudo -S -k true`), `Effect::Execute` (the run

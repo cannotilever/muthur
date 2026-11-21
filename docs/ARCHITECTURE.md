@@ -88,8 +88,10 @@ serial-getty@wy60 (38400, XON/XOFF, TERM=vt100)
    password is wiped at once and nothing can execute any more), but the
    countdown keeps running and freezes at `00001` in the last 100 ms, then shows
    `SELF-DESTRUCT ABORTED` and the Utility tab returns. Until `00000`, Esc or
-   Break aborts openly (and silently: nothing is shown). With no answer the host
-   is powered off or rebooted at `00000` through `sudo -S -k`; while that
+   Break aborts silently. With no answer, the last 100 ms commit: the counter
+   shows `00000` and the screen stops changing; once that frame is drawn the
+   host is powered off or rebooted through `sudo -S -k` (MUTHUR then leaves the
+   screen as it is, even if stopped during shutdown); while that
    command runs Esc is ignored, and Break only ends the screen: it cannot stop
    the command (a later failure is still audited). A failure shows `UNABLE TO
    COMPLY` until a key is pressed. The password goes to sudo on stdin only; the

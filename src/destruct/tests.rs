@@ -63,6 +63,13 @@ fn mk(total: u64) -> (Destruct, Instant) {
     (d, t0)
 }
 
+/// Tick into the final tenth, draw that frame, tick at zero.
+fn to_zero(d: &mut Destruct, zero: Instant) -> Option<Effect> {
+    assert!(d.tick(zero - s(0.05)).is_none());
+    d.rendered(zero - s(0.04));
+    d.tick(zero)
+}
+
 fn answer(d: &mut Destruct, now: Instant) {
     d.key(&Key::Char('x'), now);
     d.key(&Key::Enter, now);
@@ -151,8 +158,7 @@ fn verified_starts_counter_and_executes_with_same_password() {
     assert_eq!(d.outcome_so_far(), Outcome::Aborted);
     assert_eq!(d.counter(at), [0, 0, 1, 0, 0]);
     assert_eq!(d.counter(at + s(5.0)), [0, 0, 0, 5, 0]);
-    assert!(d.tick(at + s(9.95)).is_none());
-    match d.tick(at + s(10.0)) {
+    match to_zero(&mut d, at + s(10.0)) {
         Some(Effect::Execute(p)) => assert_eq!(p.expose(), "pw"),
         _ => panic!("expected Execute"),
     }
@@ -211,8 +217,7 @@ fn counter_ceils_to_tenths() {
 #[test]
 fn no_answer_executes_at_zero() {
     let (mut d, t0) = mk(60);
-    assert!(d.tick(t0 + s(59.95)).is_none());
-    match d.tick(t0 + s(60.0)) {
+    match to_zero(&mut d, t0 + s(60.0)) {
         Some(Effect::Execute(p)) => assert_eq!(p.expose(), "pw"),
         _ => panic!("expected Execute"),
     }
@@ -222,7 +227,7 @@ fn no_answer_executes_at_zero() {
 #[test]
 fn execute_emitted_once() {
     let (mut d, t0) = mk(60);
-    assert!(matches!(d.tick(t0 + s(60.0)), Some(Effect::Execute(_))));
+    assert!(matches!(to_zero(&mut d, t0 + s(60.0)), Some(Effect::Execute(_))));
     assert!(d.tick(t0 + s(61.0)).is_none());
     assert!(d.tick(t0 + s(120.0)).is_none());
 }
@@ -269,7 +274,7 @@ fn esc_aborts_silently() {
 #[test]
 fn failure_then_any_key() {
     let (mut d, t0) = mk(60);
-    assert!(matches!(d.tick(t0 + s(60.0)), Some(Effect::Execute(_))));
+    assert!(matches!(to_zero(&mut d, t0 + s(60.0)), Some(Effect::Execute(_))));
     d.on_executed(&RunOutput::Exited {
         code: 1,
         stdout: String::new(),
@@ -282,7 +287,7 @@ fn failure_then_any_key() {
 #[test]
 fn executing_ignores_keys() {
     let (mut d, t0) = mk(60);
-    d.tick(t0 + s(60.0));
+    assert!(to_zero(&mut d, t0 + s(60.0)).is_some());
     assert!(d.key(&Key::Esc, t0 + s(61.0)).is_none());
 }
 
@@ -293,4 +298,56 @@ fn preview_never_executes() {
     assert!(d.tick(t0 + s(10.0)).is_none());
     assert_eq!(d.counter(t0 + s(10.0)), [0; 5]);
     assert!(matches!(d.key(&Key::Char('a'), t0 + s(11.0)), Some(Effect::Done(Outcome::Aborted))));
+}
+
+// ---- The final frame ----
+
+#[test]
+fn last_tenth_commits_to_zero_and_holds() {
+    let (mut d, t0) = mk(60);
+    assert!(d.tick(t0 + s(59.85)).is_none());
+    assert!(!d.committed());
+    assert!(d.tick(t0 + s(59.95)).is_none());
+    assert!(d.committed());
+    assert_eq!(d.counter(t0 + s(59.95)), [0; 5], "committed: shows 00000 early");
+    // Typing no longer reaches the quiz; nothing on screen may change.
+    type_str(&mut d, "abort", t0 + s(59.96));
+    assert!(d.key(&Key::Enter, t0 + s(59.96)).is_none());
+    assert_eq!(d.quiz().input(), "");
+    assert!(d.has_password(), "a late answer does not abort once committed");
+    // The final frame has been drawn: zero executes.
+    d.rendered(t0 + s(59.97));
+    assert!(matches!(d.tick(t0 + s(60.0)), Some(Effect::Execute(_))));
+}
+
+#[test]
+fn zero_waits_for_the_final_frame_but_not_forever() {
+    let (mut d, t0) = mk(60);
+    assert!(d.tick(t0 + s(59.95)).is_none());
+    // Not drawn yet (the link is busy): hold the command back...
+    assert!(d.tick(t0 + s(60.0)).is_none());
+    assert!(d.tick(t0 + s(61.9)).is_none());
+    // ...but a stalled terminal never stops it.
+    assert!(matches!(d.tick(t0 + s(62.0)), Some(Effect::Execute(_))));
+}
+
+#[test]
+fn esc_still_aborts_in_the_final_tenth() {
+    let (mut d, t0) = mk(60);
+    d.tick(t0 + s(59.95));
+    assert!(matches!(d.key(&Key::Esc, t0 + s(59.96)), Some(Effect::Done(Outcome::Aborted))));
+}
+
+#[test]
+fn committed_frame_matches_executing_frame() {
+    let (mut d, t0) = mk(60);
+    d.tick(t0 + s(59.95));
+    let area = ratatui::layout::Rect::new(0, 0, 80, 43);
+    let mut a = ratatui::buffer::Buffer::empty(area);
+    d.render(t0 + s(59.95), area, &mut a);
+    d.rendered(t0 + s(59.96));
+    assert!(d.tick(t0 + s(60.0)).is_some());
+    let mut b = ratatui::buffer::Buffer::empty(area);
+    d.render(t0 + s(75.0), area, &mut b);
+    assert_eq!(a, b, "nothing changes on screen after the commit");
 }

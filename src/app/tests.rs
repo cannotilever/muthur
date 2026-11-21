@@ -19,6 +19,14 @@ fn chrome() -> ChromeView {
     }
 }
 
+/// Poll into the final tenth, draw that frame (the command waits for it),
+/// then poll at zero.
+fn reach_zero(app: &mut App, zero: std::time::Instant) {
+    app.poll_destruct(zero - Duration::from_millis(50));
+    draw(app);
+    app.poll_destruct(zero);
+}
+
 fn draw(app: &mut App) -> Buffer {
     let mut t = Terminal::new(TestBackend::new(80, 43)).unwrap();
     t.draw(|f| app.render(f, now())).unwrap();
@@ -1318,7 +1326,7 @@ fn zero_runs_systemctl_with_password() {
     let mut r = destruct_rig(10, None, true);
     r.app.poll_destruct(r.t0 + Duration::from_secs(5));
     assert!(r.calls.borrow().is_empty());
-    r.app.poll_destruct(r.t0 + Duration::from_secs(10));
+    reach_zero(&mut r.app, r.t0 + Duration::from_secs(10));
     r.app.poll_destruct(r.t0 + Duration::from_secs(11));
     let calls = r.calls.borrow().clone();
     assert_eq!(calls.len(), 1);
@@ -1339,7 +1347,7 @@ fn zero_runs_systemctl_with_password() {
 #[test]
 fn failed_execute_shows_reason_and_records() {
     let mut r = destruct_rig(10, None, true);
-    r.app.poll_destruct(r.t0 + Duration::from_secs(10));
+    reach_zero(&mut r.app, r.t0 + Duration::from_secs(10));
     let seq = r.calls.borrow()[0].0;
     r.app.on_sudo_done(
         seq,
@@ -1535,6 +1543,7 @@ fn verified_password_counts_down_then_executes() {
     assert_eq!(audit_lines(&dir), 0, "nothing audited until the end");
     app.poll_destruct(t + Duration::from_millis(9950));
     assert_eq!(runs.borrow().len(), 1);
+    draw(&mut app); // the final 00000 frame; the command waits for it
     app.poll_destruct(t + Duration::from_secs(10));
     let calls = runs.borrow().clone();
     assert_eq!(calls.len(), 2);
@@ -1620,7 +1629,7 @@ fn verify_result_after_esc_is_ignored() {
 #[test]
 fn break_while_executing_still_records_failed() {
     let mut r = destruct_rig(10, None, true);
-    r.app.poll_destruct(r.t0 + Duration::from_secs(10));
+    reach_zero(&mut r.app, r.t0 + Duration::from_secs(10));
     let seq = r.calls.borrow()[0].0;
     r.app.handle_keys_at(vec![BREAK], r.t0 + Duration::from_secs(11));
     assert!(!r.app.destruct_active());
@@ -1642,7 +1651,7 @@ fn break_while_executing_still_records_failed() {
 #[test]
 fn break_while_executing_then_success_records_nothing_more() {
     let mut r = destruct_rig(10, None, true);
-    r.app.poll_destruct(r.t0 + Duration::from_secs(10));
+    reach_zero(&mut r.app, r.t0 + Duration::from_secs(10));
     let seq = r.calls.borrow()[0].0;
     r.app.handle_keys_at(vec![BREAK], r.t0 + Duration::from_secs(11));
     r.app.on_sudo_done(seq, ok());

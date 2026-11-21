@@ -652,12 +652,14 @@ fn start_metrics(cfg: &Config, tx: &UnboundedSender<Event>, slot: crate::metrics
 }
 
 /// Clear the screen and restore termios (dropping the link).
-fn teardown(mut terminal: Term, link: Link) -> anyhow::Result<()> {
-    let mut bye = Vec::new();
-    Vt100Dialect.clear(&mut bye);
-    let w = terminal.backend_mut().writer_mut();
-    w.write_all(&bye)?;
-    w.flush()?;
+fn teardown(mut terminal: Term, link: Link, clear: bool) -> anyhow::Result<()> {
+    if clear {
+        let mut bye = Vec::new();
+        Vt100Dialect.clear(&mut bye);
+        let w = terminal.backend_mut().writer_mut();
+        w.write_all(&bye)?;
+        w.flush()?;
+    }
     drop(terminal);
     drop(link); // restores termios
     Ok(())
@@ -702,7 +704,7 @@ pub fn run_splash(cfg: &Config, strict: bool) -> anyhow::Result<()> {
     let result = rt.block_on(event_loop(&mut app, &mut terminal, &mut rx, &mut pty_rx, outq, || {
         chrono::Local::now().naive_local()
     }));
-    teardown(terminal, link)?;
+    teardown(terminal, link, true)?;
     result
 }
 
@@ -736,7 +738,7 @@ pub fn run_destruct_preview(cfg: &Config, strict: bool, kind: crate::destruct::K
     let result = rt.block_on(event_loop(&mut app, &mut terminal, &mut rx, &mut pty_rx, outq, || {
         chrono::Local::now().naive_local()
     }));
-    teardown(terminal, link)?;
+    teardown(terminal, link, true)?;
     result
 }
 
@@ -813,7 +815,8 @@ pub fn run(cfg: &Config, config_path: &std::path::Path, strict: bool) -> anyhow:
         chrono::Local::now().naive_local()
     }));
 
-    teardown(terminal, link)?;
+    // Going down for a self-destruct: leave 00000 on the screen.
+    teardown(terminal, link, !app.destruct_committed())?;
     tracing::info!("MU/TH/UR offline");
     result
 }
