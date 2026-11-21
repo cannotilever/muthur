@@ -174,7 +174,7 @@ runs as the operator and calls `sudo` for system steps. Every step prints
    "Anthropic or OpenAI-compatible?" For Anthropic, read the key with echo
    off (`stty -echo`) and write `api_key`. For OpenAI-compatible, ask for
    `base_url` and `model`, set `provider = "openai"`, and optionally ask for
-   a key (empty leaves the placeholder line deleted). Values are written by
+   a key (an empty answer deletes the placeholder `api_key` line). Values are written by
    `sed` on the first `provider`, `base_url`, `model` and `api_key` lines of
    the example's `[muthur]` section, which are live (uncommented) lines; input
    is escaped for `sed` and rejected if it contains a newline or `"`. With
