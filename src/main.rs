@@ -1,6 +1,7 @@
 use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand};
 use muthur::config;
+use muthur::destruct::Kind;
 use muthur::link::{Link, install_panic_hook};
 use muthur::testcard::{card, flood, keys};
 use std::io::Write;
@@ -35,6 +36,13 @@ struct Cli {
 enum Command {
     /// Play the boot splash once and exit (for tuning the logo).
     Splash,
+    /// Play the self-destruct countdown without powering anything off (for tuning).
+    Destruct {
+        #[arg(default_value_t = 60)]
+        seconds: u32,
+        #[arg(long)]
+        reboot: bool,
+    },
     /// Hardware probes: attribute card (default), flow-control flood, key echo.
     Testcard(TestcardArgs),
 }
@@ -79,6 +87,13 @@ fn main() -> anyhow::Result<()> {
     let tc = match cli.command {
         None => return muthur::run::run(&cfg, &config_path, cli.strict),
         Some(Command::Splash) => return muthur::run::run_splash(&cfg, cli.strict),
+        Some(Command::Destruct { seconds, reboot }) => {
+            if !(10..=5999).contains(&seconds) {
+                bail!("seconds must be between 10 and 5999 (got {seconds})");
+            }
+            let kind = if reboot { Kind::Reboot } else { Kind::Shutdown };
+            return muthur::run::run_destruct_preview(&cfg, cli.strict, kind, seconds);
+        }
         Some(Command::Testcard(tc)) => tc,
     };
     if rows < card::MIN_ROWS {

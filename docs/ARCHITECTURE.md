@@ -75,6 +75,16 @@ serial-getty@wy60 (38400, XON/XOFF, TERM=vt100)
    password, OVERRIDE) wakes it with a bell, and keeps it from starting; Break
    wakes it and re-initialises. Never entered during the splash or passthrough.
    See [M9 spec](superpowers/specs/2026-11-20-m9-standby-design.md).
+5. **Self-destruct** — armed from the Utility tab: `S` (shutdown) or `B`
+   (reboot), then the sudo password. A countdown of `[utility] destruct_seconds`
+   (default 60, 10..=5999) takes over the whole screen (no F-keys, no prefix key,
+   no standby, no bell) with a five-digit counter and an abort questionnaire;
+   answering a question freezes the clock briefly. Esc or Break aborts. At zero
+   the host is powered off or rebooted through `sudo -S -k`; a failure shows
+   `UNABLE TO COMPLY`. Every outcome is written to the audit log (arming is
+   refused with `AUDIT LOG OFFLINE` when it is unavailable). `muthur destruct
+   [SECONDS] [--reboot]` plays the countdown without running anything (for
+   tuning). See [M10 spec](superpowers/specs/2026-11-20-m10-destruct-design.md).
 
 ## Screen layout ("chrome")
 
@@ -155,9 +165,10 @@ Single Rust crate, tokio runtime.
 | `ops` | Always built: `Runner` (fixed-argv execution, timeouts, stdin, kill), JSONL audit log, output `cap`. Shared with the Cargo tab. |
 | `tools` | Feature `agent`: per-agent tool registry, fixed tools (`exec`), `run` (`shell`), deny rules (`deny`), network target gate (`netgate`). |
 | `review` | Feature `agent`: the reviewer LLM request and verdict. |
-| `secret` | Feature `agent`: zeroize-on-drop password buffer. |
+| `secret` | Zeroize-on-drop password buffer. |
 | `agent` | Feature `agent`: pure tool-turn state machine: round cap, review / confirm / password / override stages, aborts; emits effects the MU/TH/UR tab carries out. |
 | `metrics` | `MetricsSource` trait; `LocalSource` for v1. |
+| `destruct` | Self-destruct state machine, abort quiz and full-screen renderer; `App` runs the countdown and the sudo command. Also `muthur destruct` preview. See [M10 spec](superpowers/specs/2026-11-20-m10-destruct-design.md). |
 | `standby` | The static standby screen (shared logo drawing from `splash::logo`, caption with the date standby began); `App` enters and leaves it. |
 | `splash` | Boot splash state machine and renderer (logo, status lines, skip on key) that `App` plays before the TUI; also `muthur splash` preview. See [M6 spec](superpowers/specs/2026-11-19-m6-splash-deploy-design.md). |
 | `testcard` | `muthur testcard` subcommand: attribute / line-drawing probe and key-echo mode. |
@@ -322,6 +333,7 @@ Refresh every 2 s, diffs only, game-style boxed panels:
 - Load average, uptime.
 - Failed systemd units (reverse video).
 - Top 5 processes.
+- Keys: `S` arms a self-destruct shutdown, `B` a reboot (see Self-destruct above).
 - Container count (running and stopped), one line, only if a runtime (Docker/Podman) is present;
   the list itself is in the Cargo tab, so a busy host cannot push the other
   panels off the screen.
@@ -395,6 +407,7 @@ for multi-server monitoring — tools then get a "which host" parameter.
 | **M7** | Technical agent: `/DIRECT`, `run` as `muthur-agent` or root, reviewer, network isolation, `agent` feature. Spec: docs/superpowers/specs/2026-11-19-m7-technical-agent-design.md |
 | **M8** | Persona `delegate(task)`: MU/TH/UR hands self-contained tasks to the technical agent; relayed or verbatim report. Spec: docs/superpowers/specs/2026-11-20-m8-delegate-design.md |
 | **M9** | Chat UI: operator lines underlined; chat history in memory only, clean per launch. |
+| **M10** | Self-destruct: armed from Utility (`S`/`B`), full-screen countdown with abort quiz, sudo shutdown/reboot, audit; `muthur destruct` preview. Spec: docs/superpowers/specs/2026-11-20-m10-destruct-design.md |
 
 ## Deferred (post-v1)
 

@@ -55,6 +55,10 @@ pub enum Event {
         output: crate::ops::runner::RunOutput,
         ms: u64,
     },
+    SudoDone {
+        seq: u64,
+        output: crate::ops::runner::RunOutput,
+    },
 }
 
 /// The chrome is laid out for 80×43; smaller screens cannot hold it.
@@ -230,6 +234,10 @@ pub async fn event_loop<W: Write>(
                     app.on_cargo_done(seq, output, ms);
                     dirty = true;
                 }
+                Some(Event::SudoDone { seq, output }) => {
+                    app.on_sudo_done(seq, output);
+                    dirty = true;
+                }
                 Some(Event::Hangup) | None => return Ok(()),
             },
             Some(ev) = pty_rx.recv() => {
@@ -252,6 +260,7 @@ pub async fn event_loop<W: Write>(
         // `App::settling`); the re-init then clears below before drawing.
         app.poll_settle(Instant::now());
         app.poll_standby(Instant::now(), clock());
+        app.poll_destruct(Instant::now());
         if !app.passthrough {
             was_passthrough = false;
         }
@@ -556,6 +565,30 @@ fn build_cargo(tx: UnboundedSender<Event>, audit: crate::ops::audit::SharedAudit
     crate::cargo::CargoTab::new(deps, audit)
 }
 
+/// Runs sudo commands on blocking tasks, feeding the password on stdin.
+fn sudo_runner(tx: UnboundedSender<Event>) -> crate::destruct::SudoRun {
+    use crate::ops::runner::{Kill, RunSpec, Runner, SystemRunner};
+    Box::new(move |seq, argv, timeout, password| {
+        let tx = tx.clone();
+        tokio::task::spawn_blocking(move || {
+            // Pre-sized so no un-wiped copy is freed.
+            let mut stdin = zeroize::Zeroizing::new(String::with_capacity(password.expose().len() + 1));
+            stdin.push_str(password.expose());
+            stdin.push('\n');
+            let spec = RunSpec {
+                merged: false,
+                stdin: Some(stdin.as_bytes()),
+                kill: Kill::Now,
+                ..RunSpec::new(&argv, timeout)
+            };
+            let output = SystemRunner.run_spec(&spec);
+            drop(password);
+            drop(stdin);
+            let _ = tx.send(Event::SudoDone { seq, output });
+        });
+    })
+}
+
 fn open_audit_log() -> crate::ops::audit::AuditLog {
     use crate::ops::audit::AuditLog;
     let Some(dir) = dirs::state_dir() else {
@@ -673,6 +706,40 @@ pub fn run_splash(cfg: &Config, strict: bool) -> anyhow::Result<()> {
     result
 }
 
+/// Play the self-destruct countdown once without powering anything off.
+pub fn run_destruct_preview(cfg: &Config, strict: bool, kind: crate::destruct::Kind, seconds: u32) -> anyhow::Result<()> {
+    check_geometry(cfg.terminal.cols, cfg.terminal.rows)?;
+    let _log = init_logging()?;
+    log_config_warnings(cfg);
+    install_panic_hook();
+    let Session {
+        link,
+        tx: _tx,
+        mut rx,
+        mut terminal,
+        ..
+    } = open_session(cfg, strict)?;
+    let chrome = ChromeView {
+        ship_name: ship_name(cfg),
+        year_offset: cfg.chrome.year_offset,
+    };
+    let mut app = App::new(chrome);
+    let now = Instant::now();
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(1, |d| d.as_nanos() as u64);
+    app.start_destruct(crate::destruct::Destruct::preview(kind, Duration::from_secs(u64::from(seconds)), now, seed));
+    app.quit_after_destruct = true;
+    let (_pty_tx, mut pty_rx) = tokio::sync::mpsc::channel(PTY_QUEUE);
+    let rt = tokio::runtime::Builder::new_current_thread().enable_time().enable_io().build()?;
+    let outq = || link.output_queue().unwrap_or(0);
+    let result = rt.block_on(event_loop(&mut app, &mut terminal, &mut rx, &mut pty_rx, outq, || {
+        chrono::Local::now().naive_local()
+    }));
+    teardown(terminal, link)?;
+    result
+}
+
 /// Run the TUI on the configured link until quit or hangup. `config_path` is
 /// where `cfg` was loaded from (the deny rules protect it).
 pub fn run(cfg: &Config, config_path: &std::path::Path, strict: bool) -> anyhow::Result<()> {
@@ -711,8 +778,18 @@ pub fn run(cfg: &Config, config_path: &std::path::Path, strict: bool) -> anyhow:
     // One audit log for every writer: MU/TH/UR's tools and CARGO's commands.
     let audit = crate::ops::audit::shared(open_audit_log());
     let muthur = build_muthur(cfg, &chrome.ship_name, tx.clone(), slot, audit.clone(), tech)?;
-    let cargo = build_cargo(tx.clone(), audit, hints);
-    let mut app = App::assemble(chrome, muthur, UtilityTab::new(), cargo, shell);
+    let cargo = build_cargo(tx.clone(), audit.clone(), hints);
+    let utility = UtilityTab::with_destruct(crate::utility::UtilityDeps {
+        run: sudo_runner(tx.clone()),
+        now: Box::new(Instant::now),
+        audit: audit.clone(),
+        destruct_seconds: cfg.utility.destruct_seconds,
+    });
+    let mut app = App::assemble(chrome, muthur, utility, cargo, shell).with_destruct(crate::destruct::DestructDeps {
+        run: sudo_runner(tx.clone()),
+        audit,
+        timestamp: Box::new(|| chrono::Local::now().to_rfc3339()),
+    });
     if cfg.chrome.splash {
         app = app.with_splash(splash_for(cfg, &ship));
         // Break replays the splash with fresh facts (year, interface readiness).
@@ -889,6 +966,62 @@ mod tests {
         assert_eq!(asleep, "", "wrote while asleep");
         assert_eq!(out.matches('\x07').count(), 1, "one bell for the prompt");
         assert!(out.rfind('\x07').unwrap() > clears[2], "the bell rings after the wake");
+    }
+
+    #[tokio::test]
+    async fn destruct_preview_quits_on_key() {
+        let (mut app, mut t) = setup();
+        let d = crate::destruct::Destruct::preview(crate::destruct::Kind::Shutdown, Duration::from_secs(10), Instant::now(), 1);
+        app.start_destruct(d);
+        app.quit_after_destruct = true;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(Event::Keys(vec![Key::Esc])).unwrap();
+        let r = tokio::time::timeout(Duration::from_millis(500), event_loop(&mut app, &mut t, &mut rx, &mut no_pty(), || 0, now)).await;
+        assert!(r.expect("loop did not exit").is_ok());
+        let out = String::from_utf8(t.backend().writer().clone()).unwrap();
+        assert!(out.contains("EMERGENCY") && out.contains("DESTRUCT"), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn sudo_done_reaches_app() {
+        use crate::ops::runner::RunOutput;
+        let dir = tempfile::tempdir().unwrap();
+        let audit = crate::ops::audit::shared(crate::ops::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        // The stand-in sudo answers every command at once with a failure.
+        let sudo_tx = tx.clone();
+        let (app, mut t) = setup();
+        let mut app = app.with_destruct(crate::destruct::DestructDeps {
+            run: Box::new(move |seq, _argv, _to, _pw| {
+                let output = RunOutput::Exited {
+                    code: 1,
+                    stdout: String::new(),
+                    stderr: "sudo: 1 incorrect password attempt".into(),
+                };
+                let _ = sudo_tx.send(Event::SudoDone { seq, output });
+            }),
+            audit,
+            timestamp: Box::new(|| "t".into()),
+        });
+        let mut pw = crate::secret::Secret::new();
+        pw.push('x');
+        let req = crate::destruct::DestructRequest {
+            kind: crate::destruct::Kind::Shutdown,
+            total: Duration::from_secs(10),
+            password: pw,
+        };
+        // Started long enough ago that the first poll executes.
+        let started = Instant::now() - Duration::from_secs(60);
+        app.start_destruct(crate::destruct::Destruct::new(req, started, 1));
+        let quit = async {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            tx.send(Event::Hangup).unwrap();
+        };
+        let mut pty = no_pty();
+        let (r, _) = tokio::join!(event_loop(&mut app, &mut t, &mut rx, &mut pty, || 0, now), quit);
+        r.unwrap();
+        let out = String::from_utf8(t.backend().writer().clone()).unwrap();
+        assert!(out.contains("UNABLE") && out.contains("INCORRECT"), "{out:?}");
     }
 
     #[tokio::test]
