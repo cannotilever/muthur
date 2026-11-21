@@ -52,8 +52,26 @@ pub enum Effect {
     Done(Outcome),
 }
 
+/// Why the execute command failed (uppercase), or `None` if it succeeded.
+pub fn failure_reason(out: &RunOutput) -> Option<String> {
+    let reason = match out {
+        RunOutput::Exited { code: 0, .. } => return None,
+        RunOutput::Exited { code, stderr, .. } => stderr
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("EXIT {code}")),
+        RunOutput::TimedOut => "TIMED OUT".into(),
+        RunOutput::NotFound => "NOT FOUND".into(),
+        RunOutput::Cancelled => "CANCELLED".into(),
+    };
+    Some(reason.to_uppercase())
+}
+
 /// Runs `argv` under sudo: (seq, argv, timeout, password for stdin). The
-/// closure owns the password and drops (zeroizes) it once written.
+/// closure owns the password and drops (zeroizes) it once the command has
+/// exited (it is borrowed as stdin until then).
 pub type SudoRun = Box<dyn FnMut(u64, Vec<String>, Duration, Secret)>;
 
 /// What `App` needs to run a real countdown.
@@ -195,19 +213,9 @@ impl Destruct {
     }
 
     pub fn on_executed(&mut self, out: &RunOutput) {
-        let reason = match out {
-            RunOutput::Exited { code: 0, .. } => return,
-            RunOutput::Exited { code, stderr, .. } => stderr
-                .lines()
-                .map(str::trim)
-                .find(|l| !l.is_empty())
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("EXIT {code}")),
-            RunOutput::TimedOut => "TIMED OUT".into(),
-            RunOutput::NotFound => "NOT FOUND".into(),
-            RunOutput::Cancelled => "CANCELLED".into(),
-        };
-        self.phase = Phase::Failed(reason.to_uppercase());
+        if let Some(reason) = failure_reason(out) {
+            self.phase = Phase::Failed(reason);
+        }
     }
 
     /// Digits M M S S t.

@@ -1429,3 +1429,125 @@ fn quit_after_destruct_quits_on_break() {
     r.app.handle_keys_at(vec![BREAK], r.t0 + S);
     assert!(r.app.quit && !r.app.destruct_active());
 }
+
+/// An app with the real Utility tab, its verify command recorded in the
+/// returned calls; the clock drives the arming delay.
+fn real_utility_app() -> (App, Calls, Rc<std::cell::Cell<Instant>>, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let audit = crate::ops::audit::shared(crate::ops::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap());
+    let runs: Calls = Rc::default();
+    let r = runs.clone();
+    let clock = Rc::new(std::cell::Cell::new(Instant::now()));
+    let c = clock.clone();
+    let util = crate::utility::UtilityTab::with_destruct(crate::utility::UtilityDeps {
+        run: Box::new(move |seq, argv, _to, pw: Secret| r.borrow_mut().push((seq, argv, pw.expose().to_string()))),
+        now: Box::new(move || c.get()),
+        audit: audit.clone(),
+        destruct_seconds: 60,
+    });
+    let app = App::new(chrome()).with_tab(TabId::Utility, Box::new(util)).with_destruct(DestructDeps {
+        run: Box::new(|_, _, _, _| {}),
+        audit,
+        timestamp: Box::new(|| "t".into()),
+    });
+    (app, runs, clock, dir)
+}
+
+/// Arm a shutdown on the real Utility tab up to VERIFYING; returns the verify seq.
+fn submit_password(app: &mut App, runs: &Calls, clock: &std::cell::Cell<Instant>, t: Instant) -> u64 {
+    app.handle_keys_at(vec![Key::Char('s'), Key::Enter], t);
+    draw(app);
+    draw(app);
+    clock.set(clock.get() + ARMING + Duration::from_millis(100));
+    app.handle_keys_at(vec![Key::Char('p'), Key::Char('w'), Key::Enter], t);
+    let calls = runs.borrow();
+    assert_eq!(calls.len(), 1, "verify ran");
+    assert_eq!(calls[0].1.last().unwrap(), "true");
+    calls[0].0
+}
+
+fn ok() -> RunOutput {
+    RunOutput::Exited {
+        code: 0,
+        stdout: String::new(),
+        stderr: String::new(),
+    }
+}
+
+#[test]
+fn verified_password_starts_countdown_at_once() {
+    let (mut app, runs, clock, _dir) = real_utility_app();
+    let seq = submit_password(&mut app, &runs, &clock, Instant::now());
+    assert!(!app.destruct_active());
+    app.on_sudo_done(seq, ok());
+    assert!(app.destruct_active(), "no further key needed");
+}
+
+#[test]
+fn verify_result_after_leaving_utility_never_starts() {
+    let (mut app, runs, clock, _dir) = real_utility_app();
+    let t = Instant::now();
+    let seq = submit_password(&mut app, &runs, &clock, t);
+    app.handle_keys_at(vec![Key::F(3)], t);
+    app.on_sudo_done(seq, ok());
+    assert!(!app.destruct_active());
+    draw(&mut app);
+    app.handle_keys_at(vec![Key::F(2)], t + Duration::from_secs(3600));
+    draw(&mut app);
+    app.handle_keys_at(vec![Key::Char('x')], t + Duration::from_secs(3601));
+    assert!(!app.destruct_active(), "a stale request never starts");
+}
+
+#[test]
+fn verify_result_under_prefix_never_starts() {
+    let (mut app, runs, clock, _dir) = real_utility_app();
+    let t = Instant::now();
+    let seq = submit_password(&mut app, &runs, &clock, t);
+    app.handle_keys_at(vec![Key::Ctrl(']')], t);
+    app.on_sudo_done(seq, ok());
+    assert!(!app.destruct_active());
+    app.handle_keys_at(vec![Key::Char('r'), Key::Char('x')], t);
+    assert!(!app.destruct_active());
+}
+
+#[test]
+fn break_while_executing_still_records_failed() {
+    let mut r = destruct_rig(10, None, true);
+    r.app.poll_destruct(r.t0 + Duration::from_secs(10));
+    let seq = r.calls.borrow()[0].0;
+    r.app.handle_keys_at(vec![BREAK], r.t0 + Duration::from_secs(11));
+    assert!(!r.app.destruct_active());
+    assert_eq!(r.exits(), ["executed"]);
+    r.app.on_sudo_done(
+        seq,
+        RunOutput::Exited {
+            code: 1,
+            stdout: String::new(),
+            stderr: "Failed to power off\n".into(),
+        },
+    );
+    assert_eq!(r.exits(), ["executed", "failed"]);
+    assert_eq!(r.audit()[1]["output"], "FAILED TO POWER OFF");
+    assert!(r.armer.borrow().sudo_done.is_empty(), "not routed to Utility");
+    drop(std::mem::replace(&mut r.app, App::new(chrome())));
+    assert_eq!(r.exits(), ["executed", "failed"], "nothing more on drop");
+}
+
+#[test]
+fn break_while_executing_then_success_records_nothing_more() {
+    let mut r = destruct_rig(10, None, true);
+    r.app.poll_destruct(r.t0 + Duration::from_secs(10));
+    let seq = r.calls.borrow()[0].0;
+    r.app.handle_keys_at(vec![BREAK], r.t0 + Duration::from_secs(11));
+    r.app.on_sudo_done(seq, ok());
+    drop(std::mem::replace(&mut r.app, App::new(chrome())));
+    assert_eq!(r.exits(), ["executed"]);
+}
+
+#[test]
+fn key_ending_countdown_stops_the_batch() {
+    let mut r = destruct_rig(60, None, true);
+    r.app.handle_keys_at(vec![Key::Esc, Key::F(3)], r.t0 + S);
+    assert!(!r.app.destruct_active());
+    assert_eq!(r.app.active, TabId::Utility);
+}

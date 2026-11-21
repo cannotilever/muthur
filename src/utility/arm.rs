@@ -88,6 +88,10 @@ impl Arm {
 
     pub(super) fn set_obscured(&mut self, obscured: bool) {
         self.obscured = obscured;
+        if obscured {
+            // A verified request not taken while shown must never start later.
+            self.ready = None;
+        }
         if obscured && matches!(self.state, State::Duration { .. } | State::Password { .. } | State::Verifying { .. }) {
             self.state = State::Idle;
         }
@@ -120,6 +124,8 @@ impl Arm {
 
     /// Returns true when the key was consumed.
     pub(super) fn key(&mut self, key: &Key) -> bool {
+        // The hand-over is over: a request not taken by now is stale (drop zeroizes).
+        self.ready = None;
         let state = std::mem::replace(&mut self.state, State::Idle);
         match state {
             State::Idle => {

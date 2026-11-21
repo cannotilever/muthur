@@ -97,6 +97,9 @@ pub struct App {
     destruct_deps: Option<Deps>,
     /// The seq of the execute command, until its result arrives.
     exec_seq: Option<u64>,
+    /// A countdown ended by Break while its execute command still ran: the
+    /// command's seq, recorder and argv, so a failure is still audited.
+    orphan: Option<(u64, Recorder, Vec<String>)>,
     next_seq: u64,
     /// `muthur destruct`: quit as soon as the countdown ends.
     pub quit_after_destruct: bool,
@@ -204,12 +207,14 @@ impl App {
     /// Drop the countdown (zeroizing any password) and audit how it ended.
     /// Esc, the freeze, a failure acknowledged, or Break.
     fn end_destruct(&mut self, o: Outcome) {
-        if self.destruct.take().is_none() {
-            return;
-        }
+        let Some(d) = self.destruct.take() else { return };
         tracing::info!(outcome = ?o, "destruct: ended");
         if let Some(r) = self.recorder.take() {
-            r.finish(o);
+            match self.exec_seq.take() {
+                // Break while executing: the command may still fail.
+                Some(seq) => self.orphan = Some((seq, r, execute_argv(&d))),
+                None => r.finish(o),
+            }
         }
         self.switch(TabId::Utility);
         if self.quit_after_destruct {
@@ -219,8 +224,17 @@ impl App {
 
     /// The result of sudo command `seq`: the execute command's, or the Utility tab's.
     pub fn on_sudo_done(&mut self, seq: u64, out: crate::ops::runner::RunOutput) {
+        if self.orphan.as_ref().is_some_and(|(s, ..)| *s == seq) {
+            let Some((_, mut r, argv)) = self.orphan.take() else { return };
+            if let Some(reason) = crate::destruct::failure_reason(&out) {
+                tracing::error!(%reason, "destruct: execute failed (after Break)");
+                r.record(Outcome::Failed, Some(argv), &reason);
+            }
+            return;
+        }
         if self.exec_seq != Some(seq) {
             self.tabs[TabId::Utility.index()].on_sudo_done(seq, out);
+            self.take_verified();
             return;
         }
         self.exec_seq = None;
@@ -232,6 +246,26 @@ impl App {
             if let Some(r) = &mut self.recorder {
                 r.record(Outcome::Failed, Some(argv), reason);
             }
+        }
+    }
+
+    /// A verify result may have readied a request: start it at once if the
+    /// Utility tab is what the operator sees, otherwise drop it (zeroizing).
+    fn take_verified(&mut self) {
+        let Some(req) = self.tabs[TabId::Utility.index()].take_destruct() else {
+            return;
+        };
+        let showing = self.active == TabId::Utility
+            && self.destruct.is_none()
+            && self.settle_until.is_none()
+            && self.splash.is_none()
+            && self.standby.is_none()
+            && self.overlay.is_none()
+            && !self.prefix;
+        if showing {
+            self.begin_destruct(req, std::time::Instant::now());
+        } else {
+            tracing::warn!("destruct: verified request dropped (Utility not showing)");
         }
     }
 
@@ -406,6 +440,7 @@ impl App {
             recorder: None,
             destruct_deps: None,
             exec_seq: None,
+            orphan: None,
             next_seq: EXEC_SEQ_BASE,
             quit_after_destruct: false,
             tabs,
@@ -449,7 +484,12 @@ impl App {
             return;
         }
         for k in keys {
+            let counting = self.destruct.is_some();
             self.handle_key_at(k, now);
+            // The key that ends the countdown is the last one of its batch.
+            if counting && self.destruct.is_none() {
+                return;
+            }
         }
         if self.destruct.is_none()
             && let Some(req) = self.tabs[self.active.index()].take_destruct()

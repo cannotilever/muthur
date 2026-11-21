@@ -536,4 +536,19 @@ mod arming {
         t.handle_key(&Key::Enter);
         assert_eq!(runs.borrow()[0].2, "pw");
     }
+
+    #[test]
+    fn stale_request_dropped_when_obscured_or_on_key() {
+        for obscure in [true, false] {
+            let (mut t, runs, clock, _dir) = tab(60, true);
+            let seq = verified(&mut t, &runs, &clock);
+            t.on_sudo_done(seq, ok());
+            if obscure {
+                t.set_obscured(true);
+            } else {
+                keys(&mut t, "x");
+            }
+            assert!(t.take_destruct().is_none(), "obscure={obscure}");
+        }
+    }
 }
