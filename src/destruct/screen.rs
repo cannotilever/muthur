@@ -204,7 +204,7 @@ impl Destruct {
         let (title, field) = match &self.phase {
             Phase::Clearance { input, .. } => ("CLEARANCE REQUIRED", format!("{FIELD_LABEL}{}", "*".repeat(input.chars().min(FIELD_STARS)))),
             Phase::Verifying { .. } => ("CLEARANCE REQUIRED", "  VERIFYING".to_string()),
-            _ => ("CLEARANCE DENIED", FIELD_LABEL.to_string()),
+            _ => ("CLEARANCE DENIED", String::new()),
         };
         let rows = [
             format!("┌{}┐", "─".repeat(w)),

@@ -170,7 +170,8 @@ row 41/42    the questionnaire strip (reverse video)
 
 ### Animation
 
-The phase is a pure function of time since arming. The cycle is 6 s (the
+The phase is a pure function of time since the countdown started (the
+verified password); there is no X during clearance. The cycle is 6 s (the
 narrowing steps were tripled from 0.5 s after hardware testing: at 0.5 s the
 redraws crowded out typed answers and the clock on the 38400-baud line):
 
@@ -226,7 +227,8 @@ Backspace edits, Ctrl-C clears the answer.
     and audits; `Cancelled` from clearance is never audited).
     `counter(now) -> [u8; 5]`. Preview mode never emits `Execute`.
   - `quiz.rs` — the steps, checks, retorts and the seeded arithmetic.
-  - `screen.rs` — octagon, X phases, counter rows, strip; `render` and
+  - `screen.rs` — octagon, X phases, counter rows, strip, the clearance
+    panel and its `cursor(area)`; `render` and
     `line_attrs`.
 - **`src/secret.rs`** — no longer behind the `agent` feature.
 - **Utility tab** — the duration strip; `UtilityDeps { audit,
