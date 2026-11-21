@@ -31,6 +31,10 @@ rows = 43
 year_offset = 111
 # Play the boot splash (logo and system check) on launch. Any key skips it.
 splash = true
+# Minutes without a key before MUTHUR shows a static standby screen and stops
+# writing, so the WY-60's own screen saver can blank it (turn that on in the
+# terminal's setup menu). 0 = never.
+standby_minutes = 10
 
 # ── SHELL folder (F3) ────────────────────────────────────────────────────────
 [shell]

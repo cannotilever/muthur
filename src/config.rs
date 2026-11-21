@@ -57,6 +57,8 @@ pub struct ChromeConfig {
     pub year_offset: i32,
     /// Play the boot splash on launch.
     pub splash: bool,
+    /// Minutes without a key before the standby screen; 0 = never.
+    pub standby_minutes: u32,
 }
 
 impl Default for ChromeConfig {
@@ -65,6 +67,7 @@ impl Default for ChromeConfig {
             ship_name: None,
             year_offset: 111,
             splash: true,
+            standby_minutes: 10,
         }
     }
 }
@@ -630,6 +633,18 @@ mod tests {
         assert_eq!(c.chrome.year_offset, 111);
         assert!(c.chrome.ship_name.is_none() && c.keys.is_empty());
         assert_eq!((c.shell.command.as_str(), c.shell.scrollback), ("fish", 1000));
+    }
+
+    #[test]
+    fn chrome_standby_defaults_to_ten_minutes() {
+        let c: Config = toml::from_str("").unwrap();
+        assert_eq!(c.chrome.standby_minutes, 10);
+    }
+
+    #[test]
+    fn chrome_standby_zero_parses() {
+        let c: Config = toml::from_str("[chrome]\nstandby_minutes = 0\n").unwrap();
+        assert_eq!(c.chrome.standby_minutes, 0);
     }
 
     #[test]
