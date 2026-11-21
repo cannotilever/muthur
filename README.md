@@ -71,11 +71,22 @@ refusal ends the call:
 Unprivileged commands run as a dedicated `muthur-agent` user with no sudo
 rights and no network egress (nftables). Everything the agent reads is sent to
 the LLM provider. For sensitive hosts, point the technical agent at a local
-model. Build with `AGENT=0` to remove all LLM tool use; see below.
+model. 
+
+> [!NOTE]
+> All LLM tool use can be disabled at build time by disabling the `agent` feature flag
 
 Full details are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#tools--safety).
 
 ## Hardware
+
+This project was built for and tested on the Wyse WY-60 but *should* work on anything that
+can "speak" VT100.
+
+Will probably work on any *NIX like.
+Note that some features such as service management and power control rely on systemd.
+
+**Tested Configuration:**
 
 | Item | Value |
 |---|---|
@@ -175,11 +186,17 @@ MUTHUR_LIVE_ANTHROPIC_KEY=... cargo test --test llm_live anthropic -- --ignored 
 - [docs/deploy.md](docs/deploy.md): installation on the host
 - [docs/hardware.md](docs/hardware.md): WY-60 measurements
 - [docs/testcard.md](docs/testcard.md): the hardware probe
-- `docs/superpowers/specs/`: per-milestone design specs
+- [docs/superpowers/specs/](docs/superpowers/specs): per-milestone design specs
 
 ## Credits
 
 The visual design draws on
 [brenns10/alien-console](https://github.com/brenns10/alien-console), which is
-included as a submodule under `Inspiration/`. *Alien*, MU/TH/UR and
+itself based on *Alien: Isolation*. *Alien*, MU/TH/UR and
 Weyland-Yutani belong to their respective owners. This is a fan project.
+
+## AI Disclosure
+
+This project was almost entirely vibe-coded. While I have tried to ensure it was
+built with best practices, the code has not been human-reviewed for security or saftey.
+This is primarily a toy project; don't deploy it on anything important.
