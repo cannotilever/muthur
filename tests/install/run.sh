@@ -476,6 +476,46 @@ t_hook_rerun_is_noop() {
 	step_hook >/dev/null 2>&1
 	chk same cmp "$HOME/.profile" "$T/before"
 }
+t_hook_lower_priority_file_cleaned() {
+	printf 'x\n' > "$HOME/.profile"
+	install_hook bash >/dev/null 2>&1
+	chk in-profile block_present "$HOME/.profile"
+	printf '. ~/.profile\n' > "$HOME/.bash_profile"
+	STUB_PASSWD='t:x:1:1::/h:/x'; export STUB_PASSWD; OPT_SHELL=bash
+	step_hook >/dev/null 2>&1
+	if block_present "$HOME/.profile"; then exit 1; fi
+	chk in-bash-profile block_present "$HOME/.bash_profile"
+}
+t_hook_profile_symlink_kept() {
+	printf 'x\n' > "$HOME/.bash_profile"; ln -s .bash_profile "$HOME/.profile"
+	STUB_PASSWD='t:x:1:1::/h:/x'; export STUB_PASSWD; OPT_SHELL=bash
+	step_hook >/dev/null 2>&1
+	eq 1 "$(grep -c "^$BLOCK_OPEN\$" "$HOME/.bash_profile")" once
+}
+t_zsh_zdotdir_switch_cleans_home() {
+	STUB_PASSWD='t:x:1:1::/h:/x'; export STUB_PASSWD; OPT_SHELL=zsh
+	step_hook >/dev/null 2>&1
+	chk home block_present "$HOME/.zprofile"
+	ZDOTDIR=$HOME/z; export ZDOTDIR
+	step_hook >/dev/null 2>&1
+	if block_present "$HOME/.zprofile"; then exit 1; fi
+	chk z block_present "$HOME/z/.zprofile"
+}
+t_binary_nonexec_identical_fixed() {
+	bin_env; fake_bin one "$T/b1"; OPT_BIN=$T/b1
+	step_binary >/dev/null 2>&1; chmod -x "$HOME/.local/bin/muthur"
+	step_binary >/dev/null 2>&1
+	chk exec test -x "$HOME/.local/bin/muthur"
+}
+t_shell_empty_passwd_message() {
+	STUB_PASSWD=''; export STUB_PASSWD
+	dies 'pass --shell' login_shell
+}
+t_launcher_reentry_guard() {
+	fake_bin ran "$T/stubbin"; sed -i "s|^echo ran|touch $T/ran|" "$T/stubbin"
+	MUTHUR_LOGIN=1 MUTHUR_TTY=/dev/null MUTHUR_BIN=$T/stubbin sh "$REPO/deploy/login/muthur-login"
+	chk not-run test ! -e "$T/ran"
+}
 t_launcher_off_serial() {
 	fake_bin ran "$T/stubbin"; sed -i "s|^echo ran|touch $T/ran|" "$T/stubbin"
 	MUTHUR_TTY=$T/nonexistent MUTHUR_BIN=$T/stubbin sh "$REPO/deploy/login/muthur-login"

@@ -454,13 +454,13 @@ step_agent() {
 # Returns 1 if DEST was already identical (nothing done), else 0; keeps the old DEST as DEST.old when KEEP_OLD=1.
 install_exe() {
 	_dest=$2
-	if [ -f "$_dest" ] && cmp -s "$1" "$_dest"; then return 1; fi
+	if [ -f "$_dest" ] && [ -x "$_dest" ] && cmp -s "$1" "$_dest"; then return 1; fi
 	mkdir -p "$(dirname "$_dest")"
 	_xt=$(mktemp "$_dest.XXXXXX") || die "cannot create a temporary file beside $_dest"
 	CLEANUP_PATHS=$CLEANUP_PATHS$_xt'
 '
 	install -m 755 "$1" "$_xt" || die "cannot install $_dest"
-	if [ "${KEEP_OLD:-0}" = 1 ] && [ -f "$_dest" ]; then mv -f "$_dest" "$_dest.old"; fi
+	if [ "${KEEP_OLD:-0}" = 1 ] && [ -f "$_dest" ]; then ln -f "$_dest" "$_dest.old" || die "cannot keep $_dest.old"; fi
 	mv -f "$_xt" "$_dest" || die "cannot install $_dest"
 }
 
@@ -491,6 +491,7 @@ step_binary() {
 	_rc=0
 	KEEP_OLD=1 install_exe "$_src" "$_bd/muthur" || _rc=$?
 	[ "$_rc" -le 1 ] || exit 1
+	_rc=0
 	KEEP_OLD=0 install_exe "$SCRIPT_DIR/deploy/login/muthur-login" "$_bd/muthur-login" || _rc=$?
 	[ "$_rc" -le 1 ] || exit 1
 	case ":$PATH:" in *":$_bd:"*) ;; *) warn "$_bd is not on PATH (the login hooks use the absolute path, so login still works)" ;; esac
@@ -503,6 +504,7 @@ login_shell() {
 		_s=$(getent passwd "$(id -un)" | cut -d: -f7) || _s=
 		_s=${_s##*/}
 	fi
+	[ -n "$_s" ] || die "cannot read the login shell from the passwd database; pass --shell"
 	case $_s in
 	bash | zsh | fish) printf '%s\n' "$_s" ;;
 	*) die "unsupported login shell '$_s'; supported shells: bash, zsh, fish (pass --shell)" ;;
@@ -539,10 +541,16 @@ install_hook() {
 # remove_hooks [KEEP_SHELL]: remove every hook except KEEP_SHELL's, so a re-run rewrites in place.
 remove_hooks() {
 	_keep=${1:-}
-	if [ "$_keep" != bash ]; then
-		for _f in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do block_remove "$_f"; done
-	fi
-	[ "$_keep" = zsh ] || block_remove "$(zsh_login_file)"
+	_kf=
+	[ "$_keep" != bash ] || _kf=$(resolve_link "$(bash_login_file)") || exit 1
+	for _f in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
+		[ -z "$_kf" ] || [ "$(resolve_link "$_f")" != "$_kf" ] || continue
+		block_remove "$_f"
+	done
+	if [ "$_keep" != zsh ]; then block_remove "$(zsh_login_file)"; fi
+	_zr=$(resolve_link "$(zsh_login_file)")
+	if [ "$_keep" = zsh ] && [ "$_zr" != "$(resolve_link "$HOME/.zprofile")" ]; then block_remove "$HOME/.zprofile"; fi
+	if [ "$_keep" != zsh ]; then block_remove "$HOME/.zprofile"; fi
 	[ "$_keep" = fish ] || rm -f "$FISH_HOOK"
 }
 

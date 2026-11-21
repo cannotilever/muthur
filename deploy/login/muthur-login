@@ -1,8 +1,10 @@
 #!/bin/sh
 # Starts MUTHUR on the serial terminal's login shell; a no-op anywhere else.
+[ -z "${MUTHUR_LOGIN:-}" ] || exit 0
 want=$(realpath "${MUTHUR_TTY:-/dev/muthur-tty}" 2>/dev/null) || exit 0
 here=$(tty 2>/dev/null) || exit 0
 [ "$want" = "$here" ] || exit 0
 stty erase '^H' ixon ixoff
+MUTHUR_LOGIN=1; export MUTHUR_LOGIN
 "${MUTHUR_BIN:-$HOME/.local/bin/muthur}"
 exit 0
