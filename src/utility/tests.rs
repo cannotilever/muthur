@@ -331,13 +331,14 @@ mod arming {
 
     type Runs = Rc<RefCell<Vec<(u64, Vec<String>, String)>>>;
 
-    fn tab(secs: u32, online: bool) -> (UtilityTab, Runs, Rc<Cell<Instant>>) {
+    fn tab(secs: u32, online: bool) -> (UtilityTab, Runs, Rc<Cell<Instant>>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
         let runs: Runs = Rc::default();
         let r = runs.clone();
         let clock = Rc::new(Cell::new(Instant::now()));
         let c = clock.clone();
         let audit = shared(if online {
-            AuditLog::open(std::env::temp_dir().join(format!("muthur-util-{}.jsonl", std::process::id()))).unwrap()
+            AuditLog::open(dir.path().join("audit.jsonl")).unwrap()
         } else {
             AuditLog::offline()
         });
@@ -347,7 +348,7 @@ mod arming {
             audit,
             destruct_seconds: secs,
         });
-        (t, runs, clock)
+        (t, runs, clock, dir)
     }
 
     fn keys(t: &mut UtilityTab, s: &str) {
@@ -358,8 +359,8 @@ mod arming {
 
     fn last_row(t: &mut UtilityTab) -> (String, bool) {
         let buf = render(t, FULL);
-        let y = 42;
-        let row: String = (0..80).map(|x| buf[(x, y)].symbol().to_string()).collect();
+        let y = FULL.height - 1;
+        let row: String = (0..FULL.width).map(|x| buf[(x, y)].symbol().to_string()).collect();
         (row.trim_end().to_string(), buf[(0, y)].modifier.contains(Modifier::REVERSED))
     }
 
@@ -374,7 +375,7 @@ mod arming {
 
     #[test]
     fn s_opens_duration_prompt() {
-        let (mut t, _, _) = tab(60, true);
+        let (mut t, _, _, _dir) = tab(60, true);
         keys(&mut t, "S");
         let (row, rev) = last_row(&mut t);
         assert_eq!(row, "SHUTDOWN IN 01:00  <-/-> ADJUST  ENTER CONFIRM  ESC CANCEL");
@@ -383,7 +384,7 @@ mod arming {
 
     #[test]
     fn arrows_step_durations() {
-        let (mut t, _, _) = tab(45, true);
+        let (mut t, _, _, _dir) = tab(45, true);
         keys(&mut t, "s");
         t.handle_key(&Key::Right);
         assert!(last_row(&mut t).0.starts_with("SHUTDOWN IN 01:00"));
@@ -400,7 +401,7 @@ mod arming {
 
     #[test]
     fn password_ignored_until_armed() {
-        let (mut t, runs, clock) = tab(60, true);
+        let (mut t, runs, clock, _dir) = tab(60, true);
         keys(&mut t, "s");
         t.handle_key(&Key::Enter);
         keys(&mut t, "pw");
@@ -411,7 +412,11 @@ mod arming {
         t.handle_key(&Key::Enter);
         assert!(runs.borrow().is_empty());
         assert_eq!(t.tick_interval(), Some(Duration::from_millis(100)));
-        clock.set(clock.get() + Duration::from_millis(1100));
+        clock.set(clock.get() + Duration::from_millis(999));
+        keys(&mut t, "pw");
+        t.handle_key(&Key::Enter);
+        assert!(runs.borrow().is_empty());
+        clock.set(clock.get() + Duration::from_millis(1));
         assert_eq!(t.tick_interval(), None);
         keys(&mut t, "pw");
         let (row, _) = last_row(&mut t);
@@ -444,7 +449,7 @@ mod arming {
 
     #[test]
     fn verified_password_hands_over_request() {
-        let (mut t, runs, clock) = tab(60, true);
+        let (mut t, runs, clock, _dir) = tab(60, true);
         let seq = verified(&mut t, &runs, &clock);
         t.on_sudo_done(seq, ok());
         let req = t.take_destruct().expect("request");
@@ -457,7 +462,7 @@ mod arming {
 
     #[test]
     fn wrong_password_denied() {
-        let (mut t, runs, clock) = tab(60, true);
+        let (mut t, runs, clock, _dir) = tab(60, true);
         let seq = verified(&mut t, &runs, &clock);
         t.on_sudo_done(
             seq,
@@ -476,7 +481,7 @@ mod arming {
     #[test]
     fn verify_result_after_cancel_is_ignored() {
         for obscure in [true, false] {
-            let (mut t, runs, clock) = tab(60, true);
+            let (mut t, runs, clock, _dir) = tab(60, true);
             let seq = verified(&mut t, &runs, &clock);
             if obscure {
                 t.set_obscured(false);
@@ -492,7 +497,7 @@ mod arming {
 
     #[test]
     fn audit_offline_refuses() {
-        let (mut t, _, _) = tab(60, false);
+        let (mut t, _, _, _dir) = tab(60, false);
         keys(&mut t, "s");
         assert_eq!(last_row(&mut t).0, "AUDIT LOG OFFLINE");
         keys(&mut t, "x");
@@ -504,5 +509,31 @@ mod arming {
         let mut t = UtilityTab::new();
         keys(&mut t, "S");
         assert!(last_row(&mut t).0.starts_with('└'));
+    }
+
+    #[test]
+    fn obscuring_cancels_duration_and_password() {
+        let (mut t, _, clock, _dir) = tab(60, true);
+        keys(&mut t, "s");
+        t.set_obscured(false);
+        assert!(last_row(&mut t).0.starts_with("SHUTDOWN"));
+        t.set_obscured(true);
+        assert!(last_row(&mut t).0.starts_with('└'));
+        to_armed_password(&mut t, &clock);
+        t.set_obscured(true);
+        assert!(last_row(&mut t).0.starts_with('└'));
+    }
+
+    #[test]
+    fn backspace_and_empty_enter() {
+        let (mut t, runs, clock, _dir) = tab(60, true);
+        to_armed_password(&mut t, &clock);
+        t.handle_key(&Key::Enter);
+        assert!(runs.borrow().is_empty());
+        keys(&mut t, "px");
+        t.handle_key(&Key::Backspace);
+        keys(&mut t, "w");
+        t.handle_key(&Key::Enter);
+        assert_eq!(runs.borrow()[0].2, "pw");
     }
 }
