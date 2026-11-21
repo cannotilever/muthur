@@ -219,10 +219,189 @@ block_remove() {
 	rm -f "$_new"
 }
 
+# parse_udev_props: stdin is `udevadm info --query=property`; sets ADP_*.
+parse_udev_props() {
+	ADP_VID="" ADP_PID="" ADP_SERIAL="" ADP_PATH="" ADP_BYID=""
+	while IFS= read -r _l || [ -n "$_l" ]; do
+		case $_l in
+		ID_VENDOR_ID=*) ADP_VID=${_l#*=} ;;
+		ID_MODEL_ID=*) ADP_PID=${_l#*=} ;;
+		ID_SERIAL_SHORT=*) ADP_SERIAL=${_l#*=} ;;
+		ID_PATH=*) ADP_PATH=${_l#*=} ;;
+		DEVLINKS=*)
+			for _d in ${_l#*=}; do
+				case $_d in /dev/serial/by-id/*) [ -n "$ADP_BYID" ] || ADP_BYID=$_d ;; esac
+			done
+			;;
+		esac
+	done
+}
+
+# list_adapters: one tab-separated line per serial device (dev vid pid serial idpath byid).
+list_adapters() {
+	for _dev in "$ROOT"/dev/ttyUSB* "$ROOT"/dev/ttyACM*; do
+		[ -e "$_dev" ] || continue
+		_props=$(udevadm info --query=property --name="$_dev") || continue
+		parse_udev_props <<EOF
+$_props
+EOF
+		printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${_dev#"$ROOT"}" "$ADP_VID" "$ADP_PID" "$ADP_SERIAL" "$ADP_PATH" "$ADP_BYID"
+	done
+}
+
+# match_line: the udev match for ADP_*; the serial number wins over the port.
+match_line() {
+	if [ -n "$ADP_SERIAL" ]; then
+		printf 'ATTRS{idVendor}=="%s", ATTRS{idProduct}=="%s", ATTRS{serial}=="%s"\n' "$ADP_VID" "$ADP_PID" "$ADP_SERIAL"
+	elif [ -n "$ADP_PATH" ]; then
+		printf 'ATTRS{idVendor}=="%s", ATTRS{idProduct}=="%s", ENV{ID_PATH}=="%s"\n' "$ADP_VID" "$ADP_PID" "$ADP_PATH"
+	else
+		die "adapter has neither a serial number nor a port path; pass --serial or --port"
+	fi
+}
+
+# step_adapter: sets ADAPTER_MATCH.
+step_adapter() {
+	say "serial adapter"
+	ADP_VID="" ADP_PID="" ADP_SERIAL="" ADP_PATH="" ADP_BYID=""
+	if [ -n "$OPT_VID$OPT_PID" ] || [ -n "$OPT_SERIAL$OPT_PORT" ]; then
+		[ -n "$OPT_VID" ] && [ -n "$OPT_PID" ] || die "--serial/--port need --vid and --pid"
+		[ -n "$OPT_SERIAL$OPT_PORT" ] || die "--vid/--pid need --serial or --port to name the device"
+		ADP_VID=$OPT_VID ADP_PID=$OPT_PID ADP_SERIAL=$OPT_SERIAL ADP_PATH=$OPT_PORT
+		ADAPTER_MATCH=$(match_line) || exit 1
+		return 0
+	fi
+	_list=$(list_adapters)
+	[ -n "$_list" ] || die "no USB serial adapter found (/dev/ttyUSB*, /dev/ttyACM*); plug it in, or pass --vid, --pid and --serial (or --port)"
+	_n=$(printf '%s\n' "$_list" | wc -l)
+	_i=0
+	while IFS= read -r _row; do
+		_i=$((_i + 1))
+		_by=$(printf '%s' "$_row" | cut -f6)
+		_sn=$(printf '%s' "$_row" | cut -f4)
+		printf '%s) %s  %s:%s  %s  (%s)\n' "$_i" "$(printf '%s' "$_row" | cut -f1)" \
+			"$(printf '%s' "$_row" | cut -f2)" "$(printf '%s' "$_row" | cut -f3)" \
+			"${_sn:+serial $_sn}${_sn:-no serial}" "${_by#/dev/serial/by-id/}" >&2
+	done <<EOF
+$_list
+EOF
+	if [ "$_n" -eq 1 ]; then
+		confirm "Use this adapter?" || die "no adapter chosen; pass --vid, --pid and --serial (or --port)"
+		_pick=1
+	else
+		[ "$YES" != 1 ] || die "several adapters found and --yes gives no default; pass --vid, --pid and --serial (or --port)"
+		_pick=$(ask "Which adapter (1-$_n)?" "" vid)
+		case $_pick in "" | *[!0-9]*) die "not a number: $_pick" ;; esac
+		{ [ "$_pick" -ge 1 ] && [ "$_pick" -le "$_n" ]; } || die "choice out of range: $_pick"
+	fi
+	_row=$(printf '%s\n' "$_list" | sed -n "${_pick}p")
+	ADP_VID=$(printf '%s' "$_row" | cut -f2) ADP_PID=$(printf '%s' "$_row" | cut -f3)
+	ADP_SERIAL=$(printf '%s' "$_row" | cut -f4) ADP_PATH=$(printf '%s' "$_row" | cut -f5)
+	[ -n "$ADP_VID" ] && [ -n "$ADP_PID" ] || die "cannot read the adapter's USB ids; pass --vid, --pid and --serial (or --port)"
+	ADAPTER_MATCH=$(match_line) || exit 1
+	[ -n "$ADP_SERIAL" ] || warn "adapter has no serial number; matching its USB port ($ADP_PATH): moving it to another port breaks the match"
+}
+
+find_nologin() {
+	for _p in /usr/sbin/nologin /usr/bin/nologin /sbin/nologin; do
+		if [ -e "$ROOT$_p" ]; then printf '%s\n' "$_p"; return 0; fi
+	done
+	die "no nologin binary found"
+}
+
+find_agetty() {
+	command -v agetty 2>/dev/null && return 0
+	for _p in /sbin/agetty /usr/bin/agetty; do
+		if [ -x "$ROOT$_p" ]; then printf '%s\n' "$_p"; return 0; fi
+	done
+	die "agetty not found"
+}
+
+STAGE=
+stage_new() {
+	STAGE=$(mktemp -d) || die "cannot create a temporary directory"
+	trap 'rm -rf "$STAGE"' EXIT
+}
+stage_done() { rm -rf "$STAGE"; trap - EXIT; }
+
+# sys_install MODE SRC DEST: create DEST's directory, then install.
+sys_install() {
+	sudo mkdir -p "$(dirname "$3")"
+	sudo install -D -m "$1" "$2" "$3"
+}
+
+step_system() {
+	say "system files (udev rule, serial getty)"
+	[ -n "${ADAPTER_MATCH:-}" ] || die "no adapter match; run step_adapter first"
+	_agetty=$(find_agetty)
+	stage_new
+	render "$SCRIPT_DIR/deploy/udev/99-muthur-tty.rules.in" "$STAGE/rule" MATCH="$ADAPTER_MATCH"
+	render "$SCRIPT_DIR/deploy/systemd/serial-getty@muthur-tty.service.d/override.conf.in" "$STAGE/drop" \
+		AGETTY="$_agetty" BAUD="${OPT_BAUD:-38400}"
+	_old_rule=$ROOT/etc/udev/rules.d/99-wy60.rules
+	_old_dir=$ROOT/etc/systemd/system/serial-getty@wy60.service.d
+	if [ -e "$_old_rule" ] || [ -e "$_old_dir" ]; then
+		say "migrating the old wy60 names"
+		sudo systemctl stop serial-getty@wy60 || true
+		sudo rm -f "$_old_rule"
+		sudo rm -rf "$_old_dir"
+	fi
+	if sudo systemctl is-enabled --quiet serial-getty@ttyUSB0 2>/dev/null; then
+		sudo systemctl disable serial-getty@ttyUSB0
+	fi
+	sys_install 644 "$STAGE/rule" "$ROOT/etc/udev/rules.d/99-muthur-tty.rules"
+	sys_install 644 "$STAGE/drop" "$ROOT/etc/systemd/system/serial-getty@muthur-tty.service.d/override.conf"
+	stage_done
+	sudo systemctl daemon-reload
+	sudo udevadm control --reload
+	sudo udevadm trigger --subsystem-match=tty --action=add
+}
+
+step_agent() {
+	say "agent account (muthur-agent, sudoers, nftables)"
+	_nologin=$(find_nologin)
+	_op=$(id -un)
+	stage_new
+	render "$SCRIPT_DIR/deploy/sysusers.d/muthur-agent.conf.in" "$STAGE/sysusers" NOLOGIN="$_nologin"
+	sed "s/^OPERATOR /$_op /" "$SCRIPT_DIR/deploy/sudoers.d/muthur-agent" > "$STAGE/sudoers"
+	grep -q "^$_op ALL" "$STAGE/sudoers" || die "cannot render sudoers for user $_op"
+	visudo -cf "$STAGE/sudoers" >/dev/null || die "rendered sudoers file failed visudo -cf"
+	for _g in adm systemd-journal; do
+		[ -n "$(getent group "$_g" 2>/dev/null)" ] || warn "group $_g does not exist; the agent will not get its access"
+	done
+	sys_install 644 "$STAGE/sysusers" "$ROOT/etc/sysusers.d/muthur-agent.conf"
+	sys_install 644 "$SCRIPT_DIR/deploy/tmpfiles.d/muthur-agent.conf" "$ROOT/etc/tmpfiles.d/muthur-agent.conf"
+	sudo systemd-sysusers
+	sudo systemd-tmpfiles --create
+	sys_install 440 "$STAGE/sudoers" "$ROOT/etc/sudoers.d/muthur-agent"
+	sys_install 644 "$SCRIPT_DIR/deploy/nftables/muthur-agent.nft" "$ROOT/etc/nftables.d/muthur-agent.nft"
+	stage_done
+	sudo nft -f "$ROOT/etc/nftables.d/muthur-agent.nft"
+	_conf=$ROOT/etc/nftables.conf
+	if [ -f "$_conf" ] && ! grep -q 'nftables.d' "$_conf"; then
+		if confirm "Add an include for /etc/nftables.d/ to /etc/nftables.conf?"; then
+			{ [ -z "$(tail -c 1 "$_conf")" ] || echo; echo 'include "/etc/nftables.d/*.nft"'; } | sudo tee -a "$_conf" >/dev/null
+		fi
+	fi
+	if ! systemctl is-enabled --quiet nftables 2>/dev/null; then
+		if confirm "Enable nftables.service so the rules load at boot?"; then
+			sudo systemctl enable nftables
+		fi
+	fi
+	if grep -Eq '^hosts:.*resolve' "$ROOT/etc/nsswitch.conf" 2>/dev/null; then
+		warn "nsswitch hosts uses resolve: a local resolver stub may leak DNS lookups from the agent"
+	fi
+}
+
 main() {
 	parse_args "$@"
 	preflight
-	# Tasks 6-8 add the install and uninstall steps here.
+	if [ "$OPT_SYSTEM" = 1 ]; then
+		step_adapter
+		step_system
+		[ "$OPT_AGENT" = 0 ] || step_agent
+	fi
+	# Tasks 7-8 add the remaining steps here.
 }
 
 [ -n "${MUTHUR_INSTALL_LIB:-}" ] || main "$@"

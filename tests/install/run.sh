@@ -182,6 +182,130 @@ t_parse_args_unknown() {
 	eq 0 "$OPT_AGENT" agent
 }
 
+FX=$REPO/tests/install/fixtures
+mkdev() { mkdir -p "$ROOT/dev"; : > "$ROOT/dev/$1"; }
+t_parse_ftdi() {
+	parse_udev_props < "$FX/udev-ftdi.txt"
+	eq 0403 "$ADP_VID" vid; eq 6001 "$ADP_PID" pid; eq A9E91BA3 "$ADP_SERIAL" serial
+	case $ADP_BYID in /dev/serial/by-id/*) ;; *) echo "  byid [$ADP_BYID]" >&2; exit 1 ;; esac
+	eq 'ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", ATTRS{serial}=="A9E91BA3"' "$(match_line)" match
+}
+t_parse_ch340_no_serial() {
+	parse_udev_props < "$FX/udev-ch340.txt"
+	eq 'ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", ENV{ID_PATH}=="pci-0000:00:14.0-usb-0:3:1.0"' "$(match_line)" match
+	mkdev ttyUSB1; STUB_UDEV_ttyUSB1=$FX/udev-ch340.txt; export STUB_UDEV_ttyUSB1
+	YES=1; step_adapter 2>"$T/err" >/dev/null
+	chk warns grep -q port "$T/err"
+}
+t_adapter_none() { dies --vid step_adapter; }
+t_adapter_flags_skip_detection() {
+	mkdev ttyUSB0
+	OPT_VID=0403 OPT_PID=6001 OPT_SERIAL=S; step_adapter >/dev/null
+	if grep -q 'udevadm info' "$STUBLOG"; then echo "  detection ran" >&2; exit 1; fi
+	eq 'ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", ATTRS{serial}=="S"' "$ADAPTER_MATCH" match
+}
+t_adapter_vid_without_serial_dies() {
+	OPT_VID=0403 OPT_PID=6001; dies --serial step_adapter
+}
+t_adapter_several_yes_dies() {
+	mkdev ttyUSB0; mkdev ttyUSB1
+	STUB_UDEV_ttyUSB0=$FX/udev-ftdi.txt STUB_UDEV_ttyUSB1=$FX/udev-ch340.txt
+	export STUB_UDEV_ttyUSB0 STUB_UDEV_ttyUSB1
+	YES=1; dies several step_adapter
+}
+t_adapter_pick_by_number() {
+	mkdev ttyUSB0; mkdev ttyUSB1
+	STUB_UDEV_ttyUSB0=$FX/udev-ftdi.txt STUB_UDEV_ttyUSB1=$FX/udev-ch340.txt
+	export STUB_UDEV_ttyUSB0 STUB_UDEV_ttyUSB1
+	YES=0 MUTHUR_ASSUME_TTY=1
+	echo 1 > "$T/in"
+	step_adapter < "$T/in" >/dev/null 2>&1
+	case $ADAPTER_MATCH in *A9E91BA3*) ;; *) echo "  [$ADAPTER_MATCH]" >&2; exit 1 ;; esac
+}
+sys_env() {
+	mkdir -p "$ROOT/usr/sbin"; : > "$ROOT/usr/sbin/nologin"
+	ADAPTER_MATCH='ATTRS{idVendor}=="0403"'
+}
+RULE=etc/udev/rules.d/99-muthur-tty.rules
+DROP=etc/systemd/system/serial-getty@muthur-tty.service.d/override.conf
+t_system_installs() {
+	sys_env; step_system >/dev/null
+	chk rule test -f "$ROOT/$RULE"
+	eq 644 "$(stat -c %a "$ROOT/$DROP")" mode
+	chk baud grep -q ' 38400 ' "$ROOT/$DROP"
+	_a=$(grep -n 'systemctl daemon-reload' "$STUBLOG" | tail -1 | cut -d: -f1)
+	_b=$(grep -n 'udevadm control --reload' "$STUBLOG" | tail -1 | cut -d: -f1)
+	_c=$(grep -n 'udevadm trigger --subsystem-match=tty --action=add' "$STUBLOG" | tail -1 | cut -d: -f1)
+	chk order test -n "$_a" -a "$_a" -lt "$_b" -a "$_b" -lt "$_c"
+}
+t_system_migrates_wy60() {
+	sys_env
+	mkdir -p "$ROOT/etc/udev/rules.d" "$ROOT/etc/systemd/system/serial-getty@wy60.service.d"
+	: > "$ROOT/etc/udev/rules.d/99-wy60.rules"
+	: > "$ROOT/etc/systemd/system/serial-getty@wy60.service.d/override.conf"
+	step_system >/dev/null
+	chk rule-gone test ! -e "$ROOT/etc/udev/rules.d/99-wy60.rules"
+	chk dir-gone test ! -e "$ROOT/etc/systemd/system/serial-getty@wy60.service.d"
+	_s=$(grep -n '^systemctl stop serial-getty@wy60' "$STUBLOG" | head -1 | cut -d: -f1)
+	_r=$(grep -n '^sudo rm .*wy60' "$STUBLOG" | head -1 | cut -d: -f1)
+	chk order test -n "$_s" -a -n "$_r" -a "$_s" -lt "$_r"
+}
+t_system_disables_ttyusb0() {
+	sys_env; step_system >/dev/null
+	chk disabled grep -q '^systemctl disable.*serial-getty@ttyUSB0' "$STUBLOG"
+	: > "$STUBLOG"; STUB_SYSTEMCTL_IS_ENABLED_RC=1; export STUB_SYSTEMCTL_IS_ENABLED_RC
+	step_system >/dev/null
+	if grep -q 'systemctl disable' "$STUBLOG"; then echo "  disabled anyway" >&2; exit 1; fi
+}
+t_system_render_failure_writes_nothing() {
+	sys_env; OPT_BAUD=1
+	ADAPTER_MATCH=
+	( step_system ) >/dev/null 2>&1 && exit 1
+	chk none test ! -e "$ROOT/etc"
+}
+t_agent_files() {
+	sys_env
+	step_agent >/dev/null 2>&1
+	if grep -q '@' "$ROOT/etc/sysusers.d/muthur-agent.conf"; then echo "  @ left" >&2; exit 1; fi
+	chk nologin grep -q '/usr/sbin/nologin' "$ROOT/etc/sysusers.d/muthur-agent.conf"
+	chk tmpfiles test -f "$ROOT/etc/tmpfiles.d/muthur-agent.conf"
+	chk operator grep -q '^tester ALL' "$ROOT/etc/sudoers.d/muthur-agent"
+	eq 440 "$(stat -c %a "$ROOT/etc/sudoers.d/muthur-agent")" mode
+	chk nft test -f "$ROOT/etc/nftables.d/muthur-agent.nft"
+	_v=$(grep -n 'visudo -cf' "$STUBLOG" | head -1 | cut -d: -f1)
+	_i=$(grep -n 'install .*sudoers.d' "$STUBLOG" | head -1 | cut -d: -f1)
+	chk order test -n "$_v" -a -n "$_i" -a "$_v" -lt "$_i"
+	chk nftlog grep -q 'nft -f' "$STUBLOG"
+	chk sysusers grep -q 'systemd-sysusers' "$STUBLOG"
+	chk tmpfiles-run grep -q 'systemd-tmpfiles --create' "$STUBLOG"
+}
+t_agent_visudo_failure_installs_nothing() {
+	sys_env; STUB_VISUDO_RC=1; export STUB_VISUDO_RC
+	( step_agent ) >/dev/null 2>&1 && exit 1
+	chk none test ! -e "$ROOT/etc"
+}
+t_agent_nft_include_once() {
+	sys_env; YES=1
+	mkdir -p "$ROOT/etc"; printf 'flush ruleset' > "$ROOT/etc/nftables.conf"
+	step_agent >/dev/null 2>&1
+	step_agent >/dev/null 2>&1
+	eq 1 "$(grep -c 'include "/etc/nftables.d/\*.nft"' "$ROOT/etc/nftables.conf")" once
+	chk kept grep -q '^flush ruleset$' "$ROOT/etc/nftables.conf"
+}
+t_agent_nsswitch_warns() {
+	sys_env; mkdir -p "$ROOT/etc"; echo 'hosts: files resolve dns' > "$ROOT/etc/nsswitch.conf"
+	step_agent 2>&1 >/dev/null | grep -q resolve || { echo "  no warning" >&2; exit 1; }
+}
+t_rerun_is_noop() {
+	sys_env; YES=1
+	mkdir -p "$ROOT/etc"; echo 'flush ruleset' > "$ROOT/etc/nftables.conf"
+	step_system >/dev/null 2>&1; step_agent >/dev/null 2>&1
+	_a=$(cd "$ROOT/etc" && find . -type f -exec cksum {} + | sort)
+	step_system >/dev/null 2>&1; step_agent >/dev/null 2>&1
+	_b=$(cd "$ROOT/etc" && find . -type f -exec cksum {} + | sort)
+	eq "$_a" "$_b" etc
+}
+
 if [ "${1:-}" = "--one" ]; then
 	setup
 	"$2"
