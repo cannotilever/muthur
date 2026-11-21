@@ -9,6 +9,7 @@ use crate::metrics::Snapshot;
 use crate::muthur::MuthurTab;
 use crate::shell::{PtyEvent, ShellTab};
 use crate::splash::Splash;
+use crate::standby::Standby;
 use crate::utility::UtilityTab;
 use chrono::NaiveDateTime;
 use ratatui::Frame;
@@ -64,8 +65,15 @@ pub struct App {
     metrics_offline: bool,
     /// After Break: re-initialise when the line has been quiet until then.
     settle_until: Option<std::time::Instant>,
-    /// The splash reached `READY.`; the run loop sends BEL.
+    /// The splash reached `READY.`, or a prompt woke standby; the run loop sends BEL.
     bell: bool,
+    /// Standby begins after this long without a key; `None` = never.
+    standby_after: Option<std::time::Duration>,
+    /// When the countdown to standby started: the last key batch, or the
+    /// first `poll_standby`.
+    last_key: Option<std::time::Instant>,
+    /// The static standby screen, while it is shown.
+    standby: Option<Standby>,
     tabs: [Box<dyn Tab>; TABS],
     activity: [bool; TABS],
     chrome: ChromeView,
@@ -95,6 +103,40 @@ impl App {
     pub fn with_splash_factory(mut self, f: SplashFactory) -> Self {
         self.splash_factory = Some(f);
         self
+    }
+
+    /// Show the standby screen after `after` without a key (off by default).
+    pub fn with_standby(mut self, after: std::time::Duration) -> Self {
+        self.standby_after = Some(after);
+        self
+    }
+
+    pub fn standby_active(&self) -> bool {
+        self.standby.is_some()
+    }
+
+    /// A tool prompt is waiting for the operator: it keeps the TUI awake.
+    fn awaiting_operator(&self) -> bool {
+        false
+    }
+
+    /// Enter standby once the countdown has run out. Called on every loop
+    /// wake-up; `wall` dates the `STANDBY SINCE` caption.
+    pub fn poll_standby(&mut self, now: std::time::Instant, wall: NaiveDateTime) {
+        let Some(last) = self.last_key else {
+            self.last_key = Some(now);
+            return;
+        };
+        let Some(after) = self.standby_after else { return };
+        if self.standby.is_some() || now < last + after || self.splash.is_some() || self.passthrough || self.settling() || self.awaiting_operator() {
+            return;
+        }
+        let offset = if self.show_real_date { 0 } else { self.chrome.year_offset };
+        self.standby = Some(Standby::new(chrome::format_date(wall, offset)));
+        self.prefix = false;
+        self.overlay = None;
+        self.redraw = true;
+        tracing::info!("standby: entered");
     }
 
     /// True once after the splash reached `READY.`.
@@ -211,6 +253,9 @@ impl App {
             metrics_offline: false,
             settle_until: None,
             bell: false,
+            standby_after: None,
+            last_key: None,
+            standby: None,
             tabs,
             activity: [false; TABS],
             chrome,
@@ -238,6 +283,13 @@ impl App {
         if self.settle_until.is_some() {
             tracing::debug!(n = keys.len(), "break: input dropped while settling");
             self.settle_until = Some(now + BREAK_SETTLE);
+            return;
+        }
+        self.last_key = Some(now);
+        // The key that wakes standby does nothing else.
+        if self.standby.take().is_some() {
+            tracing::info!("standby: woke (key)");
+            self.redraw = true;
             return;
         }
         if self.splash.is_some() {
@@ -268,6 +320,9 @@ impl App {
     fn on_break(&mut self, now: std::time::Instant) {
         self.prefix = false;
         self.overlay = None;
+        if self.standby.take().is_some() {
+            tracing::info!("standby: woke (break)");
+        }
         if self.passthrough {
             self.passthrough = false;
             self.tabs[TabId::Shell.index()].set_passthrough(false);
@@ -292,7 +347,7 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: Key) {
-        if key == BREAK || self.settle_until.is_some() {
+        if key == BREAK || self.settle_until.is_some() || self.standby.is_some() {
             self.handle_keys(vec![key]);
             return;
         }
@@ -347,13 +402,28 @@ impl App {
         }
     }
 
-    /// DECDHL rows for the next frame (only the splash uses them).
+    /// DECDHL rows for the next frame (only the splash and standby use them).
     pub fn line_attrs(&self, area: ratatui::layout::Rect) -> Vec<(u16, crate::dialect::LineAttr)> {
+        if let Some(s) = &self.standby {
+            return s.line_attrs(area);
+        }
         self.splash.as_ref().map(|s| s.line_attrs(area)).unwrap_or_default()
     }
 
     pub fn render(&mut self, frame: &mut Frame, now: NaiveDateTime) {
         let area = frame.area();
+        if let Some(sb) = &self.standby {
+            // Collect activity so the markers show on wake; draw nothing that changes.
+            let active = self.active.index();
+            for (i, tab) in self.tabs.iter_mut().enumerate() {
+                tab.set_obscured(true);
+                if tab.take_activity() && i != active {
+                    self.activity[i] = true;
+                }
+            }
+            sb.render(area, frame.buffer_mut());
+            return;
+        }
         if let Some(sp) = &mut self.splash {
             sp.advance(std::time::Instant::now());
             self.bell |= sp.take_bell();

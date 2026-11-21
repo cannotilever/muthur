@@ -930,3 +930,154 @@ fn batch_with_break_is_dropped_whole() {
     assert!(app.redraw);
     assert!(st.lock().unwrap().keys.is_empty(), "noise around the NUL never reaches a tab");
 }
+
+// ── Standby ─────────────────────────────────────────────────────────────────
+
+const D: Duration = Duration::from_secs(600);
+const S: Duration = Duration::from_secs(1);
+
+/// An app with standby after `D`, its countdown started at the returned instant.
+fn standby_app() -> (App, Instant) {
+    let mut app = App::new(chrome()).with_standby(D);
+    let t0 = Instant::now();
+    app.poll_standby(t0, now());
+    (app, t0)
+}
+
+fn all_rows(buf: &Buffer) -> Vec<String> {
+    (0..buf.area.height).map(|y| row(buf, y)).collect()
+}
+
+#[test]
+fn standby_begins_at_timeout() {
+    let (mut app, t0) = standby_app();
+    app.poll_standby(t0 + D - S, now());
+    assert!(!app.standby_active());
+    app.poll_standby(t0 + D, now());
+    assert!(app.standby_active() && app.redraw);
+}
+
+#[test]
+fn key_resets_countdown() {
+    let (mut app, t0) = standby_app();
+    let t1 = t0 + Duration::from_secs(300);
+    app.handle_keys_at(vec![Key::Char('a')], t1);
+    app.poll_standby(t0 + D, now());
+    assert!(!app.standby_active());
+    app.poll_standby(t1 + D, now());
+    assert!(app.standby_active());
+}
+
+#[test]
+fn standby_off_by_default() {
+    let mut app = App::new(chrome());
+    let t0 = Instant::now();
+    app.poll_standby(t0, now());
+    app.poll_standby(t0 + Duration::from_secs(36_000), now());
+    assert!(!app.standby_active());
+}
+
+#[test]
+fn no_standby_during_splash() {
+    let mut app = App::new(chrome()).with_standby(D).with_splash(fresh_splash());
+    let t0 = Instant::now();
+    app.poll_standby(t0, now());
+    app.poll_standby(t0 + D, now());
+    assert!(!app.standby_active());
+}
+
+#[test]
+fn no_standby_in_passthrough() {
+    let (mut app, t0) = standby_app();
+    app.passthrough = true;
+    app.poll_standby(t0 + D, now());
+    assert!(!app.standby_active());
+}
+
+#[test]
+fn no_standby_while_settling() {
+    let (mut app, t0) = standby_app();
+    app.handle_keys_at(vec![BREAK], t0 + S);
+    app.poll_standby(t0 + D + S, now());
+    assert!(!app.standby_active());
+}
+
+#[test]
+fn wake_key_is_swallowed() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut app = App::new(chrome()).with_standby(D).with_tab(TabId::Utility, Box::new(Recorder(log.clone())));
+    let t0 = Instant::now();
+    app.poll_standby(t0, now());
+    app.poll_standby(t0 + D, now());
+    app.redraw = false;
+    app.handle_keys_at(vec![Key::Char('y'), Key::Ctrl(']'), Key::Char('q')], t0 + D + S);
+    assert!(log.lock().unwrap().is_empty());
+    assert!(!app.quit && !app.standby_active() && app.redraw);
+    keys(&mut app, &[Key::Char('z')]);
+    assert_eq!(*log.lock().unwrap(), vec![Key::Char('z')], "prefix not left open");
+}
+
+#[test]
+fn wake_restarts_countdown() {
+    let (mut app, t0) = standby_app();
+    app.poll_standby(t0 + D, now());
+    let t1 = t0 + D + Duration::from_secs(30);
+    app.handle_keys_at(vec![Key::Char('x')], t1);
+    app.poll_standby(t1 + D - S, now());
+    assert!(!app.standby_active());
+    app.poll_standby(t1 + D, now());
+    assert!(app.standby_active());
+}
+
+#[test]
+fn break_while_asleep_ends_standby_and_settles() {
+    let (mut app, t0) = standby_app();
+    app.poll_standby(t0 + D, now());
+    app.handle_keys_at(vec![Key::Char('x'), BREAK], t0 + D + S);
+    assert!(!app.standby_active() && app.settling());
+}
+
+#[test]
+fn entering_standby_closes_prefix_and_overlay() {
+    // The prefix strip, then the help overlay, open when the countdown ends.
+    for ks in [vec![Key::Ctrl(']')], vec![Key::Ctrl(']'), Key::Char('?')]] {
+        let (mut app, t0) = standby_app();
+        keys(&mut app, &ks);
+        app.poll_standby(t0 + D, now());
+        let rows = all_rows(&draw(&mut app));
+        assert!(rows[27].contains("STANDBY SINCE 17 NOV 2137 14:02"), "{}", rows[27]);
+        assert!(rows.iter().all(|r| !r.contains("PREFIX") && !r.contains("QUIT")), "{rows:#?}");
+    }
+}
+
+#[test]
+fn standby_frame_replaces_chrome() {
+    use crate::dialect::LineAttr;
+    let (mut app, t0) = standby_app();
+    app.poll_standby(t0 + D, now());
+    let buf = draw(&mut app);
+    assert!(!row(&buf, 0).contains("USCSS TEST"));
+    assert!(row(&buf, 26).contains("INTERFACE STANDBY"));
+    assert_eq!(
+        app.line_attrs(Rect::new(0, 0, 80, 43)),
+        vec![(13, LineAttr::DoubleTop), (14, LineAttr::DoubleBottom)]
+    );
+}
+
+#[test]
+fn standby_date_honours_real_date_toggle() {
+    let (mut app, t0) = standby_app();
+    keys(&mut app, &[Key::Ctrl(']'), Key::Char('d')]);
+    app.poll_standby(t0 + D, now());
+    assert!(row(&draw(&mut app), 27).contains("17 NOV 2026 14:02"));
+}
+
+#[test]
+fn no_bell_while_asleep() {
+    let (mut app, t0) = standby_app();
+    app.poll_standby(t0 + D, now());
+    for _ in 0..3 {
+        draw(&mut app);
+    }
+    assert!(!app.take_bell());
+}
