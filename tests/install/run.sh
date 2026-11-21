@@ -367,6 +367,122 @@ t_agent_no_nologin_dies() {
 	chk none test ! -e "$ROOT/etc"
 }
 
+fake_bin() { printf '#!/bin/sh\necho %s\n' "$1" > "$2"; chmod +x "$2"; }
+bin_env() {
+	SCRIPT_DIR=$T/sd; mkdir -p "$SCRIPT_DIR"; ln -s "$REPO/deploy" "$SCRIPT_DIR/deploy"
+	PATH=$HOME/.local/bin:$PATH
+}
+t_binary_install() {
+	bin_env
+	fake_bin one "$T/b1"; fake_bin two "$T/b2"
+	OPT_BIN=$T/b1; step_binary >/dev/null 2>&1
+	chk copy cmp "$T/b1" "$HOME/.local/bin/muthur"
+	chk launcher test -x "$HOME/.local/bin/muthur-login"
+	chk launcher-same cmp "$REPO/deploy/login/muthur-login" "$HOME/.local/bin/muthur-login"
+	step_binary >/dev/null 2>&1
+	chk noop-no-old test ! -e "$HOME/.local/bin/muthur.old"
+	OPT_BIN=$T/b2; step_binary >/dev/null 2>&1
+	chk new cmp "$T/b2" "$HOME/.local/bin/muthur"
+	chk old cmp "$T/b1" "$HOME/.local/bin/muthur.old"
+	step_binary >/dev/null 2>&1
+	chk old-kept cmp "$T/b1" "$HOME/.local/bin/muthur.old"
+}
+t_binary_bad_bin_dies() {
+	bin_env
+	OPT_BIN=$T/missing; dies --bin step_binary
+	: > "$T/plain"; OPT_BIN=$T/plain; dies --bin step_binary
+}
+t_binary_default_beside_script() {
+	bin_env
+	fake_bin top "$SCRIPT_DIR/muthur"
+	mkdir -p "$SCRIPT_DIR/target/x/release"; fake_bin tgt "$SCRIPT_DIR/target/x/release/muthur"
+	step_binary >/dev/null 2>&1
+	chk beside cmp "$SCRIPT_DIR/muthur" "$HOME/.local/bin/muthur"
+	rm "$SCRIPT_DIR/muthur" "$HOME/.local/bin/muthur"
+	step_binary >/dev/null 2>&1
+	chk target cmp "$SCRIPT_DIR/target/x/release/muthur" "$HOME/.local/bin/muthur"
+	mkdir -p "$SCRIPT_DIR/target/y/release"; fake_bin t2 "$SCRIPT_DIR/target/y/release/muthur"
+	dies --bin step_binary
+}
+t_shell_from_passwd() {
+	STUB_PASSWD='tester:x:1000:1000::/home/t:/usr/bin/zsh'; export STUB_PASSWD
+	eq zsh "$(login_shell)" zsh
+	OPT_SHELL=fish; eq fish "$(login_shell)" override
+	OPT_SHELL=
+	STUB_PASSWD='tester:x:1000:1000::/home/t:/bin/dash'; export STUB_PASSWD
+	dies 'bash, zsh, fish' login_shell
+}
+t_bash_file_choice() {
+	eq "$HOME/.bash_profile" "$(bash_login_file)" none
+	: > "$HOME/.profile"; eq "$HOME/.profile" "$(bash_login_file)" profile
+	: > "$HOME/.bash_login"; eq "$HOME/.bash_login" "$(bash_login_file)" login
+	: > "$HOME/.bash_profile"; eq "$HOME/.bash_profile" "$(bash_login_file)" all
+}
+t_bash_creates_profile() {
+	install_hook bash >/dev/null 2>&1
+	f=$HOME/.bash_profile
+	eq '[ -f ~/.profile ] && . ~/.profile; [ -f ~/.bashrc ] && . ~/.bashrc' "$(head -n 1 "$f")" source-line
+	eq "$BLOCK_OPEN" "$(sed -n 2p "$f")" open
+	chk body grep -q 'muthur-login' "$f"
+	install_hook bash >/dev/null 2>&1
+	eq 1 "$(grep -c "^$BLOCK_OPEN\$" "$f")" once
+	eq 1 "$(grep -c '^\[ -f ~/.profile' "$f")" source-once
+}
+t_bash_existing_no_source_line() {
+	printf 'keep\n' > "$HOME/.profile"
+	install_hook bash >/dev/null 2>&1
+	chk none test ! -e "$HOME/.bash_profile"
+	eq keep "$(head -n 1 "$HOME/.profile")" keep
+}
+t_zsh_zdotdir() {
+	ZDOTDIR=$HOME/z; export ZDOTDIR
+	install_hook zsh >/dev/null 2>&1
+	chk in-z block_present "$HOME/z/.zprofile"
+	chk not-home test ! -e "$HOME/.zprofile"
+}
+t_fish_hook() {
+	install_hook fish >/dev/null 2>&1
+	chk same cmp "$REPO/deploy/login/muthur.fish" "$HOME/.config/fish/conf.d/muthur.fish"
+}
+t_switch_shell_removes_old() {
+	STUB_PASSWD='t:x:1:1::/h:/x'; export STUB_PASSWD
+	OPT_SHELL=fish; step_hook >/dev/null 2>&1
+	chk fish test -f "$HOME/.config/fish/conf.d/muthur.fish"
+	OPT_SHELL=bash; step_hook >/dev/null 2>&1
+	chk fish-gone test ! -e "$HOME/.config/fish/conf.d/muthur.fish"
+	chk bash block_present "$HOME/.bash_profile"
+	OPT_SHELL=zsh; step_hook >/dev/null 2>&1
+	if block_present "$HOME/.bash_profile"; then exit 1; fi
+	chk zsh block_present "$HOME/.zprofile"
+}
+t_remove_hooks_creates_nothing() {
+	remove_hooks >/dev/null 2>&1
+	eq "" "$(ls -A "$HOME")" empty
+}
+t_hook_symlinked_dotfile() {
+	printf 'a\n' > "$T/real"; ln -s real "$T/link"; ln -s "$T/link" "$HOME/.bash_profile"
+	install_hook bash >/dev/null 2>&1
+	chk symlink test -L "$HOME/.bash_profile"
+	chk target block_present "$T/real"
+	remove_hooks >/dev/null 2>&1
+	eq a "$(cat "$T/real")" restored
+}
+t_hook_rerun_is_noop() {
+	STUB_PASSWD='t:x:1:1::/h:/x'; export STUB_PASSWD
+	printf 'top\n' > "$HOME/.profile"
+	OPT_SHELL=bash; step_hook >/dev/null 2>&1
+	printf 'tail\n' >> "$HOME/.profile"
+	cp "$HOME/.profile" "$T/before"
+	step_hook >/dev/null 2>&1
+	chk same cmp "$HOME/.profile" "$T/before"
+}
+t_launcher_off_serial() {
+	fake_bin ran "$T/stubbin"; sed -i "s|^echo ran|touch $T/ran|" "$T/stubbin"
+	MUTHUR_TTY=$T/nonexistent MUTHUR_BIN=$T/stubbin sh "$REPO/deploy/login/muthur-login"
+	eq 0 $? rc
+	chk not-run test ! -e "$T/ran"
+}
+
 if [ "${1:-}" = "--one" ]; then
 	setup
 	"$2"

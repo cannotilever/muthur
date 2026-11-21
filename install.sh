@@ -450,15 +450,120 @@ step_agent() {
 	fi
 }
 
+# install_exe SRC DEST: mode 755 via a temp file and rename (a running DEST is not overwritten in place).
+# Returns 1 if DEST was already identical (nothing done), else 0; keeps the old DEST as DEST.old when KEEP_OLD=1.
+install_exe() {
+	_dest=$2
+	if [ -f "$_dest" ] && cmp -s "$1" "$_dest"; then return 1; fi
+	mkdir -p "$(dirname "$_dest")"
+	_xt=$(mktemp "$_dest.XXXXXX") || die "cannot create a temporary file beside $_dest"
+	CLEANUP_PATHS=$CLEANUP_PATHS$_xt'
+'
+	install -m 755 "$1" "$_xt" || die "cannot install $_dest"
+	if [ "${KEEP_OLD:-0}" = 1 ] && [ -f "$_dest" ]; then mv -f "$_dest" "$_dest.old"; fi
+	mv -f "$_xt" "$_dest" || die "cannot install $_dest"
+}
+
+# find_binary: echo the muthur binary to install.
+find_binary() {
+	if [ -n "$OPT_BIN" ]; then
+		{ [ -f "$OPT_BIN" ] && [ -x "$OPT_BIN" ]; } || die "--bin $OPT_BIN is not an executable file"
+		printf '%s\n' "$OPT_BIN"
+		return 0
+	fi
+	if [ -f "$SCRIPT_DIR/muthur" ] && [ -x "$SCRIPT_DIR/muthur" ]; then
+		printf '%s\n' "$SCRIPT_DIR/muthur"
+		return 0
+	fi
+	_n=0 _found=
+	for _c in "$SCRIPT_DIR"/target/*/release/muthur; do
+		if [ -f "$_c" ] && [ -x "$_c" ]; then _n=$((_n + 1)); _found=$_c; fi
+	done
+	[ "$_n" -le 1 ] || die "several release binaries under $SCRIPT_DIR/target; pick one with --bin PATH"
+	[ "$_n" -eq 1 ] || die "no muthur binary found; build one or pass --bin PATH"
+	printf '%s\n' "$_found"
+}
+
+step_binary() {
+	say "binary and login launcher"
+	_src=$(find_binary) || exit 1
+	_bd=$HOME/.local/bin
+	_rc=0
+	KEEP_OLD=1 install_exe "$_src" "$_bd/muthur" || _rc=$?
+	[ "$_rc" -le 1 ] || exit 1
+	KEEP_OLD=0 install_exe "$SCRIPT_DIR/deploy/login/muthur-login" "$_bd/muthur-login" || _rc=$?
+	[ "$_rc" -le 1 ] || exit 1
+	case ":$PATH:" in *":$_bd:"*) ;; *) warn "$_bd is not on PATH (the login hooks use the absolute path, so login still works)" ;; esac
+}
+
+# login_shell: echo bash, zsh or fish.
+login_shell() {
+	_s=$OPT_SHELL
+	if [ -z "$_s" ]; then
+		_s=$(getent passwd "$(id -un)" | cut -d: -f7) || _s=
+		_s=${_s##*/}
+	fi
+	case $_s in
+	bash | zsh | fish) printf '%s\n' "$_s" ;;
+	*) die "unsupported login shell '$_s'; supported shells: bash, zsh, fish (pass --shell)" ;;
+	esac
+}
+
+bash_login_file() {
+	for _f in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
+		if [ -e "$_f" ]; then printf '%s\n' "$_f"; return 0; fi
+	done
+	printf '%s\n' "$HOME/.bash_profile"
+}
+
+zsh_login_file() { printf '%s\n' "${ZDOTDIR:-$HOME}/.zprofile"; }
+
+FISH_HOOK=$HOME/.config/fish/conf.d/muthur.fish
+
+# install_hook SHELL
+install_hook() {
+	case $1 in
+	fish) atomic_write "$FISH_HOOK" < "$SCRIPT_DIR/deploy/login/muthur.fish" || exit 1 ;;
+	bash)
+		_hf=$(bash_login_file) || exit 1
+		if [ ! -e "$_hf" ]; then
+			printf '%s\n' '[ -f ~/.profile ] && . ~/.profile; [ -f ~/.bashrc ] && . ~/.bashrc' | atomic_write "$_hf" || exit 1
+		fi
+		block_write "$_hf" < "$SCRIPT_DIR/deploy/login/hook.sh"
+		;;
+	zsh) block_write "$(zsh_login_file)" < "$SCRIPT_DIR/deploy/login/hook.sh" ;;
+	*) die "no hook for shell $1" ;;
+	esac
+}
+
+# remove_hooks [KEEP_SHELL]: remove every hook except KEEP_SHELL's, so a re-run rewrites in place.
+remove_hooks() {
+	_keep=${1:-}
+	if [ "$_keep" != bash ]; then
+		for _f in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do block_remove "$_f"; done
+	fi
+	[ "$_keep" = zsh ] || block_remove "$(zsh_login_file)"
+	[ "$_keep" = fish ] || rm -f "$FISH_HOOK"
+}
+
+step_hook() {
+	say "login hook"
+	_sh=$(login_shell) || exit 1
+	remove_hooks "$_sh"
+	install_hook "$_sh"
+}
+
 main() {
 	parse_args "$@"
 	preflight
+	step_binary
 	if [ "$OPT_SYSTEM" = 1 ]; then
 		step_adapter
 		step_system
 		[ "$OPT_AGENT" = 0 ] || step_agent
 	fi
-	# Tasks 7-8 add the remaining steps here.
+	step_hook
+	# Task 8 adds the remaining steps here.
 }
 
 [ -n "${MUTHUR_INSTALL_LIB:-}" ] || main "$@"
