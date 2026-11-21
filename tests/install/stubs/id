@@ -1,0 +1,6 @@
+#!/bin/sh
+[ -z "${STUBLOG:-}" ] || echo "$(basename "$0") $*" >> "$STUBLOG"
+case "${1:-}" in
+-u) echo "${STUB_UID:-1000}" ;;
+-un) echo tester ;;
+esac

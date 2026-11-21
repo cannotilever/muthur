@@ -1,0 +1,17 @@
+#!/bin/sh
+[ -z "${STUBLOG:-}" ] || echo "$(basename "$0") $*" >> "$STUBLOG"
+if [ "${1:-}" = info ]; then
+	name=
+	for a in "$@"; do
+		case $a in --name=*) name=${a#--name=} ;; esac
+	done
+	prev=
+	for a in "$@"; do
+		[ "$prev" = --name ] && name=$a
+		prev=$a
+	done
+	dev=$(basename "${name:-x}")
+	eval "f=\${STUB_UDEV_$dev:-}"
+	[ -z "$f" ] || cat "$f"
+fi
+exit "${STUB_UDEVADM_RC:-0}"
