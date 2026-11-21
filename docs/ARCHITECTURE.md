@@ -77,17 +77,22 @@ serial-getty@wy60 (38400, XON/XOFF, TERM=vt100)
    See [M9 spec](superpowers/specs/2026-11-20-m9-standby-design.md).
 5. **Self-destruct** — armed from the Utility tab: `S` (shutdown) or `B`
    (reboot), then the sudo password. A countdown of `[utility] destruct_seconds`
-   (default 60, 10..=5999) takes over the whole screen (no F-keys, no prefix key,
-   no standby, no bell) with a five-digit counter and an abort questionnaire;
-   the first submitted answer secretly aborts the operation (the password is
-   wiped at once and nothing can execute any more), but the countdown keeps
-   running and freezes at `00001` in the last 100 ms, then shows
-   `SELF-DESTRUCT ABORTED` and the Utility tab returns. Esc or Break aborts
-   openly. With no answer the host is powered off or rebooted at `00000`
-   through `sudo -S -k`; a failure shows `UNABLE TO COMPLY`. Every outcome is written to the audit log (arming is
-   refused with `AUDIT LOG OFFLINE` when it is unavailable). `muthur destruct
-   [SECONDS] [--reboot]` plays the countdown without running anything (for
-   tuning). See [M10 spec](superpowers/specs/2026-11-20-m10-destruct-design.md).
+   (default 60, 10..=5999) takes over the whole screen (no F-keys, no prefix
+   key, no standby, no bell) with a five-digit counter and an abort
+   questionnaire; the first submitted answer secretly aborts the operation (the
+   password is wiped at once and nothing can execute any more), but the
+   countdown keeps running and freezes at `00001` in the last 100 ms, then shows
+   `SELF-DESTRUCT ABORTED` and the Utility tab returns. Until `00000`, Esc or
+   Break aborts openly (and silently: nothing is shown). With no answer the host
+   is powered off or rebooted at `00000` through `sudo -S -k`; while that
+   command runs Esc is ignored, and Break only ends the screen: it cannot stop
+   the command (a later failure is still audited). A failure shows `UNABLE TO
+   COMPLY` until a key is pressed. The password goes to sudo on stdin only; the
+   runner's zeroizing copy is held until the command exits, then wiped. Every
+   outcome is written to the audit log (arming is refused with `AUDIT LOG
+   OFFLINE` when it is unavailable). `muthur destruct [SECONDS] [--reboot]`
+   plays the countdown without running anything (for tuning). See [M10
+   spec](superpowers/specs/2026-11-20-m10-destruct-design.md).
 
 ## Screen layout ("chrome")
 
@@ -128,6 +133,9 @@ Modelled on the Alien: Isolation personal terminal
 
 - **F1 / F2 / F3 / F4** — MU/TH/UR / Utility / Cargo / Shell (sidebar order;
   Utility is shown at startup). F4 is therefore not passed to the shell.
+- **Utility folder:** `S` arms a self-destruct shutdown, `B` a reboot (then
+  duration and sudo password; see Self-destruct above). During the countdown
+  only the questionnaire's keys, Esc and Break are live.
 - **Cargo folder:** arrows select, `U`/`R`/`D` start / restart / stop
   (restart and stop ask Y/N), `L` logs, Esc back.
 - **Prefix `Ctrl-]`** then:
