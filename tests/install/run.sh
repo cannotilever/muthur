@@ -1,5 +1,5 @@
 #!/bin/sh
-# shellcheck disable=SC2031,SC2013 # tests run in subshells on purpose; test names have no spaces
+# shellcheck disable=SC2031,SC2013,SC2329,SC2016 # tests run in subshells on purpose; test names have no spaces
 # Plain-sh test harness for install.sh. Run: sh tests/install/run.sh
 set -u
 HERE=$(cd -P "$(dirname "$0")" && pwd)
@@ -10,23 +10,29 @@ if [ -n "${MUTHUR_TEST_SH:-}" ]; then SHELL_BIN=$MUTHUR_TEST_SH
 elif command -v dash >/dev/null 2>&1; then SHELL_BIN=dash
 else SHELL_BIN=$(command -v sh); fi
 
+# Assertions exit 1 on failure: each test runs in its own process.
 eq() { # expected actual msg
-	[ "$1" = "$2" ] || { echo "  expected [$1] got [$2] ($3)" >&2; return 1; }
+	[ "$1" = "$2" ] || { echo "  expected [$1] got [$2] ($3)" >&2; exit 1; }
 }
 ok() { # cmd... msg (last argument is the message)
 	for _msg; do :; done
-	"$@" 2>/dev/null || { echo "  failed: $_msg" >&2; return 1; }
+	_n=$#; _i=1
+	for _a; do
+		[ "$_i" -lt "$_n" ] && set -- "$@" "$_a"
+		_i=$((_i + 1))
+	done
+	shift "$_n"
+	"$@" 2>/dev/null || { echo "  failed: $_msg" >&2; exit 1; }
 }
-# check cmd... : fails the test with msg when cmd fails
-chk() { _m=$1; shift; "$@" || { echo "  check failed: $_m" >&2; return 1; }; }
+chk() { _m=$1; shift; "$@" || { echo "  check failed: $_m" >&2; exit 1; }; }
 
 # dies pattern cmd... : cmd must exit 1 and stderr must contain pattern
 dies() {
 	_pat=$1; shift
-	_out=$( ("$@") 2>&1 >/dev/null ) && { echo "  did not die" >&2; return 1; }
-	_rc=$?
-	[ "$_rc" -eq 1 ] || { echo "  status $_rc, want 1" >&2; return 1; }
-	case $_out in *"$_pat"*) ;; *) echo "  message [$_out] lacks [$_pat]" >&2; return 1 ;; esac
+	_rc=0
+	_out=$( ("$@") 2>&1 >/dev/null ) || _rc=$?
+	[ "$_rc" -eq 1 ] || { echo "  status $_rc, want 1" >&2; exit 1; }
+	case $_out in *"$_pat"*) ;; *) echo "  message [$_out] lacks [$_pat]" >&2; exit 1 ;; esac
 }
 
 setup() {
@@ -135,6 +141,39 @@ t_ask_reads_stdin() {
 	YES=0 MUTHUR_ASSUME_TTY=1
 	eq fish "$(echo fish | ask 'Shell?' zsh shell)" answer
 	eq zsh "$(echo | ask 'Shell?' zsh shell)" empty-default
+}
+bw_n() { printf "N\n" | block_write "$1"; }
+t_block_unbalanced() {
+	printf 'a\n%s\nkeep1\nkeep2\n' "$BLOCK_OPEN" > "$T/f"
+	cp "$T/f" "$T/orig"
+	dies unbalanced block_remove "$T/f"
+	chk untouched1 cmp "$T/f" "$T/orig"
+	dies unbalanced bw_n "$T/f"
+	chk untouched2 cmp "$T/f" "$T/orig"
+}
+t_block_failed_producer_keeps_file() {
+	printf 'a\n' > "$T/f"; cp "$T/f" "$T/orig"
+	cat() { return 1; }
+	dies cannot block_write "$T/f" </dev/null
+	unset -f cat
+	chk untouched cmp "$T/f" "$T/orig"
+	for _f in "$T"/*muthur.tmp*; do [ ! -e "$_f" ] || { echo "  leftover $_f" >&2; exit 1; }; done
+}
+t_confirm_no_tty_dies() {
+	YES=0
+	_rc=0
+	( if confirm "Go?" </dev/null; then exit 0; fi; exit 3 ) 2>/dev/null || _rc=$?
+	eq 1 "$_rc" "confirm must die, not answer yes or no"
+}
+t_render_missing_template() {
+	dies "missing template" render "$T/nope.in" "$T/out"
+	chk noout test ! -e "$T/out"
+}
+t_script_dir_from_dollar0() {
+	_d=$(cd / && MUTHUR_INSTALL_SRC='' MUTHUR_INSTALL_LIB=1 sh -c '. "$0"; printf %s "$SCRIPT_DIR"' "$REPO/install.sh")
+	eq "$REPO" "$_d" dollar0
+	_h=$(cd / && MUTHUR_INSTALL_LIB='' sh "$REPO/install.sh" --help | head -1)
+	eq "Usage: install.sh [options]" "$_h" help
 }
 t_parse_args_unknown() {
 	dies bogus parse_args --bogus

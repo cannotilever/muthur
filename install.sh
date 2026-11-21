@@ -63,7 +63,7 @@ ask() {
 # confirm PROMPT: status 0 for yes (default yes).
 confirm() {
 	[ "$YES" = 1 ] && return 0
-	_c=$(ask "$1 (y/n)" y yes)
+	_c=$(ask "$1 (y/n)" y yes) || exit 1
 	case $_c in [Nn]*) return 1 ;; *) return 0 ;; esac
 }
 
@@ -111,6 +111,7 @@ preflight() {
 render() {
 	_tpl=$1 _out=$2
 	shift 2
+	[ -r "$_tpl" ] || die "missing template $_tpl"
 	_content=$(cat "$_tpl"; echo x)
 	_content=${_content%x}
 	for _kv in "$@"; do
@@ -151,7 +152,7 @@ atomic_write() {
 	_dir=$(dirname "$_target")
 	mkdir -p "$_dir"
 	_tmp=$_target.muthur.tmp.$$
-	cat > "$_tmp"
+	( umask 077; cat > "$_tmp" ) || { rm -f "$_tmp"; return 1; }
 	if [ -e "$_target" ]; then
 		# shellcheck disable=SC2012
 		_p=$(ls -ld -- "$_target" | cut -c2-10)
@@ -162,24 +163,36 @@ atomic_write() {
 	else
 		chmod 644 "$_tmp"
 	fi
-	mv -f "$_tmp" "$_target"
+	mv -f "$_tmp" "$_target" || { rm -f "$_tmp"; return 1; }
 }
 
 block_present() {
 	[ -f "$1" ] && grep -qx "$BLOCK_OPEN" "$1"
 }
 
+# block_check FILE: die unless markers are balanced and not nested.
+block_check() {
+	[ -f "$1" ] || return 0
+	awk -v o="$BLOCK_OPEN" -v c="$BLOCK_CLOSE" '
+		$0 == o { if (in_b) bad = 1; in_b = 1; next }
+		$0 == c { if (!in_b) bad = 1; in_b = 0 }
+		END { exit (bad || in_b) ? 1 : 0 }
+	' "$1" || die "unbalanced muthur markers in $1; fix by hand"
+}
+
 # block_write FILE: stdin is the block body; insert or replace the block.
 block_write() {
 	_bf=$(resolve_link "$1")
+	block_check "$_bf"
 	_body=$(mktemp)
-	cat > "$_body"
+	_new=$(mktemp)
+	cat > "$_body" || { rm -f "$_body" "$_new"; die "cannot read block body"; }
 	if block_present "$_bf"; then
 		awk -v o="$BLOCK_OPEN" -v c="$BLOCK_CLOSE" -v bf="$_body" '
 			$0 == o { print; while ((getline l < bf) > 0) print l; skip = 1; next }
 			skip && $0 == c { skip = 0 }
 			!skip { print }
-		' "$_bf" | atomic_write "$_bf"
+		' "$_bf" > "$_new" || { rm -f "$_body" "$_new"; die "cannot rewrite $_bf"; }
 	else
 		{
 			if [ -s "$_bf" ]; then
@@ -189,15 +202,21 @@ block_write() {
 			echo "$BLOCK_OPEN"
 			cat "$_body"
 			echo "$BLOCK_CLOSE"
-		} | atomic_write "$_bf"
+		} > "$_new" || { rm -f "$_body" "$_new"; die "cannot build $_bf"; }
 	fi
-	rm -f "$_body"
+	atomic_write "$_bf" < "$_new" || { rm -f "$_body" "$_new"; exit 1; }
+	rm -f "$_body" "$_new"
 }
 
 # block_remove FILE: drop the block, leaving every other byte alone.
 block_remove() {
-	block_present "$1" || return 0
-	sed -n "/^$BLOCK_OPEN\$/,/^$BLOCK_CLOSE\$/!p" "$(resolve_link "$1")" | atomic_write "$1"
+	_bf=$(resolve_link "$1")
+	block_present "$_bf" || return 0
+	block_check "$_bf"
+	_new=$(mktemp)
+	sed -n "/^$BLOCK_OPEN\$/,/^$BLOCK_CLOSE\$/!p" "$_bf" > "$_new" || { rm -f "$_new"; die "cannot rewrite $_bf"; }
+	atomic_write "$_bf" < "$_new" || { rm -f "$_new"; exit 1; }
+	rm -f "$_new"
 }
 
 main() {
