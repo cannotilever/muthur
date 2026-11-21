@@ -1081,3 +1081,43 @@ fn no_bell_while_asleep() {
     }
     assert!(!app.take_bell());
 }
+
+/// Reports a tool prompt while its flag is set.
+struct Prompter(Arc<std::sync::atomic::AtomicBool>);
+impl Tab for Prompter {
+    fn render(&mut self, _area: Rect, _buf: &mut Buffer) {}
+    fn handle_key(&mut self, _key: &Key) {}
+    fn awaiting_operator(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+fn prompter_app() -> (App, Instant, Arc<std::sync::atomic::AtomicBool>) {
+    let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut app = App::new(chrome()).with_standby(D).with_tab(TabId::Muthur, Box::new(Prompter(flag.clone())));
+    let t0 = Instant::now();
+    app.poll_standby(t0, now());
+    (app, t0, flag)
+}
+
+#[test]
+fn prompt_wakes_standby_and_rings() {
+    let (mut app, t0, flag) = prompter_app();
+    app.poll_standby(t0 + D, now());
+    assert!(app.standby_active());
+    app.redraw = false;
+    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    app.poll_standby(t0 + D + S, now());
+    assert!(!app.standby_active() && app.redraw && app.take_bell());
+}
+
+#[test]
+fn prompt_showing_blocks_standby() {
+    let (mut app, t0, flag) = prompter_app();
+    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    app.poll_standby(t0 + D, now());
+    assert!(!app.standby_active());
+    flag.store(false, std::sync::atomic::Ordering::SeqCst);
+    app.poll_standby(t0 + D + S, now());
+    assert!(app.standby_active(), "the countdown still runs from the last key");
+}

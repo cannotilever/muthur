@@ -117,7 +117,7 @@ impl App {
 
     /// A tool prompt is waiting for the operator: it keeps the TUI awake.
     fn awaiting_operator(&self) -> bool {
-        false
+        self.tabs[TabId::Muthur.index()].awaiting_operator()
     }
 
     /// Enter standby once the countdown has run out. Called on every loop
@@ -128,6 +128,15 @@ impl App {
             return;
         };
         let Some(after) = self.standby_after else { return };
+        // A prompt needs the operator: wake and call them.
+        if self.standby.is_some() && self.awaiting_operator() {
+            self.standby = None;
+            self.redraw = true;
+            self.bell = true;
+            self.last_key = Some(now);
+            tracing::info!("standby: woke (prompt)");
+            return;
+        }
         if self.standby.is_some() || now < last + after || self.splash.is_some() || self.passthrough || self.settling() || self.awaiting_operator() {
             return;
         }

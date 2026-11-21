@@ -553,6 +553,7 @@ fn password_flow_body() {
     h.t.on_review(1, "c1".into(), review(Verdict::Allow, "read-only identity check"));
     let row = status_row(&mut h);
     assert!(row.contains("CLEARANCE REQUIRED -- id -- PASSWORD: "), "{row}");
+    assert!(h.t.awaiting_operator(), "a password prompt waits for the operator");
     assert!(h.ran.borrow().is_empty());
     seen(&mut h);
     h.tick(1100);
@@ -571,6 +572,7 @@ fn password_flow_body() {
         assert_eq!(secrets[0].as_ref().map(Secret::expose), Some("hunter2"));
     }
     assert!(status_row(&mut h).contains("EXECUTING"));
+    assert!(!h.t.awaiting_operator());
     h.t.on_tool_done(1, "c1".into(), exit_outcome(0, 1));
     assert_eq!(h.sent.borrow().len(), 2);
     let shown = text(&mut h.t);
@@ -653,6 +655,7 @@ fn override_requires_exact_word() {
         text(&mut h.t).contains("     DENIED BY REVIEWER: deletes files"),
         "the whole note is shown above"
     );
+    assert!(h.t.awaiting_operator(), "an OVERRIDE prompt waits for the operator");
     seen(&mut h);
     h.tick(1100);
     type_str(&mut h.t, "OVERRID");
@@ -669,6 +672,7 @@ fn override_requires_exact_word() {
     assert!(row_text(&status_row(&mut h)).ends_with("REFUSE OVERRIDE"));
     h.t.handle_key(&Key::Enter);
     assert_eq!(h.ran.borrow().len(), 1);
+    assert!(!h.t.awaiting_operator());
     assert!(h.secrets.borrow()[0].is_none(), "unprivileged runs get no password");
     h.t.on_tool_done(1, "c1".into(), exit_outcome(0, 0));
     assert_eq!(audit_records(&h)[0]["decision"], "overridden");
@@ -695,6 +699,7 @@ fn ask_prompt_confirms_after_arming() {
     assert!(h.t.take_activity());
     let row = status_row(&mut h);
     assert!(row.contains("CONFIRM -- touch /tmp/x -- Y/N"), "{row}");
+    assert!(h.t.awaiting_operator(), "a Y/N prompt waits for the operator");
     // The reviewer's note is shown while the operator decides.
     let shown = text(&mut h.t);
     assert!(
@@ -722,6 +727,7 @@ fn ask_prompt_confirms_after_arming() {
             }
         )]
     );
+    assert!(!h.t.awaiting_operator(), "answered");
     let rows = screen(&mut h.t, 61, 40);
     let run = rows
         .iter()

@@ -80,6 +80,10 @@ pub trait Tab {
     /// because another folder is shown or the help overlay, a message overlay
     /// or the prefix strip is drawn over it.
     fn set_obscured(&mut self, _obscured: bool) {}
+    /// A tool prompt (Y/N, password, OVERRIDE) is waiting for the operator (MU/TH/UR only).
+    fn awaiting_operator(&self) -> bool {
+        false
+    }
     /// How often the tab wants a redraw while animating; `None` when idle.
     fn tick_interval(&self) -> Option<Duration> {
         None
