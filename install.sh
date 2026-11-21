@@ -36,6 +36,7 @@ EOF
 	return "$_rc"
 }
 trap cleanup EXIT
+trap 'exit 130' INT TERM
 
 BLOCK_OPEN='# >>> muthur >>>'
 BLOCK_CLOSE='# <<< muthur <<<'
@@ -54,7 +55,7 @@ Usage: install.sh [options]
   --port ID_PATH     match by udev ID_PATH instead
   --baud N           serial speed (default 38400)
   --no-agent         skip the agent user and nftables setup
-  --no-system        skip the udev rule and serial getty
+  --no-system        skip the udev rule, serial getty and agent setup
   --bin PATH         install this muthur binary
   --uninstall        remove what this script installed
   --help             show this text
@@ -70,7 +71,7 @@ ask() {
 	if [ "${MUTHUR_ASSUME_TTY:-0}" != 1 ] && [ ! -t 0 ]; then
 		die "$1: no terminal to ask on (pass --${3:-yes})"
 	fi
-	printf '%s [%s] ' "$1" "$2" >&2
+	if [ -n "$2" ]; then printf '%s [%s] ' "$1" "$2" >&2; else printf '%s ' "$1" >&2; fi
 	_ans=
 	read -r _ans || true
 	printf '%s\n' "${_ans:-$2}"
@@ -88,7 +89,7 @@ parse_args() {
 		case $1 in
 		--yes) YES=1 ;;
 		--no-agent) OPT_AGENT=0 ;;
-		--no-system) OPT_SYSTEM=0 ;;
+		--no-system) OPT_SYSTEM=0 OPT_AGENT=0 ;;
 		--uninstall) OPT_UNINSTALL=1 ;;
 		--help) usage; exit 0 ;;
 		--shell | --vid | --pid | --serial | --port | --baud | --bin)
@@ -570,6 +571,8 @@ step_hook() {
 set_toml_key() {
 	_tf=$(resolve_link "$1")
 	_tn=$(mktemp) || die "cannot create a temporary file"
+	CLEANUP_PATHS=$CLEANUP_PATHS$_tn'
+'
 	TK=$2 TV=$3 awk '
 		/^\[/ { in_m = ($0 == "[muthur]") }
 		in_m && !done && $0 ~ "^" ENVIRON["TK"] "[ \t]*=" {
@@ -588,6 +591,8 @@ set_toml_key() {
 delete_toml_key() {
 	_tf=$(resolve_link "$1")
 	_tn=$(mktemp) || die "cannot create a temporary file"
+	CLEANUP_PATHS=$CLEANUP_PATHS$_tn'
+'
 	TK=$2 awk '
 		/^\[/ { in_m = ($0 == "[muthur]") }
 		in_m && !done && $0 ~ "^" ENVIRON["TK"] "[ \t]*=" { done = 1; next }
@@ -599,19 +604,33 @@ delete_toml_key() {
 
 restore_echo() { stty echo 2>/dev/null || true; }
 
-# read_secret PROMPT: echo one line read with terminal echo off.
+# read_secret PROMPT: sets SECRET from one line read with terminal echo off.
+# Not run in a subshell, so the EXIT/INT trap in this shell restores echo.
 read_secret() {
 	[ "$YES" != 1 ] || die "$1: needs an answer (do not pass --yes)"
 	if [ "${MUTHUR_ASSUME_TTY:-0}" != 1 ] && [ ! -t 0 ]; then die "$1: no terminal to ask on"; fi
 	printf '%s: ' "$1" >&2
 	CLEANUP_HOOK=restore_echo
 	stty -echo 2>/dev/null || true
-	_sec=
-	read -r _sec || true
+	SECRET=
+	read -r SECRET || true
 	restore_echo
 	CLEANUP_HOOK=
 	printf '\n' >&2
-	printf '%s\n' "$_sec"
+}
+
+# ask_secret PROMPT: SECRET without a double quote; asks again otherwise.
+ask_secret() {
+	_tries=0
+	while [ "$_tries" -lt 5 ]; do
+		_tries=$((_tries + 1))
+		read_secret "$1"
+		case $SECRET in
+		*'"'*) warn "double quotes are not allowed here" ;;
+		*) return 0 ;;
+		esac
+	done
+	die "no valid answer for: $1"
 }
 
 # ask_value PROMPT: a non-empty answer without a double quote; asks again otherwise.
@@ -646,32 +665,43 @@ step_config() {
 	fi
 	_ex=$(find_example_config) || exit 1
 	mkdir -p "$_cdir" || die "cannot create $_cdir"
-	chmod 700 "$_cdir"
-	( umask 077; cp "$_ex" "$_cfg" ) || die "cannot write $_cfg"
-	chmod 600 "$_cfg"
+	chmod 700 "$_cdir" || die "cannot set mode on $_cdir"
+	_new=$(mktemp "$_cdir/config.toml.XXXXXX") || die "cannot create a temporary file in $_cdir"
+	CLEANUP_PATHS=$CLEANUP_PATHS$_new'
+'
+	chmod 600 "$_new"
+	cat "$_ex" > "$_new" || die "cannot write $_new"
 	if [ "$YES" = 1 ]; then
+		mv "$_new" "$_cfg" || die "cannot write $_cfg"
 		say "wrote the example config to $_cfg; edit it: set api_key (anthropic), or provider, base_url, model and api_key (openai)"
 		return 0
 	fi
-	_pc=$(ask "Provider: 1) Anthropic  2) OpenAI-compatible (e.g. vLLM)" 1 yes) || exit 1
+	_pc=
+	_tries=0
+	while [ "$_tries" -lt 5 ]; do
+		_tries=$((_tries + 1))
+		_pc=$(ask "Provider: 1) Anthropic  2) OpenAI-compatible (e.g. vLLM)" 1 yes) || exit 1
+		case $_pc in 1 | 2) break ;; *) warn "choose 1 or 2"; _pc= ;; esac
+	done
+	[ -n "$_pc" ] || die "no provider chosen"
 	case $_pc in
 	1)
-		_ckey=$(read_secret "Anthropic API key (input hidden)") || exit 1
-		case $_ckey in *'"'*) die "the key must not contain a double quote" ;; esac
-		if [ -n "$_ckey" ]; then set_toml_key "$_cfg" api_key "$_ckey"; else warn "no key entered; edit api_key in $_cfg"; fi
+		ask_secret "Anthropic API key (input hidden)"
+		[ -n "$SECRET" ] || die "an API key is required for Anthropic"
+		set_toml_key "$_new" api_key "$SECRET"
 		;;
 	2)
 		_curl=$(ask_value "base_url (e.g. http://10.0.0.5:8000/v1)") || exit 1
 		_cmodel=$(ask_value "model name served") || exit 1
-		_ckey=$(read_secret "API key (input hidden; empty for none)") || exit 1
-		case $_ckey in *'"'*) die "the key must not contain a double quote" ;; esac
-		set_toml_key "$_cfg" provider openai
-		set_toml_key "$_cfg" base_url "$_curl"
-		set_toml_key "$_cfg" model "$_cmodel"
-		if [ -n "$_ckey" ]; then set_toml_key "$_cfg" api_key "$_ckey"; else delete_toml_key "$_cfg" api_key; fi
+		ask_secret "API key (input hidden; empty for none)"
+		set_toml_key "$_new" provider openai
+		set_toml_key "$_new" base_url "$_curl"
+		set_toml_key "$_new" model "$_cmodel"
+		if [ -n "$SECRET" ]; then set_toml_key "$_new" api_key "$SECRET"; else delete_toml_key "$_new" api_key; fi
 		;;
-	*) die "choose 1 or 2" ;;
 	esac
+	SECRET=
+	mv "$_new" "$_cfg" || die "cannot write $_cfg"
 	say "wrote $_cfg (mode 600)"
 }
 

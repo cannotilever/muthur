@@ -550,7 +550,7 @@ cfg_env() {
 	CFG=$HOME/.config/muthur/config.toml
 	MUTHUR_ASSUME_TTY=1; export MUTHUR_ASSUME_TTY
 }
-muthur_section() { sed -n '/^\[muthur\]$/,/^\[[^m]/p' "$CFG"; }
+muthur_section() { awk '/^\[/ { m = ($0 == "[muthur]") } m' "$CFG"; }
 t_config_existing_untouched() {
 	cfg_env
 	mkdir -p "$HOME/.config/muthur"; printf 'mine = 1\n' > "$CFG"; cp "$CFG" "$T/before"
@@ -595,21 +595,72 @@ t_config_yes() {
 	eq 600 "$(stat -c %a "$CFG")" mode
 }
 t_toml_keys_scoped() {
-	printf 'model = "x"\n[muthur]\nmodel = "a"\nmodel = "b"\n[other]\nmodel = "c"\n' > "$T/c.toml"
+	printf 'model = "x"\n[muthur]\nmodel = "a"\nmodel = "b"\n[muthur.technical]\nmodel = "t"\napi_key = "k"\n[other]\nmodel = "c"\n' > "$T/c.toml"
 	set_toml_key "$T/c.toml" model new
 	delete_toml_key "$T/c.toml" nothere
 	eq 'model = "x"
 [muthur]
 model = "new"
 model = "b"
+[muthur.technical]
+model = "t"
+api_key = "k"
 [other]
 model = "c"' "$(cat "$T/c.toml")" scoped
 	delete_toml_key "$T/c.toml" model
+	delete_toml_key "$T/c.toml" api_key
 	eq 'model = "x"
 [muthur]
 model = "b"
+[muthur.technical]
+model = "t"
+api_key = "k"
 [other]
 model = "c"' "$(cat "$T/c.toml")" deleted
+}
+t_config_bad_choice_reasks() {
+	cfg_env
+	printf '9\n1\nsk-ant-abc\n' | step_config >/dev/null 2>&1 || exit 1
+	muthur_section | grep -qx 'api_key = "sk-ant-abc"' || exit 1
+}
+t_config_key_quote_reasks() {
+	cfg_env
+	printf '1\nbad"key\nsk-good\n' | step_config >/dev/null 2>&1 || exit 1
+	muthur_section | grep -qx 'api_key = "sk-good"' || exit 1
+}
+t_config_abort_leaves_nothing() {
+	cfg_env
+	# a real process, so the script's EXIT trap runs as in production
+	printf '2\nhttp://h\n' | sh -c '. "$MUTHUR_INSTALL_SRC"; step_config' >/dev/null 2>&1 && exit 1
+	[ ! -e "$CFG" ] || { echo "  config left behind" >&2; exit 1; }
+	eq "" "$(ls -A "$HOME/.config/muthur")" no-temp
+	printf '1\n' | sh -c '. "$MUTHUR_INSTALL_SRC"; step_config' >/dev/null 2>&1 && exit 1
+	[ ! -e "$CFG" ] || exit 1
+	eq "" "$(ls -A "$HOME/.config/muthur")" no-temp2
+}
+t_no_system_skips_agent() {
+	bin_env
+	parse_args --no-system
+	eq 0 "$OPT_AGENT" agent-off
+	OPT_SYSTEM=0 OPT_AGENT=0 preflight 2>/dev/null
+	: > "$STUBLOG"
+	( MUTHUR_INSTALL_LIB= ; cd "$T" && unset MUTHUR_INSTALL_LIB && sh "$REPO/install.sh" --no-system --yes --bin "$T/none" ) >/dev/null 2>&1
+	! grep -q 'sysusers\|visudo\|nft' "$STUBLOG" || exit 1
+	eq "" "$(ls -A "$ROOT")" nothing-in-root
+}
+t_secret_interrupt_restores_echo() {
+	cfg_env
+	mkfifo "$T/fifo"
+	# async children ignore SIGINT in a non-interactive shell; the trap covers INT and TERM alike
+	sh -c '. "$MUTHUR_INSTALL_SRC"; step_config' < "$T/fifo" >/dev/null 2>&1 &
+	_pid=$!
+	( printf '1\n'; sleep 5 ) > "$T/fifo" &
+	_w=$!
+	_i=0
+	while ! grep -q '^stty -echo' "$STUBLOG" && [ "$_i" -lt 50 ]; do sleep 0.1; _i=$((_i + 1)); done
+	kill -TERM "$_pid"; wait "$_pid" 2>/dev/null; kill "$_w" 2>/dev/null
+	grep -q '^stty -echo' "$STUBLOG" || exit 1
+	cat "$STUBLOG" >&2; 	eq "stty echo" "$(grep '^stty' "$STUBLOG" | tail -1)" restored
 }
 t_uninstall() {
 	cfg_env; sys_env
