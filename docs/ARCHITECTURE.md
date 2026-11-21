@@ -79,9 +79,12 @@ serial-getty@wy60 (38400, XON/XOFF, TERM=vt100)
    (reboot), then the sudo password. A countdown of `[utility] destruct_seconds`
    (default 60, 10..=5999) takes over the whole screen (no F-keys, no prefix key,
    no standby, no bell) with a five-digit counter and an abort questionnaire;
-   answering a question freezes the clock briefly. Esc or Break aborts. At zero
-   the host is powered off or rebooted through `sudo -S -k`; a failure shows
-   `UNABLE TO COMPLY`. Every outcome is written to the audit log (arming is
+   the first submitted answer secretly aborts the operation (the password is
+   wiped at once and nothing can execute any more), but the countdown keeps
+   running and freezes at `00001` in the last 100 ms, then shows
+   `SELF-DESTRUCT ABORTED` and the Utility tab returns. Esc or Break aborts
+   openly. With no answer the host is powered off or rebooted at `00000`
+   through `sudo -S -k`; a failure shows `UNABLE TO COMPLY`. Every outcome is written to the audit log (arming is
    refused with `AUDIT LOG OFFLINE` when it is unavailable). `muthur destruct
    [SECONDS] [--reboot]` plays the countdown without running anything (for
    tuning). See [M10 spec](superpowers/specs/2026-11-20-m10-destruct-design.md).

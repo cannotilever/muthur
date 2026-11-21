@@ -1025,6 +1025,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sudo_runner_feeds_password_and_reports() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut run = sudo_runner(tx);
+        let mut pw = crate::secret::Secret::new();
+        pw.push('x');
+        run(7, vec!["cat".into()], Duration::from_secs(5), pw);
+        match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap() {
+            Some(Event::SudoDone {
+                seq: 7,
+                output: crate::ops::runner::RunOutput::Exited { code: 0, stdout, .. },
+            }) => assert_eq!(stdout, "x\n"),
+            _ => panic!("unexpected event"),
+        }
+    }
+
+    #[tokio::test]
     async fn quit_key_ends_loop_and_redraw_clears() {
         let (mut app, mut t) = setup();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
