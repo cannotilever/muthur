@@ -1,11 +1,11 @@
 //! The self-destruct screen: octagon, animated X, double-height counter and
-//! the questionnaire strip. Geometry is for 80x43; the constants below are
+//! the questionnaire strip; before the countdown, the clearance panel. Geometry is for 80x43; the constants below are
 //! tuned on the WY-60 through `muthur destruct`.
 
 use std::time::{Duration, Instant};
 
 use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 
 use super::{Destruct, Phase};
@@ -36,6 +36,15 @@ const RIGHT_HALF_CELL: u16 = (OCT_RIGHT / 2) as u16;
 const STRIP_ROW: u16 = 42;
 const STRIP_FIRST: u16 = 1;
 const STRIP_LAST: u16 = 78;
+/// The clearance panel: its frame's left column and top row (inside the
+/// octagon, below the counter box), and its inner width (centred on column 40).
+const PANEL_LEFT: i32 = 23;
+const PANEL_TOP: i32 = 25;
+const PANEL_INNER: i32 = 32;
+const FIELD_LABEL: &str = "  AUTHORIZATION: ";
+/// Stars drawn at most, so the cursor after them stays inside the frame.
+const FIELD_STARS: usize = PANEL_INNER as usize - FIELD_LABEL.len() - 1;
+const CLEARANCE_HINT: &str = "ENTER CONFIRM  ESC CANCEL";
 /// The frozen strip turns to `SELF-DESTRUCT ABORTED` after this.
 const ABORTED_AFTER: Duration = Duration::from_millis(1500);
 const CYCLE_MS: u128 = 6000;
@@ -174,9 +183,38 @@ impl Destruct {
     /// When the X stops moving: the freeze, or the clock reaching zero.
     fn x_clock(&self, now: Instant) -> Instant {
         match self.phase {
-            Phase::Running => now,
             Phase::Frozen { since } => since,
-            Phase::Executing | Phase::Failed(_) | Phase::Zero => self.zero_at(),
+            Phase::Executing | Phase::Failed(_) | Phase::Zero => self.zero_at().unwrap_or(now),
+            _ => now,
+        }
+    }
+
+    /// Where the terminal cursor goes: after the last star while the password
+    /// field takes keys, nowhere otherwise.
+    pub fn cursor(&self, area: Rect) -> Option<Position> {
+        let n = self.clearance_chars()?.min(FIELD_STARS);
+        let x = PANEL_LEFT + 1 + (FIELD_LABEL.len() + n) as i32;
+        Some(Position::new(area.x + x as u16, area.y + (PANEL_TOP + 3) as u16))
+    }
+
+    /// The boxed clearance panel: title, a blank row, the field line.
+    fn render_clearance(&self, area: Rect, buf: &mut Buffer) {
+        let plain = Style::default();
+        let w = PANEL_INNER as usize;
+        let (title, field) = match &self.phase {
+            Phase::Clearance { input, .. } => ("CLEARANCE REQUIRED", format!("{FIELD_LABEL}{}", "*".repeat(input.chars().min(FIELD_STARS)))),
+            Phase::Verifying { .. } => ("CLEARANCE REQUIRED", "  VERIFYING".to_string()),
+            _ => ("CLEARANCE DENIED", FIELD_LABEL.to_string()),
+        };
+        let rows = [
+            format!("┌{}┐", "─".repeat(w)),
+            format!("│{title:^w$}│"),
+            format!("│{:w$}│", ""),
+            format!("│{field:<w$}│"),
+            format!("└{}┘", "─".repeat(w)),
+        ];
+        for (i, r) in rows.iter().enumerate() {
+            put_str(buf, area, PANEL_LEFT, PANEL_TOP + i as i32, r, plain);
         }
     }
 
@@ -193,9 +231,11 @@ impl Destruct {
             }
         }
 
-        // The X.
-        let elapsed = self.x_clock(now).saturating_duration_since(self.started);
+        // The X (none before the countdown starts).
+        let x_clock = self.x_clock(now);
+        let elapsed = x_clock.saturating_duration_since(self.started.unwrap_or(x_clock));
         let (gap, style) = match x_phase(elapsed) {
+            _ if self.in_clearance() => (None, plain),
             XPhase::Gap(g) => (Some(i32::from(g)), plain),
             XPhase::Glow => (Some(0), plain.add_modifier(Modifier::BOLD)),
             XPhase::Dim => (Some(0), plain.add_modifier(Modifier::DIM)),
@@ -243,6 +283,9 @@ impl Destruct {
             put(buf, area, i32::from(RIGHT_HALF_CELL), y, "│", plain);
         }
 
+        if self.in_clearance() {
+            self.render_clearance(area, buf);
+        }
         self.render_strip(now, area, buf);
     }
 
@@ -254,6 +297,8 @@ impl Destruct {
         }
         let room = usize::from(STRIP_LAST - STRIP_FIRST + 1);
         let (left, input) = match &self.phase {
+            Phase::Clearance { .. } => (CLEARANCE_HINT.into(), ""),
+            Phase::Verifying { .. } | Phase::Denied { .. } => (String::new(), ""),
             Phase::Running => (self.quiz.question(now), self.quiz.input()),
             Phase::Frozen { since } if now >= *since + ABORTED_AFTER => ("SELF-DESTRUCT ABORTED".into(), ""),
             Phase::Frozen { .. } => (self.quiz.question(now), self.quiz.input()),
@@ -276,22 +321,131 @@ mod tests {
     use ratatui::style::Modifier;
 
     use super::*;
-    use crate::destruct::{Destruct, DestructRequest, Kind};
+    use crate::app::ARMING;
+    use crate::destruct::{Destruct, DestructRequest, Effect, Kind};
     use crate::dialect::LineAttr;
-    use crate::secret::Secret;
+    use crate::input::Key;
+    use crate::ops::runner::RunOutput;
 
     fn s(x: f64) -> Duration {
         Duration::from_secs_f64(x)
     }
 
-    fn mk(total: u64) -> (Destruct, Instant) {
-        let t0 = Instant::now();
+    /// A shutdown at the clearance stage, armed at the returned instant.
+    fn armed(total: u64) -> (Destruct, Instant) {
+        let t = Instant::now();
         let req = DestructRequest {
             kind: Kind::Shutdown,
             total: Duration::from_secs(total),
-            password: Secret::new(),
         };
-        (Destruct::new(req, t0, 7), t0)
+        let mut d = Destruct::new(req, 7);
+        d.rendered(t);
+        d.rendered(t);
+        (d, t + ARMING)
+    }
+
+    fn typed(d: &mut Destruct, text: &str, now: Instant) {
+        for c in text.chars() {
+            d.key(&Key::Char(c), now);
+        }
+    }
+
+    fn exit(code: i32) -> RunOutput {
+        RunOutput::Exited {
+            code,
+            stdout: String::new(),
+            stderr: String::new(),
+        }
+    }
+
+    /// A running countdown started (verified) at the returned instant.
+    fn mk(total: u64) -> (Destruct, Instant) {
+        let (mut d, t) = armed(total);
+        typed(&mut d, "p", t);
+        assert!(matches!(d.key(&Key::Enter, t), Some(Effect::Verify(_))));
+        d.on_verified(&exit(0), t);
+        (d, t)
+    }
+
+    fn row(buf: &Buffer, y: u16) -> String {
+        (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect()
+    }
+
+    const PANEL: [&str; 5] = [
+        "┌────────────────────────────────┐",
+        "│       CLEARANCE REQUIRED       │",
+        "│                                │",
+        "│  AUTHORIZATION: ***            │",
+        "└────────────────────────────────┘",
+    ];
+
+    #[test]
+    fn clearance_panel_and_stars() {
+        let (mut d, t) = armed(60);
+        typed(&mut d, "abc", t);
+        let buf = draw(&d, t);
+        for (i, want) in PANEL.iter().enumerate() {
+            let got: String = row(&buf, 25 + i as u16).chars().skip(23).take(34).collect();
+            assert_eq!(got, *want, "row {}", 25 + i);
+        }
+        assert!(!row(&buf, 28).contains("abc"));
+        assert_eq!(row(&buf, 0).trim(), "EMERGENCY DESTRUCT SYSTEM ── SHUTDOWN");
+        let strip = row(&buf, 42);
+        assert_eq!(strip.trim(), "ENTER CONFIRM  ESC CANCEL");
+        assert!(buf[(0, 42)].modifier.contains(Modifier::REVERSED));
+        let digits: Vec<&str> = [5, 7, 9, 11, 13].into_iter().map(|x| buf[(x, 20)].symbol()).collect();
+        assert_eq!(digits, ["0", "1", "0", "0", "0"], "the chosen total, static");
+    }
+
+    #[test]
+    fn clearance_cursor_follows_the_stars() {
+        let area = Rect::new(0, 0, 80, 43);
+        let (mut d, t) = armed(60);
+        assert_eq!(d.cursor(area), Some(ratatui::layout::Position { x: 41, y: 28 }));
+        typed(&mut d, "abc", t);
+        assert_eq!(d.cursor(area), Some(ratatui::layout::Position { x: 44, y: 28 }));
+        typed(&mut d, &"x".repeat(40), t);
+        let buf = draw(&d, t);
+        assert_eq!(row(&buf, 28).chars().nth(56), Some('│'), "stars stay inside the box");
+        let c = d.cursor(area).unwrap();
+        assert!(c.x < 56 && c.y == 28, "{c:?}");
+        assert_eq!(buf[(c.x - 1, 28)].symbol(), "*");
+        assert!(matches!(d.key(&Key::Enter, t), Some(Effect::Verify(_))));
+        assert_eq!(d.cursor(area), None, "no cursor while verifying");
+        let (d, _) = mk(60);
+        assert_eq!(d.cursor(area), None, "no cursor while counting");
+    }
+
+    #[test]
+    fn verifying_and_denied_panels() {
+        let (mut d, t) = armed(60);
+        typed(&mut d, "abc", t);
+        d.key(&Key::Enter, t);
+        let buf = draw(&d, t);
+        assert!(row(&buf, 26).contains("CLEARANCE REQUIRED"));
+        let field: String = row(&buf, 28).chars().skip(23).take(34).collect();
+        assert_eq!(field, "│  VERIFYING                     │");
+        assert_eq!(row(&buf, 42).trim(), "");
+        assert!(buf[(0, 42)].modifier.contains(Modifier::REVERSED));
+        d.on_verified(&exit(1), t);
+        let buf = draw(&d, t);
+        let title: String = row(&buf, 26).chars().skip(23).take(34).collect();
+        assert_eq!(title, "│        CLEARANCE DENIED        │");
+        assert!(!row(&buf, 28).contains('*') && !row(&buf, 28).contains("VERIFYING"));
+        assert_eq!(row(&buf, 42).trim(), "");
+    }
+
+    #[test]
+    fn no_x_during_clearance() {
+        let (mut d, t) = armed(60);
+        typed(&mut d, "abc", t);
+        for at in [0.0, 1.6, 3.1, 4.6, 5.1] {
+            let cells = x_cells(&draw(&d, t + s(at)));
+            assert!(cells.is_empty(), "at {at}: {cells:?}");
+        }
+        // The X does show once counting (sanity for the helper).
+        let (d, t0) = mk(60);
+        assert!(!x_cells(&draw(&d, t0)).is_empty());
     }
 
     fn draw(d: &Destruct, now: Instant) -> Buffer {

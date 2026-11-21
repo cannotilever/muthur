@@ -15,6 +15,8 @@ use quiz::Quiz;
 
 pub const TICK: Duration = Duration::from_millis(100);
 const FREEZE_HOLD: Duration = Duration::from_millis(5500);
+/// How long `CLEARANCE DENIED` shows before the screen gives up.
+const DENIED_HOLD: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -41,6 +43,8 @@ impl Kind {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Outcome {
+    /// Left at the clearance stage (Esc, Break, or a wrong password): never audited.
+    Cancelled,
     Aborted,
     Frozen,
     Executed,
@@ -48,6 +52,8 @@ pub enum Outcome {
 }
 
 pub enum Effect {
+    /// Check the typed password (`sudo -S -k true`); answer with `on_verified`.
+    Verify(Secret),
     Execute(Secret),
     Done(Outcome),
 }
@@ -86,14 +92,30 @@ pub fn sudo_argv(cmd: &[&str]) -> Vec<String> {
     ["sudo", "-S", "-k", "-p", ""].iter().chain(cmd).map(|s| s.to_string()).collect()
 }
 
+/// A countdown chosen on the Utility tab; the password is asked for on the
+/// destruct screen itself.
 pub struct DestructRequest {
     pub kind: Kind,
     pub total: Duration,
-    pub password: Secret,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Debug)]
 pub(crate) enum Phase {
+    /// The password field. Keys count only from `armed_at`, which is set on the
+    /// second render (the first one may not have reached the screen yet).
+    Clearance {
+        input: Secret,
+        drawn: bool,
+        armed_at: Option<Instant>,
+    },
+    /// The typed password is being checked; it becomes the execute password.
+    Verifying {
+        input: Secret,
+    },
+    /// The password was refused; the screen ends after `DENIED_HOLD`.
+    Denied {
+        since: Instant,
+    },
     Running,
     Frozen {
         since: Instant,
@@ -106,7 +128,8 @@ pub(crate) enum Phase {
 
 pub struct Destruct {
     pub(crate) kind: Kind,
-    pub(crate) started: Instant,
+    /// When the countdown started; `None` until clearance is passed.
+    pub(crate) started: Option<Instant>,
     pub(crate) total: Duration,
     pub(crate) phase: Phase,
     pub(crate) quiz: Quiz,
@@ -116,14 +139,19 @@ pub struct Destruct {
 }
 
 impl Destruct {
-    pub fn new(req: DestructRequest, started: Instant, seed: u64) -> Destruct {
+    /// A real countdown, starting at the clearance stage.
+    pub fn new(req: DestructRequest, seed: u64) -> Destruct {
         Destruct {
             kind: req.kind,
-            started,
+            started: None,
             total: req.total,
-            phase: Phase::Running,
+            phase: Phase::Clearance {
+                input: Secret::new(),
+                drawn: false,
+                armed_at: None,
+            },
             quiz: Quiz::new(seed),
-            password: Some(req.password),
+            password: None,
             preview: false,
             answered: false,
         }
@@ -132,7 +160,7 @@ impl Destruct {
     pub fn preview(kind: Kind, total: Duration, started: Instant, seed: u64) -> Destruct {
         Destruct {
             kind,
-            started,
+            started: Some(started),
             total,
             phase: Phase::Running,
             quiz: Quiz::new(seed),
@@ -154,17 +182,61 @@ impl Destruct {
         self.password.is_some()
     }
 
-    /// The instant the clock reaches zero.
-    pub(crate) fn zero_at(&self) -> Instant {
-        self.started + self.total
+    /// The instant the clock reaches zero (`None` before clearance).
+    pub(crate) fn zero_at(&self) -> Option<Instant> {
+        self.started.map(|s| s + self.total)
     }
 
+    /// Time left; the whole total until the countdown starts.
     fn remaining(&self, now: Instant) -> Duration {
-        self.zero_at().saturating_duration_since(now)
+        self.zero_at().map_or(self.total, |z| z.saturating_duration_since(now))
+    }
+
+    /// True during the clearance stage (password field, verify, denial).
+    pub(crate) fn in_clearance(&self) -> bool {
+        matches!(self.phase, Phase::Clearance { .. } | Phase::Verifying { .. } | Phase::Denied { .. })
+    }
+
+    /// Characters typed into the password field, while it takes them.
+    pub(crate) fn clearance_chars(&self) -> Option<usize> {
+        match &self.phase {
+            Phase::Clearance { input, .. } => Some(input.chars()),
+            _ => None,
+        }
+    }
+
+    /// Called after each render: arms the password field once it has been
+    /// drawn twice (the first frame may not have reached the screen).
+    pub fn rendered(&mut self, now: Instant) {
+        if let Phase::Clearance { drawn, armed_at, .. } = &mut self.phase {
+            if !*drawn {
+                *drawn = true;
+            } else if armed_at.is_none() {
+                *armed_at = Some(now + crate::app::ARMING);
+            }
+        }
+    }
+
+    /// The verify command's result: success starts the countdown at `now`
+    /// with the typed password; anything else is a denial.
+    pub fn on_verified(&mut self, out: &RunOutput, now: Instant) {
+        if !matches!(self.phase, Phase::Verifying { .. }) {
+            return;
+        }
+        let Phase::Verifying { input } = std::mem::replace(&mut self.phase, Phase::Denied { since: now }) else {
+            return;
+        };
+        if matches!(out, RunOutput::Exited { code: 0, .. }) {
+            self.password = Some(input);
+            self.started = Some(now);
+            self.phase = Phase::Running;
+        }
+        // Otherwise `input` drops here, zeroized.
     }
 
     pub fn outcome_so_far(&self) -> Outcome {
         match self.phase {
+            Phase::Clearance { .. } | Phase::Verifying { .. } | Phase::Denied { .. } => Outcome::Cancelled,
             Phase::Running | Phase::Zero => Outcome::Aborted,
             Phase::Frozen { .. } => Outcome::Frozen,
             Phase::Executing => Outcome::Executed,
@@ -189,12 +261,34 @@ impl Destruct {
                 None
             }
             Phase::Frozen { since } if now >= since + FREEZE_HOLD => Some(Effect::Done(Outcome::Frozen)),
+            Phase::Denied { since } if now >= since + DENIED_HOLD => Some(Effect::Done(Outcome::Cancelled)),
             _ => None,
         }
     }
 
     pub fn key(&mut self, key: &Key, now: Instant) -> Option<Effect> {
-        match &self.phase {
+        match &mut self.phase {
+            Phase::Clearance { .. } | Phase::Verifying { .. } | Phase::Denied { .. } if *key == Key::Esc => Some(Effect::Done(Outcome::Cancelled)),
+            Phase::Clearance { input, armed_at, .. } => {
+                if !armed_at.is_some_and(|t| now >= t) {
+                    return None;
+                }
+                match key {
+                    Key::Char(c) if !c.is_control() => input.push(*c),
+                    Key::Backspace => input.pop(),
+                    Key::Enter if !input.is_empty() => {
+                        let Phase::Clearance { input, .. } = std::mem::replace(&mut self.phase, Phase::Running) else {
+                            return None;
+                        };
+                        let check = input.duplicate();
+                        self.phase = Phase::Verifying { input };
+                        return Some(Effect::Verify(check));
+                    }
+                    _ => {}
+                }
+                None
+            }
+            Phase::Verifying { .. } | Phase::Denied { .. } => None,
             Phase::Running => {
                 if *key == Key::Esc {
                     return Some(Effect::Done(Outcome::Aborted));
@@ -223,6 +317,7 @@ impl Destruct {
         let tenths = match self.phase {
             Phase::Running => self.remaining(now).as_millis().div_ceil(100) as u64,
             Phase::Frozen { .. } => 1,
+            Phase::Clearance { .. } | Phase::Verifying { .. } | Phase::Denied { .. } => self.total.as_millis().div_ceil(100) as u64,
             _ => 0,
         };
         let (m, sec, t) = (tenths / 600, (tenths / 10) % 60, tenths % 10);

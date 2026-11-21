@@ -30,7 +30,7 @@ Taken from the video's frames:
 
 | Topic | Decision |
 |---|---|
-| Privilege | `CLEARANCE REQUIRED` password prompt, as the agent's `as_root`. Checked at once with `sudo -S -k true`; held zeroized during the countdown; used at zero for `sudo -S systemctl poweroff\|reboot`. No new system configuration. |
+| Privilege | `CLEARANCE REQUIRED` password panel on the destruct screen itself. Checked at once with `sudo -S -k true`; held zeroized during the countdown; used at zero for `sudo -S systemctl poweroff\|reboot`. No new system configuration. |
 | Duration | `[utility] destruct_seconds = 60` default, valid 10–5999. Adjusted at arming with ←/→ through 10 s, 30 s, 1 m, 2 m, 5 m, 10 m (the configured value is the start point and is included in the steps if it is not one of them). |
 | Counter | Real time remaining as `MMSSt`, shown as `ceil(remaining / 100 ms)`. |
 | Esc | Silent, immediate abort at any time once armed. No message. |
@@ -44,28 +44,55 @@ Taken from the video's frames:
 
 ### Arming (Utility tab)
 
-All arming prompts use the Utility tab's bottom row, in reverse video like
-Cargo's prompts.
+The duration prompt uses the Utility tab's bottom row, in reverse video like
+Cargo's prompts. The password is not asked for there: the Utility panels
+refresh every 2 s and would pull the terminal cursor away from the field.
 
 1. `S` (shutdown) or `B` (reboot), either case, shows
    `SHUTDOWN IN 01:00  <-/-> ADJUST  ENTER CONFIRM  ESC CANCEL`
-   (`REBOOT IN …` for reboot). ←/→ step the duration; Enter confirms;
-   Esc cancels.
-2. Enter shows `CLEARANCE REQUIRED -- SHUTDOWN IN 01:00 -- PASSWORD:`. Keys
-   are ignored until it has been on screen, uncovered, for `ARMING` (1 s), as
-   with the existing prompts. Typed characters are not echoed; Backspace
-   edits, Esc cancels and zeroizes, Enter submits. An empty Enter does nothing.
-3. If the audit log is offline the request is refused with `AUDIT LOG OFFLINE`
-   before the password prompt, as root agent calls and Cargo restart/stop are.
-4. On submit the row shows `VERIFYING` and `sudo -S -k true` runs with the
-   password on stdin (10 s timeout). On failure: `CLEARANCE DENIED` on the row
-   (cleared by the next key) and the password is zeroized. On success the tab
-   hands a `DestructRequest { kind, duration, password }` to `App`, and the
-   countdown starts from that moment.
+   (`REBOOT IN …` for reboot). ←/→ step the duration; Esc cancels.
+2. If the audit log is offline the request is refused with `AUDIT LOG OFFLINE`
+   instead, as root agent calls and Cargo restart/stop are.
+3. Enter hands a `DestructRequest { kind, total }` (no password) to `App`,
+   which opens the destruct screen at once. `App` checks for a request after
+   every key; once the screen is up, the rest of that key batch is dropped.
 
 Arming keys only reach the Utility tab when it is focused, so S and B mean
-nothing on other tabs. While a prompt is open, F1–F4 still switch tabs
-(cancelling and zeroizing the prompt).
+nothing on other tabs. While the duration strip is open, F1–F4 still switch
+tabs (cancelling it).
+
+### Clearance (destruct screen)
+
+The destruct screen opens at a captive clearance stage, with every lockout of
+the countdown already in force (F1–F4, prefix, standby, bell).
+
+- The heading, the octagon and the counter box (showing the chosen total,
+  static) are drawn, but no X. Inside the octagon below the counter box, a
+  boxed panel centred on column 40 (rows 25–29):
+
+  ```
+  ┌────────────────────────────────┐
+  │       CLEARANCE REQUIRED       │
+  │                                │
+  │  AUTHORIZATION: ***            │
+  └────────────────────────────────┘
+  ```
+
+  One `*` per typed character (capped to the field), the terminal cursor after
+  the last one. The strip row reads `ENTER CONFIRM  ESC CANCEL`.
+- Keys are ignored until the panel has been rendered twice and then `ARMING`
+  (1 s) has passed, as with the other prompts. Esc works at once, armed or
+  not. Backspace edits; an empty Enter does nothing.
+- Enter runs `sudo -S -k true` with the password on stdin (10 s timeout,
+  through `App`'s sudo runner); the field line reads `VERIFYING` and only Esc
+  is live. The typed password stays held for the execute command.
+- Wrong password, timeout or other failure: the title reads
+  `CLEARANCE DENIED`, the password is zeroized, and after 2 s (or on Esc) the
+  Utility tab returns.
+- Success: the countdown starts from that moment, with the same password.
+- Esc or Break during clearance: silent cancel (`Outcome::Cancelled`), the
+  password zeroized, the Utility tab returns. A verify result arriving after
+  that is ignored.
 
 ### The countdown
 
@@ -104,8 +131,10 @@ nothing on other tabs. While a prompt is open, F1–F4 still switch tabs
 
 ### Audit
 
-One `audit.jsonl` entry per run, tool `destruct_shutdown` or
-`destruct_reboot`, args `{ "seconds": N }`, written when the run ends with the
+One `audit.jsonl` entry per countdown, tool `destruct_shutdown` or
+`destruct_reboot`, args `{ "seconds": N }`. The audit `Recorder` is created
+only when the countdown starts (clearance passed): a run cancelled or denied
+at clearance writes nothing. The entry is written when the run ends with the
 outcome above (`executed` is written before the command runs; if the command
 then fails, a second entry records `failed` with the reason). The password
 never appears in argv or the log.
@@ -188,25 +217,26 @@ Backspace edits, Ctrl-C clears the answer.
 
 - **`src/destruct/`** (always built):
   - `mod.rs` — `Destruct { kind, started, total, quiz, answered, phase, password }`
-    with `phase: Running | Frozen { since } | Executing | Failed(String)`.
-    `tick(now) -> Option<Effect>` and `key(&Key, now) -> Option<Effect>`;
-    `Effect::Execute` (the run loop runs the command) and
-    `Effect::Done(Outcome)` (`App` ends the screen and audits).
+    with `phase: Clearance { input, drawn, armed_at } | Verifying { input } |
+    Denied { since } | Running | Frozen { since } | Executing | Failed(String)`.
+    `tick(now) -> Option<Effect>`, `key(&Key, now) -> Option<Effect>`,
+    `rendered(now)` (arms the field) and `on_verified(&RunOutput, now)`;
+    `Effect::Verify` (App runs `sudo -S -k true`), `Effect::Execute` (the run
+    loop runs the command) and `Effect::Done(Outcome)` (`App` ends the screen
+    and audits; `Cancelled` from clearance is never audited).
     `counter(now) -> [u8; 5]`. Preview mode never emits `Execute`.
   - `quiz.rs` — the steps, checks, retorts and the seeded arithmetic.
   - `screen.rs` — octagon, X phases, counter rows, strip; `render` and
     `line_attrs`.
 - **`src/secret.rs`** — no longer behind the `agent` feature.
-- **Utility tab** — the arming prompts; `UtilityDeps` (injected like
-  `CargoDeps`): `run(seq, argv, timeout, stdin: Option<Secret>)`, `now`,
-  `audit_online`. `Tab::take_destruct() -> Option<DestructRequest>` (default
-  `None`), polled by `App` after key handling.
+- **Utility tab** — the duration strip; `UtilityDeps { audit,
+  destruct_seconds }`. `Tab::take_destruct() -> Option<DestructRequest>`
+  (default `None`), polled by `App` after each key.
 - **`App`** — `Option<Destruct>`, entering on a request, routing keys
   (Esc and Break first), lockouts, `tick_interval` ≤ 100 ms while active,
   `line_attrs`, the audit entry on `Done`.
-- **Run loop** — the verify and execute commands through `ops::Runner` with
-  stdin, results as events back to the Utility tab (verify) or `App`
-  (execute).
+- **Run loop** — the verify and execute commands through one sudo runner with
+  stdin, results as events back to `App`, which routes them by seq.
 - **Config** — `[utility] destruct_seconds`, validated 10–5999.
 - **`muthur destruct [SECONDS]`** — preview subcommand (default 60).
 - **Docs** — ARCHITECTURE.md (modes, keys, Utility tab, modules, milestones),
@@ -224,9 +254,12 @@ Backspace edits, Ctrl-C clears the answer.
   frame-to-frame step under the byte budget.
 - **App:** F1–F4, the prefix and standby locked out while active; Break aborts
   then re-inits; the audit entry for each outcome.
-- **Utility:** arming flow with a fake runner (right and wrong password,
-  `AUDIT LOG OFFLINE`, the arming delay, Esc cancelling at each stage, F-key
-  cancelling).
+- **Clearance:** the arming delay, stars and cursor, Backspace, empty Enter,
+  right and wrong password (with a fake runner, through the real Utility tab
+  and `App`), Esc and Break at each stage, a late verify result ignored, no
+  audit entry before the countdown starts.
+- **Utility:** the duration strip, `AUDIT LOG OFFLINE`, Esc and F-key
+  cancelling.
 - **By hand (operator):** a real poweroff and a real reboot; `muthur destruct`
   on the WY-60 to tune the look.
 

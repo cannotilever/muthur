@@ -252,7 +252,6 @@ impl Tab for UtilityTab {
             let w = area.width as usize;
             let line: String = format!("{text:<w$}").chars().take(w).collect();
             buf.set_string(area.x, y, line, reverse());
-            self.arm.drawn();
         }
     }
 
@@ -264,16 +263,8 @@ impl Tab for UtilityTab {
         self.arm.set_obscured(obscured);
     }
 
-    fn tick_interval(&self) -> Option<std::time::Duration> {
-        self.arm.tick_interval()
-    }
-
     fn take_destruct(&mut self) -> Option<crate::destruct::DestructRequest> {
         self.arm.take()
-    }
-
-    fn on_sudo_done(&mut self, seq: u64, out: crate::ops::runner::RunOutput) {
-        self.arm.sudo_done(seq, out);
     }
 
     fn on_metrics(&mut self, s: &Snapshot) {

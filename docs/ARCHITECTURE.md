@@ -76,10 +76,15 @@ serial-getty@wy60 (38400, XON/XOFF, TERM=vt100)
    wakes it and re-initialises. Never entered during the splash or passthrough.
    See [M9 spec](superpowers/specs/2026-11-20-m9-standby-design.md).
 5. **Self-destruct** — armed from the Utility tab: `S` (shutdown) or `B`
-   (reboot), then the sudo password. A countdown of `[utility] destruct_seconds`
-   (default 60, 10..=5999) takes over the whole screen (no F-keys, no prefix
-   key, no standby, no bell) with a five-digit counter and an abort
-   questionnaire; the first submitted answer secretly aborts the operation (the
+   (reboot) and a duration (`[utility] destruct_seconds`, default 60,
+   10..=5999). Enter takes over the whole screen at once (no F-keys, no prefix
+   key, no standby, no bell): first a captive `CLEARANCE REQUIRED` panel in the
+   octagon, under the counter showing the chosen duration, where the sudo
+   password is typed (one `*` per character; keys count once the panel has
+   been on screen for 1 s; Esc or Break cancels silently). Enter checks it
+   with `sudo -S -k true`; a wrong password shows `CLEARANCE DENIED` for 2 s,
+   then the Utility tab returns. Once verified, the countdown starts, with a
+   five-digit counter and an abort questionnaire; the first submitted answer secretly aborts the operation (the
    password is wiped at once and nothing can execute any more), but the
    countdown keeps running and freezes at `00001` in the last 100 ms, then shows
    `SELF-DESTRUCT ABORTED` and the Utility tab returns. Until `00000`, Esc or
@@ -89,8 +94,9 @@ serial-getty@wy60 (38400, XON/XOFF, TERM=vt100)
    the command (a later failure is still audited). A failure shows `UNABLE TO
    COMPLY` until a key is pressed. The password goes to sudo on stdin only; the
    runner's zeroizing copy is held until the command exits, then wiped. Every
-   outcome is written to the audit log (arming is refused with `AUDIT LOG
-   OFFLINE` when it is unavailable). `muthur destruct [SECONDS] [--reboot]`
+   countdown's outcome is written to the audit log; the entry begins when the
+   countdown starts, so a run cancelled or denied at clearance is not audited
+   (arming is refused with `AUDIT LOG OFFLINE` when the log is unavailable). `muthur destruct [SECONDS] [--reboot]`
    plays the countdown without running anything (for tuning). See [M10
    spec](superpowers/specs/2026-11-20-m10-destruct-design.md).
 
@@ -133,9 +139,11 @@ Modelled on the Alien: Isolation personal terminal
 
 - **F1 / F2 / F3 / F4** — MU/TH/UR / Utility / Cargo / Shell (sidebar order;
   Utility is shown at startup). F4 is therefore not passed to the shell.
-- **Utility folder:** `S` arms a self-destruct shutdown, `B` a reboot (then
-  duration and sudo password; see Self-destruct above). During the countdown
-  only the questionnaire's keys, Esc and Break are live.
+- **Utility folder:** `S` arms a self-destruct shutdown, `B` a reboot (←/→
+  duration, Enter, Esc cancels); Enter opens the destruct screen's clearance
+  panel for the sudo password (see Self-destruct above). On the destruct
+  screen only the password field's or questionnaire's keys, Esc and Break are
+  live.
 - **Cargo folder:** arrows select, `U`/`R`/`D` start / restart / stop
   (restart and stop ask Y/N), `L` logs, Esc back.
 - **Prefix `Ctrl-]`** then:
@@ -344,7 +352,9 @@ Refresh every 2 s, diffs only, game-style boxed panels:
 - Load average, uptime.
 - Failed systemd units (reverse video).
 - Top 5 processes.
-- Keys: `S` arms a self-destruct shutdown, `B` a reboot (see Self-destruct above).
+- Keys: `S` arms a self-destruct shutdown, `B` a reboot: the bottom row shows
+  the duration strip only; the password is asked for on the destruct screen
+  (see Self-destruct above).
 - Container count (running and stopped), one line, only if a runtime (Docker/Podman) is present;
   the list itself is in the Cargo tab, so a busy host cannot push the other
   panels off the screen.

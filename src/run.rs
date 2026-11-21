@@ -780,8 +780,6 @@ pub fn run(cfg: &Config, config_path: &std::path::Path, strict: bool) -> anyhow:
     let muthur = build_muthur(cfg, &chrome.ship_name, tx.clone(), slot, audit.clone(), tech)?;
     let cargo = build_cargo(tx.clone(), audit.clone(), hints);
     let utility = UtilityTab::with_destruct(crate::utility::UtilityDeps {
-        run: sudo_runner(tx.clone()),
-        now: Box::new(Instant::now),
         audit: audit.clone(),
         destruct_seconds: cfg.utility.destruct_seconds,
     });
@@ -1003,16 +1001,25 @@ mod tests {
             audit,
             timestamp: Box::new(|| "t".into()),
         });
-        let mut pw = crate::secret::Secret::new();
-        pw.push('x');
         let req = crate::destruct::DestructRequest {
             kind: crate::destruct::Kind::Shutdown,
             total: Duration::from_secs(10),
-            password: pw,
         };
-        // Started long enough ago that the first poll executes.
-        let started = Instant::now() - Duration::from_secs(60);
-        app.start_destruct(crate::destruct::Destruct::new(req, started, 1));
+        // Past clearance, started long enough ago that the first poll executes.
+        let mut d = crate::destruct::Destruct::new(req, 1);
+        let drawn = Instant::now();
+        d.rendered(drawn);
+        d.rendered(drawn);
+        let armed = drawn + crate::app::ARMING;
+        d.key(&Key::Char('x'), armed);
+        assert!(matches!(d.key(&Key::Enter, armed), Some(crate::destruct::Effect::Verify(_))));
+        let ok = RunOutput::Exited {
+            code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+        };
+        d.on_verified(&ok, Instant::now() - Duration::from_secs(60));
+        app.start_destruct(d);
         let quit = async {
             tokio::time::sleep(Duration::from_millis(150)).await;
             tx.send(Event::Hangup).unwrap();

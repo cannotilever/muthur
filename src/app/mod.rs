@@ -35,7 +35,10 @@ pub type SplashFactory = Box<dyn Fn(std::time::Instant) -> Splash>;
 /// How long the execute command (`systemctl poweroff`/`reboot`) may take.
 const EXECUTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Seqs of App's own sudo commands; the Utility tab numbers its own from 0.
+/// How long the clearance check (`sudo -S -k true`) may take.
+const VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Seqs of App's own sudo commands (clearance checks and execute commands).
 const EXEC_SEQ_BASE: u64 = 1 << 63;
 
 /// `DestructDeps`, with the timestamp shareable with each run's `Recorder`.
@@ -91,10 +94,13 @@ pub struct App {
     standby: Option<Standby>,
     /// The self-destruct countdown, while it is shown.
     destruct: Option<Destruct>,
-    /// Audits the running countdown (`None` for a preview).
+    /// Audits the running countdown: created once clearance is passed (`None`
+    /// before that, and for a preview).
     recorder: Option<Recorder>,
     /// How a real countdown runs its command and audits; `None` = requests are refused.
     destruct_deps: Option<Deps>,
+    /// The seq of the clearance check, until its result arrives.
+    verify_seq: Option<u64>,
     /// The seq of the execute command, until its result arrives.
     exec_seq: Option<u64>,
     /// A countdown ended by Break while its execute command still ran: the
@@ -106,6 +112,8 @@ pub struct App {
     tabs: [Box<dyn Tab>; TABS],
     activity: [bool; TABS],
     chrome: ChromeView,
+    /// The screen as of the last render (where the destruct cursor goes).
+    screen: ratatui::layout::Rect,
 }
 
 impl App {
@@ -156,7 +164,7 @@ impl App {
 
     /// Take over the screen with `d` (a preview runs without a recorder).
     pub fn start_destruct(&mut self, d: Destruct) {
-        tracing::info!(kind = d.kind().label(), "destruct: countdown started");
+        tracing::info!(kind = d.kind().label(), "destruct: screen up");
         self.destruct = Some(d);
         self.prefix = false;
         self.overlay = None;
@@ -164,14 +172,13 @@ impl App {
         self.redraw = true;
     }
 
-    /// An armed request from the active tab: start the real countdown.
-    fn begin_destruct(&mut self, req: DestructRequest, now: std::time::Instant) {
-        let Some(deps) = &self.destruct_deps else {
+    /// A request from the active tab: the destruct screen, at its clearance stage.
+    fn begin_destruct(&mut self, req: DestructRequest) {
+        if self.destruct_deps.is_none() {
             tracing::error!("destruct: request dropped (not wired)");
-            return; // `req` drops here, zeroizing the password
-        };
-        self.recorder = Some(Recorder::new(req.kind, req.total.as_secs(), deps.audit.clone(), deps.timestamp.clone()));
-        self.start_destruct(Destruct::new(req, now, quiz_seed()));
+            return;
+        }
+        self.start_destruct(Destruct::new(req, quiz_seed()));
     }
 
     /// Advance the countdown; called on every loop wake-up.
@@ -183,6 +190,14 @@ impl App {
 
     fn destruct_effect(&mut self, e: Effect, now: std::time::Instant) {
         match e {
+            Effect::Verify(password) => {
+                let Some(deps) = &mut self.destruct_deps else { return };
+                let seq = self.next_seq;
+                self.next_seq += 1;
+                self.verify_seq = Some(seq);
+                tracing::info!("destruct: checking clearance");
+                (deps.run)(seq, crate::destruct::sudo_argv(&["true"]), VERIFY_TIMEOUT, password);
+            }
             Effect::Execute(password) => {
                 let Some(d) = &self.destruct else { return };
                 let argv = execute_argv(d);
@@ -205,10 +220,13 @@ impl App {
     }
 
     /// Drop the countdown (zeroizing any password) and audit how it ended.
-    /// Esc, the freeze, a failure acknowledged, or Break.
+    /// Esc, the freeze, a failure acknowledged, a denial, or Break. Before
+    /// clearance there is no recorder, so nothing is audited.
     fn end_destruct(&mut self, o: Outcome) {
         let Some(d) = self.destruct.take() else { return };
         tracing::info!(outcome = ?o, "destruct: ended");
+        // A clearance check still running is answered into nothing.
+        self.verify_seq = None;
         if let Some(r) = self.recorder.take() {
             match self.exec_seq.take() {
                 // Break while executing: the command may still fail.
@@ -222,8 +240,13 @@ impl App {
         }
     }
 
-    /// The result of sudo command `seq`: the execute command's, or the Utility tab's.
+    /// The result of sudo command `seq`: the clearance check's or the execute command's.
     pub fn on_sudo_done(&mut self, seq: u64, out: crate::ops::runner::RunOutput) {
+        self.on_sudo_done_at(seq, out, std::time::Instant::now());
+    }
+
+    /// `on_sudo_done`, with a verified countdown starting at `now`.
+    pub fn on_sudo_done_at(&mut self, seq: u64, out: crate::ops::runner::RunOutput, now: std::time::Instant) {
         if self.orphan.as_ref().is_some_and(|(s, ..)| *s == seq) {
             let Some((_, mut r, argv)) = self.orphan.take() else { return };
             if let Some(reason) = crate::destruct::failure_reason(&out) {
@@ -232,9 +255,13 @@ impl App {
             }
             return;
         }
+        if self.verify_seq.is_some_and(|s| s == seq) {
+            self.verify_seq = None;
+            self.on_verified(&out, now);
+            return;
+        }
         if self.exec_seq != Some(seq) {
-            self.tabs[TabId::Utility.index()].on_sudo_done(seq, out);
-            self.take_verified();
+            tracing::debug!(seq, "destruct: stale sudo result ignored");
             return;
         }
         self.exec_seq = None;
@@ -249,23 +276,18 @@ impl App {
         }
     }
 
-    /// A verify result may have readied a request: start it at once if the
-    /// Utility tab is what the operator sees, otherwise drop it (zeroizing).
-    fn take_verified(&mut self) {
-        let Some(req) = self.tabs[TabId::Utility.index()].take_destruct() else {
+    /// The clearance check's result: on success the countdown starts, and
+    /// only from then on is the run audited.
+    fn on_verified(&mut self, out: &crate::ops::runner::RunOutput, now: std::time::Instant) {
+        let Some(d) = &mut self.destruct else { return };
+        d.on_verified(out, now);
+        if !matches!(d.phase, crate::destruct::Phase::Running) {
+            tracing::warn!("destruct: clearance denied");
             return;
-        };
-        let showing = self.active == TabId::Utility
-            && self.destruct.is_none()
-            && self.settle_until.is_none()
-            && self.splash.is_none()
-            && self.standby.is_none()
-            && self.overlay.is_none()
-            && !self.prefix;
-        if showing {
-            self.begin_destruct(req, std::time::Instant::now());
-        } else {
-            tracing::warn!("destruct: verified request dropped (Utility not showing)");
+        }
+        tracing::info!(kind = d.kind().label(), "destruct: countdown started");
+        if let Some(deps) = &self.destruct_deps {
+            self.recorder = Some(Recorder::new(d.kind(), d.total.as_secs(), deps.audit.clone(), deps.timestamp.clone()));
         }
     }
 
@@ -407,9 +429,13 @@ impl App {
         shell.on_pty(ev);
     }
 
-    /// The active tab's cursor, unless something is drawn over it.
+    /// The active tab's cursor, unless something is drawn over it; on the
+    /// destruct screen, its password field's.
     pub fn cursor(&self) -> Option<Position> {
-        if self.overlay.is_some() || self.prefix || self.destruct.is_some() {
+        if let Some(d) = &self.destruct {
+            return d.cursor(self.screen);
+        }
+        if self.overlay.is_some() || self.prefix {
             return None;
         }
         self.tabs[self.active.index()].cursor()
@@ -439,6 +465,7 @@ impl App {
             destruct: None,
             recorder: None,
             destruct_deps: None,
+            verify_seq: None,
             exec_seq: None,
             orphan: None,
             next_seq: EXEC_SEQ_BASE,
@@ -446,6 +473,7 @@ impl App {
             tabs,
             activity: [false; TABS],
             chrome,
+            screen: ratatui::layout::Rect::new(0, 0, 80, 43),
         }
     }
 
@@ -490,11 +518,14 @@ impl App {
             if counting && self.destruct.is_none() {
                 return;
             }
-        }
-        if self.destruct.is_none()
-            && let Some(req) = self.tabs[self.active.index()].take_destruct()
-        {
-            self.begin_destruct(req, now);
+            // A request starts the destruct screen at once; the rest of the
+            // batch was typed at the Utility strip, not at the password field.
+            if !counting && let Some(req) = self.tabs[self.active.index()].take_destruct() {
+                self.begin_destruct(req);
+                if self.destruct.is_some() {
+                    return;
+                }
+            }
         }
     }
 
@@ -628,6 +659,7 @@ impl App {
 
     pub fn render(&mut self, frame: &mut Frame, now: NaiveDateTime) {
         let area = frame.area();
+        self.screen = area;
         if self.destruct.is_some() || self.standby.is_some() {
             // Collect activity so the markers show afterwards.
             let active = self.active.index();
@@ -638,8 +670,13 @@ impl App {
                 }
             }
         }
-        if let Some(d) = &self.destruct {
-            d.render(std::time::Instant::now(), area, frame.buffer_mut());
+        if let Some(d) = &mut self.destruct {
+            let t = std::time::Instant::now();
+            d.render(t, area, frame.buffer_mut());
+            d.rendered(t);
+            if let Some(p) = d.cursor(area) {
+                frame.set_cursor_position(p);
+            }
             return;
         }
         if let Some(sb) = &self.standby {

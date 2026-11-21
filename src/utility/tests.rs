@@ -323,32 +323,17 @@ mod arming {
     use super::*;
     use crate::destruct::Kind as DKind;
     use crate::ops::audit::{AuditLog, shared};
-    use crate::ops::runner::RunOutput;
-    use crate::secret::Secret;
-    use std::cell::{Cell, RefCell};
-    use std::rc::Rc;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
-    type Runs = Rc<RefCell<Vec<(u64, Vec<String>, String)>>>;
-
-    fn tab(secs: u32, online: bool) -> (UtilityTab, Runs, Rc<Cell<Instant>>, tempfile::TempDir) {
+    fn tab(secs: u32, online: bool) -> (UtilityTab, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let runs: Runs = Rc::default();
-        let r = runs.clone();
-        let clock = Rc::new(Cell::new(Instant::now()));
-        let c = clock.clone();
         let audit = shared(if online {
             AuditLog::open(dir.path().join("audit.jsonl")).unwrap()
         } else {
             AuditLog::offline()
         });
-        let t = UtilityTab::with_destruct(UtilityDeps {
-            run: Box::new(move |seq, argv, _to, pw: Secret| r.borrow_mut().push((seq, argv, pw.expose().to_string()))),
-            now: Box::new(move || c.get()),
-            audit,
-            destruct_seconds: secs,
-        });
-        (t, runs, clock, dir)
+        let t = UtilityTab::with_destruct(UtilityDeps { audit, destruct_seconds: secs });
+        (t, dir)
     }
 
     fn keys(t: &mut UtilityTab, s: &str) {
@@ -364,18 +349,9 @@ mod arming {
         (row.trim_end().to_string(), buf[(0, y)].modifier.contains(Modifier::REVERSED))
     }
 
-    /// Duration -> Enter -> render twice, step past ARMING.
-    fn to_armed_password(t: &mut UtilityTab, clock: &Cell<Instant>) {
-        keys(t, "s");
-        t.handle_key(&Key::Enter);
-        last_row(t);
-        last_row(t);
-        clock.set(clock.get() + Duration::from_millis(1100));
-    }
-
     #[test]
     fn s_opens_duration_prompt() {
-        let (mut t, _, _, _dir) = tab(60, true);
+        let (mut t, _dir) = tab(60, true);
         keys(&mut t, "S");
         let (row, rev) = last_row(&mut t);
         assert_eq!(row, "SHUTDOWN IN 01:00  <-/-> ADJUST  ENTER CONFIRM  ESC CANCEL");
@@ -384,7 +360,7 @@ mod arming {
 
     #[test]
     fn arrows_step_durations() {
-        let (mut t, _, _, _dir) = tab(45, true);
+        let (mut t, _dir) = tab(45, true);
         keys(&mut t, "s");
         t.handle_key(&Key::Right);
         assert!(last_row(&mut t).0.starts_with("SHUTDOWN IN 01:00"));
@@ -400,107 +376,27 @@ mod arming {
     }
 
     #[test]
-    fn password_ignored_until_armed() {
-        let (mut t, runs, clock, _dir) = tab(60, true);
-        keys(&mut t, "s");
+    fn enter_hands_over_request_without_password() {
+        let (mut t, _dir) = tab(60, true);
+        keys(&mut t, "b");
+        t.handle_key(&Key::Right);
+        assert!(t.take_destruct().is_none(), "nothing before Enter");
         t.handle_key(&Key::Enter);
-        keys(&mut t, "pw");
-        t.handle_key(&Key::Enter);
-        last_row(&mut t);
-        last_row(&mut t);
-        keys(&mut t, "pw");
-        t.handle_key(&Key::Enter);
-        assert!(runs.borrow().is_empty());
-        assert_eq!(t.tick_interval(), Some(Duration::from_millis(100)));
-        clock.set(clock.get() + Duration::from_millis(999));
-        keys(&mut t, "pw");
-        t.handle_key(&Key::Enter);
-        assert!(runs.borrow().is_empty());
-        clock.set(clock.get() + Duration::from_millis(1));
-        assert_eq!(t.tick_interval(), None);
-        keys(&mut t, "pw");
-        let (row, _) = last_row(&mut t);
-        assert_eq!(row, "CLEARANCE REQUIRED -- SHUTDOWN IN 01:00 -- PASSWORD:");
-        t.handle_key(&Key::Enter);
-        let runs = runs.borrow();
-        assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].1, ["sudo", "-S", "-k", "-p", "", "true"]);
-        assert_eq!(runs[0].2, "pw");
-        drop(runs);
-        let buf = render(&mut t, FULL);
-        assert_eq!(last_row(&mut t).0, "VERIFYING");
-        assert!(!text(&buf).contains("pw"));
-    }
-
-    fn verified(t: &mut UtilityTab, runs: &Runs, clock: &Cell<Instant>) -> u64 {
-        to_armed_password(t, clock);
-        keys(t, "pw");
-        t.handle_key(&Key::Enter);
-        runs.borrow()[0].0
-    }
-
-    fn ok() -> RunOutput {
-        RunOutput::Exited {
-            code: 0,
-            stdout: String::new(),
-            stderr: String::new(),
-        }
-    }
-
-    #[test]
-    fn verified_password_hands_over_request() {
-        let (mut t, runs, clock, _dir) = tab(60, true);
-        let seq = verified(&mut t, &runs, &clock);
-        t.on_sudo_done(seq, ok());
         let req = t.take_destruct().expect("request");
-        assert_eq!(req.kind, DKind::Shutdown);
-        assert_eq!(req.total, Duration::from_secs(60));
-        assert_eq!(req.password.expose(), "pw");
-        assert!(t.take_destruct().is_none());
-        assert!(last_row(&mut t).0.starts_with('└'));
-    }
-
-    #[test]
-    fn wrong_password_denied() {
-        let (mut t, runs, clock, _dir) = tab(60, true);
-        let seq = verified(&mut t, &runs, &clock);
-        t.on_sudo_done(
-            seq,
-            RunOutput::Exited {
-                code: 1,
-                stdout: String::new(),
-                stderr: String::new(),
-            },
-        );
-        assert_eq!(last_row(&mut t).0, "CLEARANCE DENIED");
-        assert!(t.take_destruct().is_none());
-        keys(&mut t, "x");
-        assert!(last_row(&mut t).0.starts_with('└'));
-    }
-
-    #[test]
-    fn verify_result_after_cancel_is_ignored() {
-        for obscure in [true, false] {
-            let (mut t, runs, clock, _dir) = tab(60, true);
-            let seq = verified(&mut t, &runs, &clock);
-            if obscure {
-                t.set_obscured(false);
-                t.set_obscured(true);
-            } else {
-                t.handle_key(&Key::Esc);
-            }
-            t.on_sudo_done(seq, ok());
-            assert!(t.take_destruct().is_none());
-            assert!(last_row(&mut t).0.starts_with('└'));
-        }
+        assert_eq!(req.kind, DKind::Reboot);
+        assert_eq!(req.total, Duration::from_secs(120));
+        assert!(t.take_destruct().is_none(), "taken once");
+        assert!(last_row(&mut t).0.starts_with('└'), "the strip is gone");
+        assert_eq!(t.tick_interval(), None);
     }
 
     #[test]
     fn audit_offline_refuses() {
-        let (mut t, _, _, _dir) = tab(60, false);
+        let (mut t, _dir) = tab(60, false);
         keys(&mut t, "s");
         assert_eq!(last_row(&mut t).0, "AUDIT LOG OFFLINE");
-        keys(&mut t, "x");
+        t.handle_key(&Key::Enter);
+        assert!(t.take_destruct().is_none());
         assert!(last_row(&mut t).0.starts_with('└'));
     }
 
@@ -512,37 +408,23 @@ mod arming {
     }
 
     #[test]
-    fn obscuring_cancels_duration_and_password() {
-        let (mut t, _, clock, _dir) = tab(60, true);
+    fn obscuring_cancels_duration() {
+        let (mut t, _dir) = tab(60, true);
         keys(&mut t, "s");
         t.set_obscured(false);
         assert!(last_row(&mut t).0.starts_with("SHUTDOWN"));
         t.set_obscured(true);
         assert!(last_row(&mut t).0.starts_with('└'));
-        to_armed_password(&mut t, &clock);
-        t.set_obscured(true);
-        assert!(last_row(&mut t).0.starts_with('└'));
-    }
-
-    #[test]
-    fn backspace_and_empty_enter() {
-        let (mut t, runs, clock, _dir) = tab(60, true);
-        to_armed_password(&mut t, &clock);
         t.handle_key(&Key::Enter);
-        assert!(runs.borrow().is_empty());
-        keys(&mut t, "px");
-        t.handle_key(&Key::Backspace);
-        keys(&mut t, "w");
-        t.handle_key(&Key::Enter);
-        assert_eq!(runs.borrow()[0].2, "pw");
+        assert!(t.take_destruct().is_none());
     }
 
     #[test]
     fn stale_request_dropped_when_obscured_or_on_key() {
         for obscure in [true, false] {
-            let (mut t, runs, clock, _dir) = tab(60, true);
-            let seq = verified(&mut t, &runs, &clock);
-            t.on_sudo_done(seq, ok());
+            let (mut t, _dir) = tab(60, true);
+            keys(&mut t, "s");
+            t.handle_key(&Key::Enter);
             if obscure {
                 t.set_obscured(true);
             } else {

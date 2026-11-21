@@ -36,7 +36,7 @@ impl Recorder {
         };
         let decision = match o {
             Outcome::Executed | Outcome::Failed => Decision::Confirmed,
-            Outcome::Aborted | Outcome::Frozen => Decision::Aborted,
+            Outcome::Cancelled | Outcome::Aborted | Outcome::Frozen => Decision::Aborted,
         };
         let entry = AuditEntry {
             as_root: true,

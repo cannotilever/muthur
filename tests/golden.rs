@@ -898,18 +898,36 @@ fn standby_writes_nothing_after_first_frame() {
     assert_eq!(strict.inner.len(), sent, "standby wrote to the wire");
 }
 
-/// A 70 s shutdown countdown started at the returned instant.
-fn destruct_for_golden() -> (muthur::destruct::Destruct, std::time::Instant) {
+/// A 70 s shutdown at the clearance stage, drawn twice; armed from the
+/// returned instant.
+fn destruct_clearance_for_golden() -> (muthur::destruct::Destruct, std::time::Instant) {
     use muthur::destruct::{Destruct, DestructRequest, Kind};
-    let mut pw = muthur::secret::Secret::new();
-    pw.push('p');
-    let t0 = std::time::Instant::now();
+    let t = std::time::Instant::now();
     let req = DestructRequest {
         kind: Kind::Shutdown,
         total: std::time::Duration::from_secs(70),
-        password: pw,
     };
-    (Destruct::new(req, t0, 7), t0)
+    let mut d = Destruct::new(req, 7);
+    d.rendered(t);
+    d.rendered(t);
+    (d, t + muthur::app::ARMING)
+}
+
+/// A 70 s shutdown countdown, past clearance, started at the returned instant.
+fn destruct_for_golden() -> (muthur::destruct::Destruct, std::time::Instant) {
+    let (mut d, t0) = destruct_clearance_for_golden();
+    d.key(&Key::Char('p'), t0);
+    assert!(matches!(d.key(&Key::Enter, t0), Some(muthur::destruct::Effect::Verify(_))));
+    d.on_verified(
+        &muthur::ops::runner::RunOutput::Exited {
+            code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+        },
+        t0,
+    );
+    assert!(d.has_password());
+    (d, t0)
 }
 
 fn destruct_terminal() -> Terminal<Wy60Backend<StrictWriter<Vec<u8>, Vt100Dialect>, Vt100Dialect>> {
@@ -952,6 +970,15 @@ fn destruct_golden(name: &str, d: &muthur::destruct::Destruct, now: std::time::I
 
 fn secs(x: f64) -> std::time::Duration {
     std::time::Duration::from_secs_f64(x)
+}
+
+#[test]
+fn destruct_clearance() {
+    let (mut d, t) = destruct_clearance_for_golden();
+    for c in "abc".chars() {
+        d.key(&Key::Char(c), t);
+    }
+    destruct_golden("destruct_clearance", &d, t + secs(0.1));
 }
 
 #[test]

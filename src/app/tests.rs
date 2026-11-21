@@ -1167,7 +1167,6 @@ use std::rc::Rc;
 #[derive(Default)]
 struct ArmerState {
     request: Option<DestructRequest>,
-    sudo_done: Vec<u64>,
 }
 
 /// A Utility stand-in: the first key it receives arms a countdown.
@@ -1176,21 +1175,11 @@ impl Tab for Armer {
     fn render(&mut self, _area: Rect, _buf: &mut Buffer) {}
     fn handle_key(&mut self, _key: &Key) {
         if let Some(total) = self.1.take() {
-            let mut password = Secret::new();
-            password.push('p');
-            password.push('w');
-            self.0.borrow_mut().request = Some(DestructRequest {
-                kind: Kind::Shutdown,
-                total,
-                password,
-            });
+            self.0.borrow_mut().request = Some(DestructRequest { kind: Kind::Shutdown, total });
         }
     }
     fn take_destruct(&mut self) -> Option<DestructRequest> {
         self.0.borrow_mut().request.take()
-    }
-    fn on_sudo_done(&mut self, seq: u64, _out: RunOutput) {
-        self.0.borrow_mut().sudo_done.push(seq);
     }
 }
 
@@ -1200,7 +1189,6 @@ struct Rig {
     app: App,
     t0: Instant,
     calls: Calls,
-    armer: Rc<RefCell<ArmerState>>,
     dir: tempfile::TempDir,
 }
 
@@ -1220,8 +1208,33 @@ impl Rig {
     }
 }
 
+fn running(app: &App) -> bool {
+    matches!(app.destruct.as_ref().map(|d| &d.phase), Some(crate::destruct::Phase::Running))
+}
+
+/// Through the clearance screen: draw it twice, type `pw` once armed, verify
+/// it. Returns the instant the countdown started; the verify call is cleared.
+fn pass_clearance(app: &mut App, calls: &Calls) -> Instant {
+    draw(app);
+    draw(app);
+    let t = Instant::now() + ARMING;
+    app.handle_keys_at(vec![Key::Char('p'), Key::Char('w'), Key::Enter], t);
+    let seq = {
+        let c = calls.borrow();
+        assert_eq!(c.len(), 1, "one verify call");
+        assert_eq!(c[0].1, ["sudo", "-S", "-k", "-p", "", "true"]);
+        assert_eq!(c[0].2, "pw");
+        c[0].0
+    };
+    app.on_sudo_done_at(seq, ok(), t);
+    assert!(running(app));
+    calls.borrow_mut().clear();
+    t
+}
+
 /// An app whose Utility tab arms a `secs`-second countdown on the first key,
-/// armed (by a key batch at the returned `t0`) unless `arm` is false.
+/// past clearance (the countdown started at the returned `t0`) unless `arm`
+/// is false.
 fn destruct_rig(secs: u64, standby: Option<Duration>, arm: bool) -> Rig {
     let dir = tempfile::tempdir().unwrap();
     let audit = crate::ops::audit::shared(crate::ops::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap());
@@ -1234,16 +1247,17 @@ fn destruct_rig(secs: u64, standby: Option<Duration>, arm: bool) -> Rig {
     };
     let armer = Rc::new(RefCell::new(ArmerState::default()));
     let mut app = App::new(chrome())
-        .with_tab(TabId::Utility, Box::new(Armer(armer.clone(), Some(Duration::from_secs(secs)))))
+        .with_tab(TabId::Utility, Box::new(Armer(armer, Some(Duration::from_secs(secs)))))
         .with_destruct(deps);
     if let Some(s) = standby {
         app = app.with_standby(s);
     }
-    let t0 = Instant::now();
+    let mut t0 = Instant::now();
     if arm {
         app.handle_keys_at(vec![Key::Enter], t0);
+        t0 = pass_clearance(&mut app, &calls);
     }
-    Rig { app, t0, calls, armer, dir }
+    Rig { app, t0, calls, dir }
 }
 
 #[test]
@@ -1252,8 +1266,18 @@ fn request_takes_over_screen() {
     r.app.redraw = false;
     r.app.handle_keys_at(vec![Key::Enter], r.t0);
     assert!(r.app.destruct_active() && r.app.redraw);
-    assert!(row(&draw(&mut r.app), 0).contains("EMERGENCY DESTRUCT SYSTEM"));
+    let buf = draw(&mut r.app);
+    assert!(row(&buf, 0).contains("EMERGENCY DESTRUCT SYSTEM"));
+    assert!(row(&buf, 26).contains("CLEARANCE REQUIRED"));
     assert_eq!(r.app.tick_interval(), crate::destruct::TICK);
+    assert_eq!(r.app.cursor(), Some(Position { x: 41, y: 28 }), "at the field");
+    assert!(r.audit().is_empty() && r.calls.borrow().is_empty());
+}
+
+#[test]
+fn no_cursor_once_counting() {
+    let mut r = destruct_rig(60, None, true);
+    draw(&mut r.app);
     assert!(r.app.cursor().is_none());
 }
 
@@ -1327,7 +1351,6 @@ fn failed_execute_shows_reason_and_records() {
     );
     let s = r.strip();
     assert!(s.contains("UNABLE TO COMPLY -- SUDO: 1 INCORRECT PASSWORD ATTEMPT"), "{s}");
-    assert!(r.armer.borrow().sudo_done.is_empty());
     r.app.active = TabId::Cargo;
     r.app.handle_keys_at(vec![Key::Char('x')], r.t0 + Duration::from_secs(12));
     assert!(!r.app.destruct_active() && r.app.redraw);
@@ -1380,17 +1403,11 @@ fn drop_mid_countdown_records_aborted() {
 }
 
 #[test]
-fn other_sudo_results_go_to_utility() {
-    let mut r = destruct_rig(60, None, false);
-    r.app.on_sudo_done(
-        7,
-        RunOutput::Exited {
-            code: 0,
-            stdout: String::new(),
-            stderr: String::new(),
-        },
-    );
-    assert_eq!(r.armer.borrow().sudo_done, [7]);
+fn unknown_sudo_results_are_ignored() {
+    let mut r = destruct_rig(60, None, true);
+    r.app.on_sudo_done(7, ok());
+    assert!(running(&r.app));
+    assert!(r.audit().is_empty());
 }
 
 #[test]
@@ -1430,40 +1447,26 @@ fn quit_after_destruct_quits_on_break() {
     assert!(r.app.quit && !r.app.destruct_active());
 }
 
-/// An app with the real Utility tab, its verify command recorded in the
-/// returned calls; the clock drives the arming delay.
-fn real_utility_app() -> (App, Calls, Rc<std::cell::Cell<Instant>>, tempfile::TempDir) {
+/// An app with the real Utility tab; App's sudo calls are recorded.
+fn real_utility_app() -> (App, Calls, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let audit = crate::ops::audit::shared(crate::ops::audit::AuditLog::open(dir.path().join("audit.jsonl")).unwrap());
     let runs: Calls = Rc::default();
     let r = runs.clone();
-    let clock = Rc::new(std::cell::Cell::new(Instant::now()));
-    let c = clock.clone();
     let util = crate::utility::UtilityTab::with_destruct(crate::utility::UtilityDeps {
-        run: Box::new(move |seq, argv, _to, pw: Secret| r.borrow_mut().push((seq, argv, pw.expose().to_string()))),
-        now: Box::new(move || c.get()),
         audit: audit.clone(),
-        destruct_seconds: 60,
+        destruct_seconds: 10,
     });
     let app = App::new(chrome()).with_tab(TabId::Utility, Box::new(util)).with_destruct(DestructDeps {
-        run: Box::new(|_, _, _, _| {}),
+        run: Box::new(move |seq, argv, _to, pw: Secret| r.borrow_mut().push((seq, argv, pw.expose().to_string()))),
         audit,
         timestamp: Box::new(|| "t".into()),
     });
-    (app, runs, clock, dir)
+    (app, runs, dir)
 }
 
-/// Arm a shutdown on the real Utility tab up to VERIFYING; returns the verify seq.
-fn submit_password(app: &mut App, runs: &Calls, clock: &std::cell::Cell<Instant>, t: Instant) -> u64 {
-    app.handle_keys_at(vec![Key::Char('s'), Key::Enter], t);
-    draw(app);
-    draw(app);
-    clock.set(clock.get() + ARMING + Duration::from_millis(100));
-    app.handle_keys_at(vec![Key::Char('p'), Key::Char('w'), Key::Enter], t);
-    let calls = runs.borrow();
-    assert_eq!(calls.len(), 1, "verify ran");
-    assert_eq!(calls[0].1.last().unwrap(), "true");
-    calls[0].0
+fn audit_lines(dir: &tempfile::TempDir) -> usize {
+    std::fs::read_to_string(dir.path().join("audit.jsonl")).unwrap_or_default().lines().count()
 }
 
 fn ok() -> RunOutput {
@@ -1474,40 +1477,144 @@ fn ok() -> RunOutput {
     }
 }
 
-#[test]
-fn verified_password_starts_countdown_at_once() {
-    let (mut app, runs, clock, _dir) = real_utility_app();
-    let seq = submit_password(&mut app, &runs, &clock, Instant::now());
-    assert!(!app.destruct_active());
-    app.on_sudo_done(seq, ok());
-    assert!(app.destruct_active(), "no further key needed");
+/// S, Enter, draw twice; returns an instant at which the field is armed.
+fn open_clearance(app: &mut App) -> Instant {
+    app.handle_keys_at(vec![Key::Char('s'), Key::Enter], Instant::now());
+    assert!(app.destruct_active());
+    draw(app);
+    draw(app);
+    Instant::now() + ARMING
+}
+
+/// Type `pw`, Enter; returns the verify seq.
+fn submit_pw(app: &mut App, runs: &Calls, t: Instant) -> u64 {
+    app.handle_keys_at(vec![Key::Char('p'), Key::Char('w'), Key::Enter], t);
+    let calls = runs.borrow();
+    assert_eq!(calls.len(), 1, "verify ran");
+    assert_eq!(calls[0].1, ["sudo", "-S", "-k", "-p", "", "true"]);
+    assert_eq!(calls[0].2, "pw");
+    calls[0].0
 }
 
 #[test]
-fn verify_result_after_leaving_utility_never_starts() {
-    let (mut app, runs, clock, _dir) = real_utility_app();
-    let t = Instant::now();
-    let seq = submit_password(&mut app, &runs, &clock, t);
-    app.handle_keys_at(vec![Key::F(3)], t);
-    app.on_sudo_done(seq, ok());
+fn enter_opens_clearance_screen_at_once() {
+    let (mut app, runs, dir) = real_utility_app();
+    app.handle_keys_at(vec![Key::Char('s')], Instant::now());
     assert!(!app.destruct_active());
-    draw(&mut app);
-    app.handle_keys_at(vec![Key::F(2)], t + Duration::from_secs(3600));
-    draw(&mut app);
-    app.handle_keys_at(vec![Key::Char('x')], t + Duration::from_secs(3601));
-    assert!(!app.destruct_active(), "a stale request never starts");
+    app.handle_keys_at(vec![Key::Enter], Instant::now());
+    assert!(app.destruct_active(), "no sudo yet");
+    assert!(runs.borrow().is_empty());
+    let buf = draw(&mut app);
+    assert!(row(&buf, 26).contains("CLEARANCE REQUIRED"));
+    assert_eq!(app.cursor(), Some(Position { x: 41, y: 28 }));
+    app.handle_keys_at(vec![Key::F(2), Key::F(3), Key::Ctrl(']'), Key::Char('q')], Instant::now());
+    assert!(app.destruct_active() && !app.quit && !app.prefix);
+    assert_eq!(app.active, TabId::Utility);
+    assert_eq!(audit_lines(&dir), 0);
 }
 
 #[test]
-fn verify_result_under_prefix_never_starts() {
-    let (mut app, runs, clock, _dir) = real_utility_app();
-    let t = Instant::now();
-    let seq = submit_password(&mut app, &runs, &clock, t);
-    app.handle_keys_at(vec![Key::Ctrl(']')], t);
-    app.on_sudo_done(seq, ok());
+fn keys_after_enter_in_the_same_batch_are_dropped() {
+    let (mut app, _runs, _dir) = real_utility_app();
+    app.handle_keys_at(vec![Key::Char('s'), Key::Enter, Key::Char('x')], Instant::now());
+    assert!(app.destruct_active());
+    let (mut app, _runs, _dir) = real_utility_app();
+    app.handle_keys_at(vec![Key::Char('s'), Key::Enter, Key::Esc], Instant::now());
+    assert!(app.destruct_active(), "the Esc after Enter was dropped");
+}
+
+#[test]
+fn verified_password_counts_down_then_executes() {
+    let (mut app, runs, dir) = real_utility_app();
+    let t = open_clearance(&mut app);
+    let seq = submit_pw(&mut app, &runs, t);
+    assert!(row(&draw(&mut app), 28).contains("VERIFYING"));
+    assert_eq!(app.cursor(), None);
+    app.on_sudo_done_at(seq, ok(), t);
+    assert!(running(&app));
+    assert_eq!(audit_lines(&dir), 0, "nothing audited until the end");
+    app.poll_destruct(t + Duration::from_millis(9950));
+    assert_eq!(runs.borrow().len(), 1);
+    app.poll_destruct(t + Duration::from_secs(10));
+    let calls = runs.borrow().clone();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[1].1, ["sudo", "-S", "-k", "-p", "", "systemctl", "poweroff"]);
+    assert_eq!(calls[1].2, "pw");
+    assert_ne!(calls[0].0, calls[1].0, "own seqs");
+    let raw = std::fs::read_to_string(dir.path().join("audit.jsonl")).unwrap();
+    assert_eq!(raw.lines().count(), 1);
+    assert!(raw.contains("\"exit\":\"executed\"") && !raw.contains("pw"), "{raw}");
+}
+
+#[test]
+fn wrong_password_denied_then_utility_returns() {
+    let (mut app, runs, dir) = real_utility_app();
+    let t = open_clearance(&mut app);
+    let seq = submit_pw(&mut app, &runs, t);
+    app.on_sudo_done_at(
+        seq,
+        RunOutput::Exited {
+            code: 1,
+            stdout: String::new(),
+            stderr: "sudo: 1 incorrect password attempt\n".into(),
+        },
+        t,
+    );
+    assert!(row(&draw(&mut app), 26).contains("CLEARANCE DENIED"));
+    assert!(!app.destruct.as_ref().unwrap().has_password());
+    app.poll_destruct(t + Duration::from_millis(1900));
+    assert!(app.destruct_active());
+    app.poll_destruct(t + Duration::from_secs(2));
+    assert!(!app.destruct_active() && app.redraw);
+    assert_eq!(app.active, TabId::Utility);
+    assert!(row(&draw(&mut app), 0).contains("USCSS TEST"));
+    assert_eq!(runs.borrow().len(), 1, "nothing executed");
+    assert_eq!(audit_lines(&dir), 0);
+}
+
+#[test]
+fn esc_during_clearance_returns_silently() {
+    let (mut app, runs, dir) = real_utility_app();
+    app.handle_keys_at(vec![Key::Char('s'), Key::Enter], Instant::now());
+    app.handle_keys_at(vec![Key::Esc], Instant::now());
     assert!(!app.destruct_active());
-    app.handle_keys_at(vec![Key::Char('r'), Key::Char('x')], t);
+    assert_eq!(app.active, TabId::Utility);
+    assert!(runs.borrow().is_empty());
+    assert_eq!(audit_lines(&dir), 0);
+}
+
+#[test]
+fn break_during_clearance_is_silent() {
+    let (mut app, runs, dir) = real_utility_app();
+    let t = open_clearance(&mut app);
+    app.handle_keys_at(vec![Key::Char('p')], t);
+    app.handle_keys_at(vec![BREAK], t);
+    assert!(!app.destruct_active() && app.settling());
+    assert!(runs.borrow().is_empty());
+    drop(app);
+    assert_eq!(audit_lines(&dir), 0);
+}
+
+#[test]
+fn verify_result_after_esc_is_ignored() {
+    let (mut app, runs, dir) = real_utility_app();
+    let t = open_clearance(&mut app);
+    let seq = submit_pw(&mut app, &runs, t);
+    app.handle_keys_at(vec![Key::Esc], t);
     assert!(!app.destruct_active());
+    app.on_sudo_done_at(seq, ok(), t);
+    assert!(!app.destruct_active());
+    // A second screen is not started by the first one's late result.
+    let t2 = open_clearance(&mut app);
+    app.on_sudo_done_at(seq, ok(), t2);
+    assert!(matches!(
+        app.destruct.as_ref().map(|d| &d.phase),
+        Some(crate::destruct::Phase::Clearance { .. })
+    ));
+    app.poll_destruct(t2 + Duration::from_secs(60));
+    assert_eq!(runs.borrow().len(), 1);
+    drop(app);
+    assert_eq!(audit_lines(&dir), 0);
 }
 
 #[test]
@@ -1528,7 +1635,6 @@ fn break_while_executing_still_records_failed() {
     );
     assert_eq!(r.exits(), ["executed", "failed"]);
     assert_eq!(r.audit()[1]["output"], "FAILED TO POWER OFF");
-    assert!(r.armer.borrow().sudo_done.is_empty(), "not routed to Utility");
     drop(std::mem::replace(&mut r.app, App::new(chrome())));
     assert_eq!(r.exits(), ["executed", "failed"], "nothing more on drop");
 }
