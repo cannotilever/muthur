@@ -30,12 +30,12 @@ install is safe, and uninstalling is clean.
 |---|---|
 | Installer shape | One POSIX `install.sh` that runs on the target host. `make deploy` copies it over with the binary and `deploy/`, then runs it over `ssh -t`. Local and remote installs share one code path. |
 | Login hook | A shared POSIX launcher `~/.local/bin/muthur-login`, plus a one-line hook per shell: fish uses `conf.d/muthur.fish`; bash and zsh get a marked block (`# >>> muthur >>>` … `# <<< muthur <<<`) in their login file. |
-| Adapter | Detected with `udevadm`, confirmed by the operator, or given by flags. Matched by VID, PID and serial; if there is no serial, by USB port path (`KERNELS==`), with a warning. |
+| Adapter | Detected with `udevadm`, confirmed by the operator, or given by flags. Matched by VID, PID and serial; if there is no serial, by the port's `ID_PATH` (`ENV{ID_PATH}==`), with a warning. |
 | Device name | `/dev/muthur-tty` and `serial-getty@muthur-tty`, replacing `wy60`. The installer migrates the old names. |
 | Supported hosts | systemd Linux on x86_64 and aarch64. Non-systemd hosts get a documented manual path only. Alpine references are removed. |
 | First run | If no config exists: copy the example with mode 600 and ask one question (Anthropic key, or OpenAI-compatible `base_url` and `model`). An existing config is never touched. |
 | Binary location | Per-user `~/.local/bin/muthur`, keeping `muthur.old`. |
-| Geometry | MUTHUR sets the tty window size from `[terminal]` itself; the launcher doesn't parse TOML. |
+| Geometry | MUTHUR sets the tty window size from `[terminal]` itself, only when stdin's tty is not a pseudo-terminal; the launcher doesn't parse TOML. |
 | Uninstall | `install.sh --uninstall` removes the hooks, udev rule, drop-in, agent sudoers, nft and sysusers/tmpfiles files. The binary is removed only after a prompt. The `muthur-agent` user, config and logs stay. |
 
 ## Components and file layout
@@ -66,7 +66,8 @@ Placeholders use the form `@NAME@` and are filled by `sed` in `install.sh`:
 
 - `99-muthur-tty.rules.in`: `@MATCH@` is either
   `ATTRS{idVendor}=="V", ATTRS{idProduct}=="P", ATTRS{serial}=="S"` or
-  `ATTRS{idVendor}=="V", ATTRS{idProduct}=="P", KERNELS=="<port path>"`.
+  `ATTRS{idVendor}=="V", ATTRS{idProduct}=="P"` plus `ENV{ID_PATH}=="<id_path>"` (a property of the tty
+  device itself, so no parent walk is needed).
   The rest is the current rule with `SYMLINK+="muthur-tty"` and
   `ENV{SYSTEMD_WANTS}+="serial-getty@muthur-tty.service"`.
 - `override.conf.in`: `@AGETTY@` (from `command -v agetty`, then
@@ -91,10 +92,12 @@ when MUTHUR exits. The hooks invoke it only for interactive login shells:
 
 ### Geometry in MUTHUR
 
-When MUTHUR runs on stdio and stdin is a tty, it sets `TIOCSWINSZ` to
+When MUTHUR runs on stdio and stdin is a tty that is not a pseudo-terminal
+(`ttyname` not under `/dev/pts/`), it sets `TIOCSWINSZ` to
 `[terminal] cols × rows` at startup and leaves it set on exit, so the shell
-afterwards sees the right size. On a `--device` link, the window size isn't
-touched. A failure to set it is logged, not fatal.
+afterwards sees the right size. On a pseudo-terminal (for example `cargo run`
+in a desktop terminal) or a `--device` link, the window size isn't touched,
+so the emulator's pty is never resized. A failure to set it is logged, not fatal.
 
 ### Shell tab default
 
@@ -111,7 +114,7 @@ hosts that haven't migrated.
 ## `install.sh` flow
 
 ```
-install.sh [--yes] [--shell bash|zsh|fish] [--vid V --pid P [--serial S | --port PATH]]
+install.sh [--yes] [--shell bash|zsh|fish] [--vid V --pid P [--serial S | --port ID_PATH]]
            [--baud N] [--no-agent] [--no-system] [--bin PATH] [--uninstall]
 ```
 
@@ -131,11 +134,10 @@ runs as the operator and calls `sudo` for system steps. Every step prints
    `PATH`, warn (the hooks use absolute paths, so login still works).
 3. **Adapter** (skipped with `--no-system`). Unless flags give VID, PID and
    a serial or port: list `/dev/ttyUSB*` and `/dev/ttyACM*`, and for each read
-   `ID_VENDOR_ID`, `ID_MODEL_ID`, `ID_SERIAL_SHORT`, `ID_PATH` / the parent
-   USB device's `KERNELS`, and the `/dev/serial/by-id` name from
+   `ID_VENDOR_ID`, `ID_MODEL_ID`, `ID_SERIAL_SHORT`, `ID_PATH`, and the `/dev/serial/by-id` name from
    `udevadm info`. With none found, abort with a hint to plug the adapter in
    or pass flags. With one, confirm it. With several, pick by number. With no
-   serial, use the port path and warn that moving the adapter to another port
+   serial, use `ID_PATH` and warn that moving the adapter to another port
    breaks the match.
 4. **System files** (skipped with `--no-system`).
    - Render and install the udev rule and the getty drop-in.
@@ -245,8 +247,8 @@ Rust:
 
 - Shell default: passwd shell, then `$SHELL`, then `/bin/sh`.
 - Deny rules: `muthur-tty` lockout cases next to the existing `wy60` ones.
-- Window size: on a PTY, the startup routine sets `cols × rows` from
-  `[terminal]`.
+- Window size: the startup routine sets `cols × rows` from `[terminal]` on a
+  non-pty tty, and leaves a pseudo-terminal (`/dev/pts/`) alone.
 
 Manual (the operator):
 

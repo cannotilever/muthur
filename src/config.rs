@@ -75,16 +75,41 @@ impl Default for ChromeConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct ShellSection {
-    pub command: String,
+    /// Unset means the login shell; see `resolved_command`.
+    pub command: Option<String>,
     pub args: Vec<String>,
     /// Lines of history kept for `^] [`.
     pub scrollback: usize,
 }
 
+impl ShellSection {
+    pub fn resolved_command(&self) -> String {
+        self.command.clone().unwrap_or_else(default_shell)
+    }
+}
+
+/// The login shell: passwd entry, then `$SHELL`, then `/bin/sh`.
+pub fn default_shell() -> String {
+    let passwd = nix::unistd::User::from_uid(nix::unistd::getuid())
+        .ok()
+        .flatten()
+        .map(|u| u.shell.to_string_lossy().into_owned());
+    pick_shell(passwd.as_deref(), std::env::var("SHELL").ok().as_deref())
+}
+
+fn pick_shell(passwd: Option<&str>, env: Option<&str>) -> String {
+    [passwd, env]
+        .into_iter()
+        .flatten()
+        .find(|s| !s.is_empty())
+        .unwrap_or("/bin/sh")
+        .to_string()
+}
+
 impl Default for ShellSection {
     fn default() -> Self {
         Self {
-            command: "fish".into(),
+            command: None,
             args: Vec::new(),
             scrollback: 1000,
         }
@@ -657,7 +682,28 @@ mod tests {
         assert_eq!((c.terminal.cols, c.terminal.rows), (80, 43));
         assert_eq!(c.chrome.year_offset, 111);
         assert!(c.chrome.ship_name.is_none() && c.keys.is_empty());
-        assert_eq!((c.shell.command.as_str(), c.shell.scrollback), ("fish", 1000));
+        assert_eq!((c.shell.command.clone(), c.shell.scrollback), (None, 1000));
+    }
+
+    #[test]
+    fn shell_command_unset_by_default() {
+        let c = Config::default();
+        assert_eq!(c.shell.command, None);
+        assert_eq!(c.shell.scrollback, 1000);
+    }
+
+    #[test]
+    fn shell_command_from_config_wins() {
+        let c: Config = toml::from_str("[shell]\ncommand = \"zsh\"\n").unwrap();
+        assert_eq!(c.shell.resolved_command(), "zsh");
+    }
+
+    #[test]
+    fn pick_shell_order() {
+        assert_eq!(pick_shell(Some("/usr/bin/zsh"), Some("/bin/bash")), "/usr/bin/zsh");
+        assert_eq!(pick_shell(None, Some("/bin/bash")), "/bin/bash");
+        assert_eq!(pick_shell(Some(""), None), "/bin/sh");
+        assert_eq!(pick_shell(None, Some("")), "/bin/sh");
     }
 
     #[test]

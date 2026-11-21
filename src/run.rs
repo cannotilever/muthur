@@ -760,7 +760,7 @@ pub fn run(cfg: &Config, config_path: &std::path::Path, strict: bool) -> anyhow:
     } = open_session(cfg, strict)?;
     let (cols, rows) = (cfg.terminal.cols, cfg.terminal.rows);
     let shell_cfg = ShellConfig {
-        command: cfg.shell.command.clone(),
+        command: cfg.shell.resolved_command(),
         args: cfg.shell.args.clone(),
         scrollback: cfg.shell.scrollback,
     };

@@ -38,7 +38,7 @@ standby_minutes = 10
 
 # ── SHELL folder (F4) ────────────────────────────────────────────────────────
 [shell]
-command = "fish"
+# command = "fish"   # default: your login shell (passwd), else $SHELL, else /bin/sh
 args = []
 # Lines of history kept for ^] [
 scrollback = 1000
