@@ -603,3 +603,39 @@ mod plain {
         assert!(log.contains(&format!("\"system_hash\":\"{hash}\"")), "{log}");
     }
 }
+
+#[test]
+fn user_and_command_text_is_underlined_after_the_marker() {
+    let e = [Entry::User("ABC DEF".into()), Entry::Reply("OK".into()), Entry::Command("ls -la".into())];
+    let lines = view::transcript_lines(&e, None, 5);
+    let got: Vec<(&str, Option<usize>)> = lines.iter().map(|l| (l.text.as_str(), l.underline_from)).collect();
+    assert_eq!(
+        got,
+        vec![
+            (view::BANNER, None),
+            ("", None),
+            ("> ABC", Some(2)),
+            ("DEF", Some(0)),
+            ("", None),
+            ("OK", None),
+            ("", None),
+            ("$ ls", Some(2)),
+            ("-la", Some(0)),
+        ]
+    );
+}
+
+#[test]
+fn rendered_user_message_is_underlined_but_not_its_marker() {
+    let mut h = harness();
+    submit(&mut h, "status");
+    let area = Rect::new(0, 0, 61, 40);
+    let mut buf = Buffer::empty(area);
+    h.t.render(area, &mut buf);
+    let y = (0..40).find(|&y| (0..61).map(|x| buf[(x, y)].symbol()).collect::<String>().contains("> STATUS")).unwrap();
+    let x0 = (0..61).find(|&x| buf[(x, y)].symbol() == ">").unwrap();
+    let ul = |x: u16| buf[(x, y)].modifier.contains(Modifier::UNDERLINED);
+    assert!(!ul(x0) && !ul(x0 + 1));
+    assert!((x0 + 2..x0 + 8).all(ul));
+    assert!(!ul(x0 + 8));
+}

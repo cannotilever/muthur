@@ -743,7 +743,7 @@ fn redisplay_closes_a_trailing_direct_link() {
 #[test]
 fn harness_lines_sit_together() {
     let e = [Entry::Command("x".into()), Entry::Harness("RUN  ls  [ALLOW]".into()), Entry::Harness("EXIT 0  1 LINES  0.0 S".into())];
-    let lines = view::transcript_lines(&e, None, 40);
+    let lines: Vec<String> = view::transcript_lines(&e, None, 40).into_iter().map(|l| l.text).collect();
     assert_eq!(lines, vec![view::BANNER, "", "$ x", "", "RUN  ls  [ALLOW]", "EXIT 0  1 LINES  0.0 S"]);
 }
 

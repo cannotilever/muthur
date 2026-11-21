@@ -990,10 +990,10 @@ impl Tab for MuthurTab {
         let pending = self.pending_block();
         if !pending.is_empty() {
             if !matches!(self.transcript.last(), Some(Entry::Harness(_))) {
-                lines.push(String::new());
+                lines.push(view::Line::plain(String::new()));
             }
             for p in pending {
-                lines.extend(view::wrap_hanging(&ascii_safe(&p), w, 5));
+                lines.extend(view::wrap_hanging(&ascii_safe(&p), w, 5).into_iter().map(view::Line::plain));
             }
         }
         let h = usize::from(rows);
@@ -1008,7 +1008,16 @@ impl Tab for MuthurTab {
         let end = lines.len() - self.scroll;
         let start = end.saturating_sub(h);
         for (i, l) in lines[start..end].iter().enumerate() {
-            put(buf, x, inner.y + i as u16, w, l, Style::default());
+            let y = inner.y + i as u16;
+            put(buf, x, y, w, &l.text, Style::default());
+            if let Some(from) = l.underline_from {
+                // Text is ASCII, so byte offsets are columns.
+                let from_x = x.saturating_add(from as u16);
+                let to_x = (x + w).min(x.saturating_add(l.text.len() as u16));
+                if from_x < to_x {
+                    buf.set_style(Rect::new(from_x, y, to_x - from_x, 1), Style::default().add_modifier(Modifier::UNDERLINED));
+                }
+            }
         }
 
         separator(buf, area, sep_y);

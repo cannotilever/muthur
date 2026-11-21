@@ -263,48 +263,6 @@ fn ship_name(cfg: &Config) -> String {
     })
 }
 
-/// Chat log at `$XDG_STATE_HOME/muthur/chat.jsonl`, or a temp file (no
-/// persistence across runs) when that cannot be opened.
-/// Create a fresh, empty 0600 chat log in `dir`. Uses O_CREAT|O_EXCL, so a
-/// pre-created file or symlink is never opened or removed; a taken name is
-/// skipped in favour of `muthur-chat-<pid>-<n>.jsonl`.
-fn create_temp_chat_log(dir: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let pid = std::process::id();
-    for n in 0..1000u32 {
-        let name = if n == 0 { format!("muthur-chat-{pid}.jsonl") } else { format!("muthur-chat-{pid}-{n}.jsonl") };
-        let p = dir.join(name);
-        match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&p) {
-            Ok(_) => return Ok(p),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e),
-        }
-    }
-    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "no free temporary chat log name"))
-}
-
-fn open_temp_chat_log() -> anyhow::Result<crate::chatlog::ChatLog> {
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .filter(|d| !d.is_empty())
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    crate::chatlog::ChatLog::open(create_temp_chat_log(&dir)?)
-}
-
-fn open_chat_log() -> anyhow::Result<crate::chatlog::ChatLog> {
-    let Some(dir) = dirs::state_dir() else {
-        tracing::error!("no state directory, chat history will not persist");
-        return open_temp_chat_log();
-    };
-    match crate::chatlog::ChatLog::open(dir.join("muthur/chat.jsonl")) {
-        Ok(l) => Ok(l),
-        Err(e) => {
-            tracing::error!("chat log unavailable, history will not persist: {e:#}");
-            open_temp_chat_log()
-        }
-    }
-}
-
 /// What startup settles for the technical agent before the TUI starts.
 #[cfg(feature = "agent")]
 struct TechStartup {
@@ -441,7 +399,8 @@ fn build_muthur(
     audit: crate::ops::audit::SharedAudit,
     _startup: TechStartup,
 ) -> anyhow::Result<crate::muthur::MuthurTab> {
-    let log = open_chat_log()?;
+    // Each launch starts a clean session; nothing is kept on disk.
+    let log = crate::chatlog::ChatLog::memory();
     let deps = crate::muthur::MuthurDeps {
         spawn: spawner(llm_client(cfg.muthur.clone(), "persona"), None, tx),
         now: Box::new(std::time::Instant::now),
@@ -461,7 +420,8 @@ fn build_muthur(
     startup: TechStartup,
 ) -> anyhow::Result<crate::muthur::MuthurTab> {
     use crate::muthur::{AgentDeps, MuthurDeps, MuthurTab};
-    let log = open_chat_log()?;
+    // Each launch starts a clean session; nothing is kept on disk.
+    let log = crate::chatlog::ChatLog::memory();
     let tool_tx = tx.clone();
     let tech_cfg = cfg.muthur.technical_cfg();
     let persona = llm_client(cfg.muthur.clone(), "persona");
@@ -1174,25 +1134,6 @@ mod tests {
         event_loop(&mut app, &mut t, &mut rx, &mut no_pty(), || OUTQ_LOW, now).await.unwrap();
         let out = String::from_utf8(t.backend().writer().clone()).unwrap();
         assert!(!out.contains("MU/TH/UR"), "drew while the queue was full");
-    }
-
-    #[test]
-    fn temp_chat_log_never_reuses_existing_paths() {
-        use std::os::unix::fs::PermissionsExt;
-        let d = tempfile::tempdir().unwrap();
-        let pid = std::process::id();
-        let planted = d.path().join(format!("muthur-chat-{pid}.jsonl"));
-        std::fs::write(&planted, "planted").unwrap();
-        let target = d.path().join("victim");
-        std::fs::write(&target, "victim").unwrap();
-        std::os::unix::fs::symlink(&target, d.path().join(format!("muthur-chat-{pid}-1.jsonl"))).unwrap();
-        let p = create_temp_chat_log(d.path()).unwrap();
-        assert_eq!(p, d.path().join(format!("muthur-chat-{pid}-2.jsonl")));
-        assert_eq!(std::fs::read_to_string(&planted).unwrap(), "planted");
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "victim");
-        let mut l = crate::chatlog::ChatLog::open(p.clone()).unwrap();
-        l.append_user("A", "t", crate::ops::AgentId::Muthur).unwrap();
-        assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
     }
 
     #[tokio::test]

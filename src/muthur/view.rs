@@ -21,6 +21,21 @@ pub enum Entry {
     Harness(String),
 }
 
+/// One transcript row. `underline_from` is the column the underline starts
+/// at: past the `> `/`$ ` marker on a typed line's first row, 0 on the rows
+/// it wraps onto, `None` on everything else.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Line {
+    pub text: String,
+    pub underline_from: Option<usize>,
+}
+
+impl Line {
+    pub fn plain(text: String) -> Self {
+        Line { text, underline_from: None }
+    }
+}
+
 /// Continuation indent of a wrapped harness line.
 const HANGING: usize = 5;
 
@@ -73,30 +88,34 @@ fn wrap_para(para: &str, first: usize, rest_width: usize) -> Vec<String> {
 
 /// All transcript lines at `width`: banner, then each entry after a blank line
 /// (a harness line right after another has none), then the reply being
-/// revealed (with the block cursor) if any.
-pub fn transcript_lines(entries: &[Entry], revealing: Option<&str>, width: u16) -> Vec<String> {
-    let mut lines = vec![BANNER.to_string()];
+/// revealed (with the block cursor) if any. What the operator typed (`User`
+/// and `Command`) is underlined, its marker excepted.
+pub fn transcript_lines(entries: &[Entry], revealing: Option<&str>, width: u16) -> Vec<Line> {
+    let mut lines = vec![Line::plain(BANNER.to_string())];
     let mut prev_harness = false;
     for e in entries {
         let harness = matches!(e, Entry::Harness(_));
         if !(harness && prev_harness) {
-            lines.push(String::new());
+            lines.push(Line::plain(String::new()));
         }
         prev_harness = harness;
-        let text = match e {
-            Entry::User(s) => format!("> {s}"),
-            Entry::Command(s) => format!("$ {s}"),
-            Entry::Reply(s) | Entry::Note(s) => s.clone(),
+        let (text, typed) = match e {
+            Entry::User(s) => (format!("> {s}"), true),
+            Entry::Command(s) => (format!("$ {s}"), true),
+            Entry::Reply(s) | Entry::Note(s) => (s.clone(), false),
             Entry::Harness(s) => {
-                lines.extend(wrap_hanging(&ascii_safe(s), width, HANGING));
+                lines.extend(wrap_hanging(&ascii_safe(s), width, HANGING).into_iter().map(Line::plain));
                 continue;
             }
         };
-        lines.extend(wrap(&ascii_safe(&text), width));
+        lines.extend(wrap(&ascii_safe(&text), width).into_iter().enumerate().map(|(i, text)| {
+            let underline_from = typed.then(|| if i == 0 { text.len().min(2) } else { 0 });
+            Line { text, underline_from }
+        }));
     }
     if let Some(v) = revealing {
-        lines.push(String::new());
-        lines.extend(wrap(&format!("{v}{CURSOR}"), width));
+        lines.push(Line::plain(String::new()));
+        lines.extend(wrap(&format!("{v}{CURSOR}"), width).into_iter().map(Line::plain));
     }
     lines
 }

@@ -1,4 +1,5 @@
-//! Append-only JSONL conversation log and message-window rules.
+//! Append-only conversation log (in memory, optionally mirrored to JSONL)
+//! and message-window rules.
 use crate::config::Provider;
 use crate::llm::anthropic::replay_blocks;
 use crate::ops::AgentId;
@@ -76,8 +77,11 @@ pub struct Exchange {
     pub delegations: Vec<Delegation>,
 }
 
+/// The conversation records, kept in memory and, when opened on a path,
+/// mirrored to a JSONL file.
 pub struct ChatLog {
-    path: PathBuf,
+    /// `None`: memory only; nothing outlives the process.
+    path: Option<PathBuf>,
     records: Vec<Value>,
     next_seq: u64,
     needs_newline: bool,
@@ -140,26 +144,33 @@ impl ChatLog {
                 }
             }
         }
-        Ok(Self { path, records, next_seq, needs_newline })
+        Ok(Self { path: Some(path), records, next_seq, needs_newline })
+    }
+
+    /// A log held only in memory: it starts empty and is gone when dropped.
+    pub fn memory() -> Self {
+        Self { path: None, records: Vec::new(), next_seq: 0, needs_newline: false }
     }
 
     fn write(&mut self, mut rec: Value) -> std::io::Result<u64> {
         let s = self.next_seq;
         rec["v"] = json!(1);
         rec["seq"] = json!(s);
-        let mut line = String::new();
-        if self.needs_newline {
+        if let Some(path) = &self.path {
+            let mut line = String::new();
+            if self.needs_newline {
+                line.push('\n');
+            }
+            line.push_str(&rec.to_string());
             line.push('\n');
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(path)?;
+            if let Err(e) = f.write_all(line.as_bytes()) {
+                // A partial line may be on disk; start the next record on a fresh line.
+                self.needs_newline = true;
+                return Err(e);
+            }
+            self.needs_newline = false;
         }
-        line.push_str(&rec.to_string());
-        line.push('\n');
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(&self.path)?;
-        if let Err(e) = f.write_all(line.as_bytes()) {
-            // A partial line may be on disk; start the next record on a fresh line.
-            self.needs_newline = true;
-            return Err(e);
-        }
-        self.needs_newline = false;
         self.next_seq += 1;
         self.records.push(rec);
         Ok(s)
@@ -409,9 +420,11 @@ impl ChatLog {
     }
 
     pub fn purge(&mut self) -> std::io::Result<()> {
-        match std::fs::remove_file(&self.path) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
-            _ => {}
+        if let Some(path) = &self.path {
+            match std::fs::remove_file(path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+                _ => {}
+            }
         }
         self.records.clear();
         self.next_seq = 0;
@@ -557,6 +570,21 @@ mod tests {
     }
 
     #[test]
+    fn memory_log_keeps_records_without_a_file() {
+        let mut l = ChatLog::memory();
+        l.append_user("A", "t", AgentId::Muthur).unwrap();
+        l.append_assistant(asst("B", None), "t").unwrap();
+        l.append_user("C", "t", AgentId::Muthur).unwrap();
+        assert_eq!(l.history().len(), 2);
+        let w = l.window(&Lane::Muthur, Provider::Anthropic, "m", "SYS", "", 200000, false).unwrap();
+        assert_eq!(w.len(), 3);
+        assert_eq!(w[2].content, t("C"));
+        l.purge().unwrap();
+        assert!(l.history().is_empty());
+        assert_eq!(l.append_user("D", "t", AgentId::Muthur).unwrap(), 0);
+    }
+
+    #[test]
     fn refused_pairs_excluded_but_shown() {
         let (_d, mut l) = log();
         l.append_user("A", "t", AgentId::Muthur).unwrap();
@@ -610,7 +638,7 @@ mod tests {
     fn failed_write_forces_fresh_line() {
         let (_d, mut l) = log();
         l.append_user("A", "t", AgentId::Muthur).unwrap();
-        l.path = PathBuf::from("/dev/full");
+        l.path = Some(PathBuf::from("/dev/full"));
         assert!(l.append_user("B", "t", AgentId::Muthur).is_err());
         assert!(l.needs_newline);
     }

@@ -142,7 +142,7 @@ Single Rust crate, tokio runtime.
 | `tabs::muthur` | Chat UI (see below). |
 | `tabs::shell` | PTY + virtual terminal + translation (see below). |
 | `llm` | Streaming LLM client (reqwest + rustls/ring, no aws-lc): Anthropic Messages and OpenAI-compatible protocols, SSE parsing, typed `LlmError`s, idle timeout. Each request runs as a tokio task and sends `Event::Llm` to the loop. Deploy note: Alpine needs the `ca-certificates` package for TLS. |
-| `chatlog` | Append-only JSONL chat history at `$XDG_STATE_HOME/muthur/chat.jsonl` (epochs, context window/trim, purge). |
+| `chatlog` | Append-only chat history, in memory for the session (epochs, context window/trim, purge); can mirror to JSONL, unused at runtime. |
 | `ops` | Always built: `Runner` (fixed-argv execution, timeouts, stdin, kill), JSONL audit log, output `cap`. Shared with the Cargo tab. |
 | `tools` | Feature `agent`: per-agent tool registry, fixed tools (`exec`), `run` (`shell`), deny rules (`deny`), network target gate (`netgate`). |
 | `review` | Feature `agent`: the reviewer LLM request and verdict. |
@@ -176,9 +176,9 @@ Single Rust crate, tokio runtime.
   PgUp/PgDn scrollback.
 - System prompt: terse MU/TH/UR 6000 persona; the server is "the ship";
   plain text only. A light post-processor strips residual markdown.
-- Memory: one persistent conversation log on disk (JSONL), oldest turns
-  trimmed/summarised to fit the context window; a purge command clears it.
-  Format leaves room for multiple sessions later.
+- Memory: one conversation log per launch, held in memory only, oldest
+  turns trimmed to fit the context window; a purge command clears it.
+- What the operator typed (`> ` and `$ ` lines) is underlined, the marker excepted.
 - Errors (endpoint down etc.) shown in-character (`UNABLE TO COMPLY — …`).
 
 #### MU/TH/UR configuration
@@ -205,11 +205,11 @@ All keys live in the `[muthur]` table of the config file (which must be
   `max_model_len` (the chars/4 estimate is rough and the reply needs room).
 - **vLLM tools:** tool calling (both agents and the reviewer) needs the server started with
   `--enable-auto-tool-choice --tool-call-parser <parser>` (parser depends on the model).
-- **Chat log:** `~/.local/state/muthur/chat.jsonl`, mode `0600`, append-only
-  JSONL. If it cannot be opened, a fresh temporary log is created in
-  `$XDG_RUNTIME_DIR` (or the temp dir) and history does not persist.
-  Changing the system prompt, provider or model starts a new epoch, so older
-  thinking blocks are not replayed. `/PURGE` deletes it.
+- **Chat log:** in memory only; each launch starts a clean session and
+  nothing is written to disk (an old `~/.local/state/muthur/chat.jsonl` from
+  earlier versions is ignored). Changing the system prompt, provider or model
+  starts a new epoch, so older thinking blocks are not replayed. `/PURGE`
+  clears it.
 - **Token usage** for each turn (input, cache write/read, output) is logged to
   `muthur.log` (anthropic; the openai stream reports none). Request/response
   bodies and headers are never logged.
@@ -384,6 +384,7 @@ for multi-server monitoring — tools then get a "which host" parameter.
 | **M6** | Splash, deploy tooling (udev rule, getty override, fish snippet, make deploy). Spec: docs/superpowers/specs/2026-11-19-m6-splash-deploy-design.md |
 | **M7** | Technical agent: `/DIRECT`, `run` as `muthur-agent` or root, reviewer, network isolation, `agent` feature. Spec: docs/superpowers/specs/2026-11-19-m7-technical-agent-design.md |
 | **M8** | Persona `delegate(task)`: MU/TH/UR hands self-contained tasks to the technical agent; relayed or verbatim report. Spec: docs/superpowers/specs/2026-11-20-m8-delegate-design.md |
+| **M9** | Chat UI: operator lines underlined; chat history in memory only, clean per launch. |
 
 ## Deferred (post-v1)
 
@@ -391,7 +392,7 @@ for multi-server monitoring — tools then get a "which host" parameter.
 - Hardware (RTS/CTS) flow control.
 - Proactive alerts from MU/TH/UR (event bus already accommodates them).
 - InfluxDB metrics source / multi-server.
-- Multiple chat sessions ("folders").
+- Persistent chat history, multiple chat sessions ("folders").
 - Idle lock (v1 relies on the terminal's own screen blanking).
 - Cargo: dedicated agent tools that act on containers (M7 agents only read them, or use `run`); live log following;
   remove / pull / exec; acting on several containers at once; a sidebar
