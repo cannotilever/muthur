@@ -5,6 +5,7 @@ pub mod backend;
 pub mod cargo;
 pub mod chatlog;
 pub mod config;
+pub mod destruct;
 pub mod dialect;
 pub mod input;
 pub mod link;
