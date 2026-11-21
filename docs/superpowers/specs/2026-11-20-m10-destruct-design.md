@@ -117,7 +117,7 @@ frame normal, the X normal / bold / dim by phase.
 
 ```
 row 0    EMERGENCY DESTRUCT SYSTEM ── SHUTDOWN
-rows ~3–37   the octagon (about 64 columns × 34 rows), centred
+rows ~3–37   the octagon (columns 8–72 × rows 3–37), centred on column 40
 row 41/42    the questionnaire strip (reverse video)
 ```
 
@@ -131,7 +131,9 @@ row 41/42    the questionnaire strip (reverse video)
   digit row is `x1x0x0x8x6x` in double-size characters, with normal-size frame
   rows above (`lqwqwqwqwqk`-style, `w` on the even columns where the
   double-width dividers fall) and below (`mqvqvq…j`). Minutes and tenths are
-  normal, seconds are **bold**. The octagon edge and the X segments on the two
+  normal, seconds are **bold**. Double-width cell `k` covers screen columns
+  `2k` and `2k+1`, so both vertical edges sit on even columns (8 and 72) to
+  line up across the two kinds of row. The octagon edge and the X segments on the two
   double-height rows are drawn at double-width resolution. Uses the existing
   line-attribute path (`App::line_attrs`, as the splash and standby do).
 - **Questionnaire strip:** the question (or the current retort) on the left,
@@ -139,24 +141,27 @@ row 41/42    the questionnaire strip (reverse video)
 
 ### Animation
 
-The phase is a pure function of time since arming. The cycle is 3 s:
+The phase is a pure function of time since arming. The cycle is 6 s (the
+narrowing steps were tripled from 0.5 s after hardware testing: at 0.5 s the
+redraws crowded out typed answers and the clock on the 38400-baud line):
 
 | Time in cycle | X |
 |---|---|
-| 0.0–0.5 s | arms wide apart (gap about 6 columns), normal |
-| 0.5–1.0 s | gap about 4 |
-| 1.0–1.5 s | gap about 2 |
-| 1.5–2.0 s | merged into single lines, **bold** (the glow) |
-| 2.0–2.5 s | single lines, dim |
-| 2.5–3.0 s | blank (empty octagon) |
+| 0.0–1.5 s | arms wide apart (gap about 6 columns), normal |
+| 1.5–3.0 s | gap about 4 |
+| 3.0–4.5 s | gap about 2 |
+| 4.5–5.0 s | merged into single lines, **bold** (the glow) |
+| 5.0–5.5 s | single lines, dim |
+| 5.5–6.0 s | blank (empty octagon) |
 
 Both the phase and the counter come from the clock, never from a frame count,
 so a slowed line (XON/XOFF) skips frames without the clock drifting.
 
 **Byte budget** (38400 baud, about 3.8 KB/s): a convergence step is about
 1.2 KB, a bold, dim or blank change about 0.7 KB, reappearing wide about
-1.4 KB, the tenths digit about 30 B ten times a second. That averages about
-2.5 KB/s. A golden test holds the largest single step under a fixed budget.
+1.4 KB, the tenths digit about 30 B ten times a second. Over the 6 s cycle
+that averages about 1.3 KB/s, with short bursts around the glow. A golden
+test holds the largest single step under a fixed budget.
 
 ## The abort questionnaire
 

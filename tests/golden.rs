@@ -963,7 +963,7 @@ fn destruct_wide() {
 #[test]
 fn destruct_glow() {
     let (d, t0) = destruct_for_golden();
-    destruct_golden("destruct_glow", &d, t0 + secs(1.6));
+    destruct_golden("destruct_glow", &d, t0 + secs(4.6));
 }
 
 #[test]
@@ -996,7 +996,7 @@ fn destruct_steps_fit_the_wire_budget() {
     let (d, t0) = destruct_for_golden();
     let mut t = destruct_terminal();
     let mut sizes = Vec::new();
-    for at in [0.0, 0.6, 1.2, 1.6, 2.1, 2.6, 3.1] {
+    for at in [0.0, 1.6, 3.1, 4.6, 5.1, 5.6, 6.1] {
         sizes.push((at, destruct_frame(&mut t, &d, t0 + secs(at))));
     }
     println!("destruct frame bytes: {sizes:?}");

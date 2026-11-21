@@ -14,7 +14,7 @@ use crate::dialect::LineAttr;
 const HEADING_ROW: u16 = 0;
 /// Octagon outline: left/right columns, top/bottom rows, corner cut size.
 const OCT_LEFT: i32 = 8;
-const OCT_RIGHT: i32 = 71;
+const OCT_RIGHT: i32 = 72;
 const OCT_TOP: i32 = 3;
 const OCT_BOTTOM: i32 = 37;
 const OCT_CUT: i32 = 8;
@@ -28,15 +28,17 @@ const COUNTER_ROW: u16 = 20;
 const BOX_FIRST: u16 = 4;
 const BOX_LAST: u16 = 14;
 /// Double-width cells where the X may go on the counter rows.
-const X_HALF_CELLS: std::ops::RangeInclusive<i32> = 15..=34;
-/// The octagon's right edge in double-width cells.
-const RIGHT_HALF_CELL: u16 = 35;
+const X_HALF_CELLS: std::ops::RangeInclusive<i32> = 15..=35;
+/// The octagon's right edge in double-width cells. A double-width cell `k`
+/// covers screen columns `2k` and `2k+1`, so both edges sit on even columns
+/// (`OCT_LEFT`, `OCT_RIGHT`) to line up with the single-width rows.
+const RIGHT_HALF_CELL: u16 = (OCT_RIGHT / 2) as u16;
 const STRIP_ROW: u16 = 42;
 const STRIP_FIRST: u16 = 1;
 const STRIP_LAST: u16 = 78;
 /// The frozen strip turns to `SELF-DESTRUCT ABORTED` after this.
 const ABORTED_AFTER: Duration = Duration::from_millis(1500);
-const CYCLE_MS: u128 = 3000;
+const CYCLE_MS: u128 = 6000;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum XPhase {
@@ -50,14 +52,15 @@ pub enum XPhase {
     Blank,
 }
 
-/// The X's phase `elapsed` after arming: a 3 s cycle.
+/// The X's phase `elapsed` after arming: a 6 s cycle. The narrowing steps are
+/// slow (1.5 s each) so the link has room for typing and the clock.
 pub fn x_phase(elapsed: Duration) -> XPhase {
     match elapsed.as_millis() % CYCLE_MS {
-        0..500 => XPhase::Gap(6),
-        500..1000 => XPhase::Gap(4),
-        1000..1500 => XPhase::Gap(2),
-        1500..2000 => XPhase::Glow,
-        2000..2500 => XPhase::Dim,
+        0..1500 => XPhase::Gap(6),
+        1500..3000 => XPhase::Gap(4),
+        3000..4500 => XPhase::Gap(2),
+        4500..5000 => XPhase::Glow,
+        5000..5500 => XPhase::Dim,
         _ => XPhase::Blank,
     }
 }
@@ -298,9 +301,24 @@ mod tests {
         buf
     }
 
+    /// A double-width cell `k` starts at screen column `2k`: the counter rows'
+    /// edges must land on the same columns as the single-width rows' edges.
+    #[test]
+    fn counter_row_edges_line_up_with_octagon() {
+        assert_eq!(i32::from(BOX_FIRST) * 2, OCT_LEFT);
+        assert_eq!(i32::from(RIGHT_HALF_CELL) * 2, OCT_RIGHT);
+        let buf = draw(
+            &Destruct::preview(super::super::Kind::Shutdown, Duration::from_secs(70), Instant::now(), 1),
+            Instant::now(),
+        );
+        // Single-width row 25 and double-width row 20 both carry the right edge.
+        assert_eq!(buf[(OCT_RIGHT as u16, 25)].symbol(), "│");
+        assert_eq!(buf[(RIGHT_HALF_CELL, COUNTER_ROW)].symbol(), "│");
+    }
+
     #[test]
     fn x_phase_cycle() {
-        let got: Vec<XPhase> = [0.0, 0.6, 1.2, 1.6, 2.1, 2.6, 3.0].into_iter().map(|t| x_phase(s(t))).collect();
+        let got: Vec<XPhase> = [0.0, 1.6, 3.1, 4.6, 5.1, 5.6, 6.0].into_iter().map(|t| x_phase(s(t))).collect();
         assert_eq!(
             got,
             [
@@ -352,11 +370,11 @@ mod tests {
     #[test]
     fn glow_is_bold_dim_is_dim() {
         let (d, t0) = mk(70);
-        let glow = x_cells(&draw(&d, t0 + s(1.6)));
+        let glow = x_cells(&draw(&d, t0 + s(4.6)));
         assert!(glow.iter().any(|&(_, _, m)| m.contains(Modifier::BOLD)), "{glow:?}");
-        let dim = x_cells(&draw(&d, t0 + s(2.1)));
+        let dim = x_cells(&draw(&d, t0 + s(5.1)));
         assert!(!dim.is_empty() && dim.iter().all(|&(_, _, m)| m.contains(Modifier::DIM)), "{dim:?}");
-        let blank = x_cells(&draw(&d, t0 + s(2.6)));
+        let blank = x_cells(&draw(&d, t0 + s(5.6)));
         assert!(blank.is_empty(), "{blank:?}");
     }
 }

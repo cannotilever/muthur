@@ -1,41 +1,41 @@
                      EMERGENCY DESTRUCT SYSTEM qq SHUTDOWN
 
 
-                qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
-               /  \                                           / \
-              /\   \                                         /   \
-             /   \   \                                     /   /  \
-            /     \   \                                   /   /    \
-           /        \   \                               /   /       \
-          /          \   \                             /   /         \
-         /             \   \                         /   /            \
-        /               \   \                       /   /              \
-        x                 \   \                   /   /                x
-        x                  \   \                 /   /                 x
-        x                    \   \             /   /                   x
-        x                     \   \           /   /                    x
-        x                       \   \       /   /                      x
-        x                        \   \     /   /                       x
-        x                          \   \ /   /                         x
-        tqqqwqqqwqqqwqqqwqqqk       \   V   /                          x
-    x0x0x0x0x1x    > <             x    
-    x0x0x0x0x1x   / ^ \            x    
-        tqqqvqqqvqqqvqqqvqqqj      /   / \   \                         x
-        x                        /   /     \   \                       x
-        x                       /   /       \   \                      x
-        x                     /   /           \   \                    x
-        x                    /   /             \   \                   x
-        x                  /   /                 \   \                 x
-        x                 /   /                   \   \                x
-        \               /   /                       \   \              /
-         \             /   /                         \   \            /
-          \          /   /                             \   \         /
-           \        /   /                               \   \       /
-            \     /   /                                   \   \    /
-             \   /   /                                     \   \  /
-              \/   /                                         \   /
-               \  /                                           \ /
-                qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
+                qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
+               / \                                             / \
+              / \ \                                           / / \
+             /    \ \                                       / /    \
+            /      \ \                                     / /      \
+           /         \ \                                 / /         \
+          /           \ \                               / /           \
+         /              \ \                           / /              \
+        /                \ \                         / /                \
+        x                  \ \                     / /                  x
+        x                   \ \                   / /                   x
+        x                     \ \               / /                     x
+        x                      \ \             / /                      x
+        x                        \ \         / /                        x
+        x                         \ \       / /                         x
+        x                           \ \   / /                           x
+        tqqqwqqqwqqqwqqqwqqqk        \ \ / /                            x
+    x0x0x0x0x1x    ><               x   
+    x0x0x0x0x1x   //\\              x   
+        tqqqvqqqvqqqvqqqvqqqj       / /   \ \                           x
+        x                         / /       \ \                         x
+        x                        / /         \ \                        x
+        x                      / /             \ \                      x
+        x                     / /               \ \                     x
+        x                   / /                   \ \                   x
+        x                  / /                     \ \                  x
+        \                / /                         \ \                /
+         \              / /                           \ \              /
+          \           / /                               \ \           /
+           \         / /                                 \ \         /
+            \      / /                                     \ \      /
+             \    / /                                       \ \    /
+              \ / /                                           \ \ /
+               \ /                                             \ /
+                qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
 
 
 
