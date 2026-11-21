@@ -4,7 +4,7 @@
 set -u
 HERE=$(cd -P "$(dirname "$0")" && pwd)
 REPO=$(cd -P "$HERE/../.." && pwd)
-SELF=$HERE/run.sh
+SELF=$HERE/$(basename "$0")
 FAILS=0
 if [ -n "${MUTHUR_TEST_SH:-}" ]; then SHELL_BIN=$MUTHUR_TEST_SH
 elif command -v dash >/dev/null 2>&1; then SHELL_BIN=dash
