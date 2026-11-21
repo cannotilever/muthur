@@ -5,7 +5,7 @@ use crate::ops::audit::{AuditEntry, Decision};
 use crate::ops::cap;
 use crate::ops::runner::RunOutput;
 use serde_json::json;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const ACTION_TIMEOUT: Duration = Duration::from_secs(30);
 const LOGS_TIMEOUT: Duration = Duration::from_secs(10);
@@ -83,14 +83,13 @@ impl Verb {
 }
 
 /// A raised `<VERB> <NAME>? Y/N`, pinned to the container it was raised for.
-/// Armed like MU/TH/UR's override prompt: `drawn` on the first unobscured
-/// render, `armed_at` on the next; covering the tab resets both.
+/// Armed once it has been drawn uncovered, so a single Y confirms; covering
+/// the tab disarms it until it is drawn again.
 pub(super) struct Prompt {
     pub(super) verb: Verb,
     pub(super) id: String,
     pub(super) name: String,
     pub(super) drawn: bool,
-    pub(super) armed_at: Option<Instant>,
 }
 
 impl Prompt {
@@ -100,7 +99,6 @@ impl Prompt {
             id: id.into(),
             name: name.into(),
             drawn: false,
-            armed_at: None,
         }
     }
 
@@ -113,8 +111,8 @@ impl Prompt {
         format!("{head}{}{tail}", middle_cut(&self.name, room)).to_uppercase()
     }
 
-    pub(super) fn armed(&self, now: Instant) -> bool {
-        self.armed_at.is_some_and(|t| now >= t)
+    pub(super) fn armed(&self) -> bool {
+        self.drawn
     }
 }
 

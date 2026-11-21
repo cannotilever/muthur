@@ -379,8 +379,9 @@ Fed by the same snapshots as Utility. Says `NO CONTAINER RUNTIME` or
   selected container by ID (`<docker|podman> <verb> <id>`, argv only, 30 s
   timeout, no elevation: the account is in the `docker` group). Restart and
   stop ask `<VERB> <NAME> (<ID>)? Y/N` (a long name is cut in the middle so
-  the question and ID always show), armed like MU/TH/UR's override prompt (on
-  screen uncovered for `ARMING`, 1 s); N or Esc cancels. One command at a
+  the question and ID always show). A single Y confirms once the prompt has
+  been drawn uncovered (no `ARMING` delay; covering the tab disarms it);
+  N or Esc cancels. One command at a
   time (`BUSY`); progress, result and errors (reverse video) show on the
   message line, and a `ps --all` refresh follows each action. STATUS is a
   fixed 10 columns, so an in-flight `RESTARTING` never shifts the rows. If a

@@ -12,7 +12,7 @@ mod action;
 mod list;
 mod logview;
 
-use crate::app::{ARMING, Tab};
+use crate::app::Tab;
 use crate::input::Key;
 use crate::metrics::local::ps_argv;
 use crate::metrics::probes::parse_containers;
@@ -273,7 +273,7 @@ impl CargoTab {
         let Some(p) = &self.prompt else { return };
         match key {
             Key::Char('n' | 'N') | Key::Esc => self.prompt = None,
-            Key::Char('y' | 'Y') if p.armed((self.deps.now)()) => {
+            Key::Char('y' | 'Y') if p.armed() => {
                 let Some(p) = self.prompt.take() else { return };
                 if !self.audit.borrow().is_online() {
                     self.message = Some((AUDIT_OFFLINE.into(), true));
@@ -359,15 +359,11 @@ impl Tab for CargoTab {
             State::Manifest(Some(c)) => {
                 let over = busy.as_ref().map(|(id, s)| (id.as_str(), s.as_str()));
                 draw_list(&mut self.sel, c, over, (&message, reverse), hint, area, buf);
-                // Arm the prompt only once it has been drawn uncovered (twice).
+                // Arm the prompt once it has been drawn uncovered.
                 if let Some(p) = &mut self.prompt
                     && !self.obscured
                 {
-                    if !p.drawn {
-                        p.drawn = true;
-                    } else if p.armed_at.is_none() {
-                        p.armed_at = Some((self.deps.now)() + ARMING);
-                    }
+                    p.drawn = true;
                 }
                 return;
             }
@@ -436,7 +432,6 @@ impl Tab for CargoTab {
         self.obscured = obscured;
         if obscured && let Some(p) = &mut self.prompt {
             p.drawn = false;
-            p.armed_at = None;
         }
     }
 

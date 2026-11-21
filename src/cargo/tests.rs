@@ -1,5 +1,4 @@
 use super::*;
-use crate::app::ARMING;
 use crate::metrics::local::ps_argv;
 use crate::ops::runner::RunOutput;
 use ratatui::style::Modifier;
@@ -368,11 +367,9 @@ impl H {
     fn screen(&mut self) -> String {
         text(&render(&mut self.t, WINDOWED))
     }
-    /// Two unobscured renders, then the arming delay.
+    /// One unobscured render arms a raised prompt.
     fn arm(&mut self) {
         render(&mut self.t, WINDOWED);
-        render(&mut self.t, WINDOWED);
-        self.clock.set(self.clock.get() + ARMING);
     }
     fn last(&self) -> (u64, Vec<String>, Duration, bool) {
         self.calls.borrow().last().cloned().expect("no command run")
@@ -420,14 +417,13 @@ fn start_runs_at_once_with_id_and_runtime() {
 }
 
 #[test]
-fn restart_and_stop_need_armed_y() {
+fn restart_and_stop_need_one_y_once_shown() {
     let mut h = harness(vec![c("a1", "web", "UP")]);
     h.key(Key::Char('r'));
+    h.key(Key::Char('y'));
+    assert_eq!(h.n_calls(), 0, "Y before the prompt was drawn");
     assert!(h.screen().contains("RESTART WEB (A1)? Y/N"));
     assert_eq!(h.n_calls(), 0);
-    h.key(Key::Char('y'));
-    assert_eq!(h.n_calls(), 0, "Y before arming");
-    h.arm();
     h.key(Key::Char('Y'));
     assert_eq!(h.argv(), v(&["docker", "restart", "a1"]));
     h.done(exited(0, "a1\n", ""));
