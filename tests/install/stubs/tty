@@ -1,0 +1,4 @@
+#!/bin/sh
+[ -z "${STUBLOG:-}" ] || echo "tty" >> "$STUBLOG"
+[ -z "${STUB_TTY:-}" ] && exit 1
+printf "%s\n" "$STUB_TTY"

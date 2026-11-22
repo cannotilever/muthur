@@ -52,7 +52,7 @@ on the terminal matching terminfo.
 - **Tab keys:** F1/F2/F3 as planned.
 - **Scrolling:** Shift-F15 / Shift-F16 act as PgUp / PgDn.
 - **Delete-char:** Line Del/Char (PF2).
-- **Input translation** (Shell tab): before fish sees them, map PF2 → `ESC[3~`
+- **Input translation** (Shell tab): before the shell sees them, map PF2 → `ESC[3~`
   (Delete) and Shift-F15/F16 → `ESC[5~`/`ESC[6~` (they already are), so
   apps get standard codes.
 - **Login shell:** `stty rows 43 cols 80 erase ^H` on the serial tty.

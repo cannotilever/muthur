@@ -117,8 +117,18 @@ impl Link {
     }
 
     /// Use the controlling terminal on stdin. Baud is left as agetty set it.
-    pub fn stdio(flow: FlowControl) -> anyhow::Result<Link> {
+    /// On a real (non-pty) tty the window size is set from `size` (cols, rows).
+    pub fn stdio(flow: FlowControl, size: (u16, u16)) -> anyhow::Result<Link> {
         let fd = io::stdin().as_fd().try_clone_to_owned().context("dup stdin")?;
+        match nix::unistd::ttyname(&fd) {
+            Ok(name) if !is_pseudo_tty(&name) => {
+                if let Err(e) = set_winsize(fd.as_fd(), size.0, size.1) {
+                    tracing::warn!("setting window size on {}: {e}", name.display());
+                }
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!("ttyname(stdin): {e}"),
+        }
         Link::from_fd(fd, None, flow)
     }
 
@@ -134,6 +144,20 @@ impl Link {
         *RESTORE.lock().unwrap_or_else(|e| e.into_inner()) = Some((file.as_raw_fd(), original.clone()));
         Ok(Link { file, original })
     }
+}
+
+nix::ioctl_write_ptr_bad!(tiocswinsz, nix::libc::TIOCSWINSZ, nix::libc::winsize);
+
+/// Set a tty's window size.
+pub fn set_winsize(fd: BorrowedFd, cols: u16, rows: u16) -> io::Result<()> {
+    let ws = nix::libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
+    // SAFETY: valid fd and a pointer to a live winsize.
+    unsafe { tiocswinsz(fd.as_raw_fd(), &ws) }.map(|_| ()).map_err(io::Error::from)
+}
+
+/// True for a pseudo-terminal slave (`/dev/pts/N`), whose size belongs to its emulator.
+pub fn is_pseudo_tty(name: &std::path::Path) -> bool {
+    name.starts_with("/dev/pts/")
 }
 
 impl Drop for Link {
@@ -252,6 +276,26 @@ mod tests {
     fn sample_cooked() -> Termios {
         let pty = nix::pty::openpty(None, None).unwrap();
         tcgetattr(&pty.slave).unwrap()
+    }
+
+    nix::ioctl_read_bad!(tiocgwinsz, nix::libc::TIOCGWINSZ, nix::libc::winsize);
+
+    #[test]
+    fn set_winsize_on_pty() {
+        let pty = nix::pty::openpty(None, None).unwrap();
+        set_winsize(pty.slave.as_fd(), 80, 43).unwrap();
+        let mut ws = nix::libc::winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
+        unsafe { tiocgwinsz(pty.slave.as_raw_fd(), &mut ws) }.unwrap();
+        assert_eq!((ws.ws_col, ws.ws_row), (80, 43));
+    }
+
+    #[test]
+    fn pseudo_tty_names() {
+        use std::path::Path;
+        assert!(is_pseudo_tty(Path::new("/dev/pts/3")));
+        for n in ["/dev/ttyUSB0", "/dev/ttyS0", "/dev/ttyMUTHUR"] {
+            assert!(!is_pseudo_tty(Path::new(n)), "{n}");
+        }
     }
 
     #[test]

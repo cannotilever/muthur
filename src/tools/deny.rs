@@ -65,6 +65,10 @@ impl DenyRules {
             format!("{}.*serial-getty@wy60", w("stop|mask|disable|kill")),
             r"99-wy60\.rules".to_string(),
             "/dev/wy60".to_string(),
+            format!("serial-getty@ttyMUTHUR.*{}", w("stop|mask|disable|kill")),
+            format!("{}.*serial-getty@ttyMUTHUR", w("stop|mask|disable|kill")),
+            r"99-ttyMUTHUR\.rules".to_string(),
+            "/dev/ttyMUTHUR".to_string(),
         ];
         let destructive = vec![
             format!(r#"{B}rm\s(?:[^;&|]*\s)?(?:-[a-z]*[rf][a-z]*|--recursive|--force)\s(?:[^;&|]*\s)?["']?/+\.?\*?["']?(?:$|[\s;&|])"#),
@@ -147,6 +151,11 @@ mod tests {
             ("systemctl stop serial-getty@wy60", true, Some("LOCKOUT")),
             ("systemctl status serial-getty@wy60", false, None),
             ("rm /etc/udev/rules.d/99-wy60.rules", true, Some("LOCKOUT")),
+            ("systemctl stop serial-getty@ttyMUTHUR", true, Some("LOCKOUT")),
+            ("systemctl mask serial-getty@ttyMUTHUR.service", true, Some("LOCKOUT")),
+            ("systemctl status serial-getty@ttyMUTHUR", false, None),
+            ("rm /etc/udev/rules.d/99-ttyMUTHUR.rules", true, Some("LOCKOUT")),
+            ("stty -F /dev/ttyMUTHUR 9600", true, Some("LOCKOUT")),
             ("rm -rf /", true, Some("DESTRUCTIVE")),
             ("rm -rf / ", true, Some("DESTRUCTIVE")),
             ("rm -rf /*", true, Some("DESTRUCTIVE")),

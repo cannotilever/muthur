@@ -1,0 +1,3 @@
+u muthur-agent - "MUTHUR technical agent" /var/lib/muthur-agent @NOLOGIN@
+m muthur-agent adm
+m muthur-agent systemd-journal

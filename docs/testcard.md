@@ -11,7 +11,7 @@ cargo build --release --target x86_64-unknown-linux-musl
 scp target/x86_64-unknown-linux-musl/release/muthur server:~/bin/
 ```
 
-The binary is fully static and runs on Arch and Alpine alike.
+The binary is fully static and runs on any Linux host of its architecture.
 
 ## Two ways to run it
 
@@ -22,8 +22,7 @@ The binary is fully static and runs on Arch and Alpine alike.
    sudo systemctl stop serial-getty@ttyUSB0
    muthur --device /dev/ttyUSB0 --baud 38400 testcard …
    ```
-   You need read/write access to the device (e.g. the `uucp` group on Arch,
-   `dialout` on Alpine).
+   You need read/write access to the device (e.g. the `uucp` or `dialout` group).
 
 Defaults: 80×43, 38400 baud, XON/XOFF. Override them with `--cols`, `--rows`
 or `--baud`, or in `~/.config/muthur/config.toml` (must be `chmod 600`):

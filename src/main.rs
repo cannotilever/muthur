@@ -8,7 +8,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "muthur", about = "MU/TH/UR 6000 serial console for the Wyse WY-60")]
+#[command(version, name = "muthur", about = "MU/TH/UR 6000 serial console for the Wyse WY-60")]
 struct Cli {
     /// Config file (default: ~/.config/muthur/config.toml).
     #[arg(long, global = true)]
@@ -103,7 +103,7 @@ fn main() -> anyhow::Result<()> {
     install_panic_hook();
     let mut link = match cfg.link.device {
         Some(_) => Link::open_device(&cfg.link)?,
-        None => Link::stdio(cfg.link.flow)?,
+        None => Link::stdio(cfg.link.flow, (cfg.terminal.cols, cfg.terminal.rows))?,
     };
 
     match tc.mode {
@@ -127,4 +127,16 @@ fn main() -> anyhow::Result<()> {
     }
     link.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::error::ErrorKind;
+
+    #[test]
+    fn cli_has_version() {
+        let e = Cli::try_parse_from(["muthur", "--version"]).err().unwrap();
+        assert_eq!(e.kind(), ErrorKind::DisplayVersion);
+    }
 }

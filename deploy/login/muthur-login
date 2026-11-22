@@ -1,0 +1,8 @@
+#!/bin/sh
+# Starts MUTHUR on the serial terminal's login shell; a no-op anywhere else.
+want=$(realpath "${MUTHUR_TTY:-/dev/ttyMUTHUR}" 2>/dev/null) || exit 0
+here=$(tty 2>/dev/null) || exit 0
+[ "$want" = "$here" ] || exit 0
+stty erase '^H' ixon ixoff
+"${MUTHUR_BIN:-$HOME/.local/bin/muthur}"
+exit 0

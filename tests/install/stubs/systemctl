@@ -1,0 +1,7 @@
+#!/bin/sh
+[ -z "${STUBLOG:-}" ] || echo "$(basename "$0") $*" >> "$STUBLOG"
+case "${1:-}" in
+is-enabled) exit "${STUB_SYSTEMCTL_IS_ENABLED_RC:-${STUB_SYSTEMCTL_RC:-0}}" ;;
+stop) exit "${STUB_SYSTEMCTL_STOP_RC:-${STUB_SYSTEMCTL_RC:-0}}" ;;
+esac
+exit "${STUB_SYSTEMCTL_RC:-0}"

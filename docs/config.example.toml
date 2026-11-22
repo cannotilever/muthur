@@ -10,8 +10,8 @@
 
 # ── Serial link ──────────────────────────────────────────────────────────────
 [link]
-# Serial device. Leave unset to use stdio (when launched by agetty on /dev/wy60).
-# device = "/dev/wy60"
+# Serial device. Leave unset to use stdio (when launched by agetty on /dev/ttyMUTHUR).
+# device = "/dev/ttyMUTHUR"
 baud = 38400
 # "xon-xoff" | "rts-cts" | "none". RTS/CTS does not work with the null-modem
 # cabling, so keep XON/XOFF.
@@ -20,6 +20,7 @@ flow = "xon-xoff"
 # ── Terminal geometry ────────────────────────────────────────────────────────
 [terminal]
 # WY-60 with its status line disabled. The chrome needs at least 80x43.
+# MUTHUR sets the serial tty to this size at startup.
 cols = 80
 rows = 43
 
@@ -38,7 +39,7 @@ standby_minutes = 10
 
 # ── SHELL folder (F4) ────────────────────────────────────────────────────────
 [shell]
-command = "fish"
+# command = "fish"   # default: your login shell (passwd), else $SHELL, else /bin/sh
 args = []
 # Lines of history kept for ^] [
 scrollback = 1000
